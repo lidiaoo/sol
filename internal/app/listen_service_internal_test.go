@@ -59,7 +59,7 @@ type listenerMock struct {
 }
 
 func (m *listenerMock) ReadPacket(_ context.Context) ([]byte, *net.UDPAddr, error) {
-	if m.idx >= len(m.packets) {
+	if m.idx >= len(m.errs) {
 		return nil, nil, context.Canceled
 	}
 
@@ -89,13 +89,27 @@ type testFixture struct {
 	service  *ListenService
 }
 
-func newFixture(t *testing.T, port int, action wol.Action, packets [][]byte, packetErrs []error) *testFixture {
+func ruleFor(port int, action wol.Action) wol.Rule {
+	return wol.Rule{
+		Match:  wol.Match{Ports: []int{port}, MAC: wol.MACSelector{Kind: wol.MACSelf}},
+		Action: action,
+	}
+}
+
+func mustPolicy(t *testing.T, mac net.HardwareAddr, rules []wol.Rule) *wol.RoutingPolicy {
+	t.Helper()
+
+	policy, err := wol.NewRoutingPolicy(rules, []wol.IfaceInfo{{Name: "en0", MAC: mac}}, wol.PolicyOptions{})
+	require.NoError(t, err)
+
+	return policy
+}
+
+func newFixture(t *testing.T, port int, action wol.Action, packets [][]byte, packetErrs []error, dryRun bool) *testFixture {
 	t.Helper()
 
 	mac := net.HardwareAddr{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
-
-	policy, err := wol.NewRoutingPolicy([]wol.Rule{{Port: port, Action: action}}, mac)
-	require.NoError(t, err)
+	policy := mustPolicy(t, mac, []wol.Rule{ruleFor(port, action)})
 
 	srcs := make([]*net.UDPAddr, len(packets))
 	for i := range packets {
@@ -116,7 +130,7 @@ func newFixture(t *testing.T, port int, action wol.Action, packets [][]byte, pac
 		policy,
 		mac,
 		net.IPv4(127, 0, 0, 1),
-		false,
+		dryRun,
 	)
 
 	return &testFixture{
@@ -132,7 +146,7 @@ func TestListenServiceRun_MagicPacketShutdown(t *testing.T) {
 	mac := net.HardwareAddr{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
 	magic := wol.BuildMagicPacket(mac)
 
-	fixture := newFixture(t, 9, wol.ActionShutdown, [][]byte{magic}, []error{nil, context.Canceled})
+	fixture := newFixture(t, 8, wol.ActionShutdown, [][]byte{magic}, []error{nil, context.Canceled}, false)
 
 	err := fixture.service.Run(context.Background(), "en0")
 	require.NoError(t, err)
@@ -143,10 +157,12 @@ func TestListenServiceRun_MagicPacketShutdown(t *testing.T) {
 }
 
 func TestListenServiceRun_MagicPacketReboot(t *testing.T) {
+	t.Parallel()
+
 	mac := net.HardwareAddr{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
 	magic := wol.BuildMagicPacket(mac)
 
-	fixture := newFixture(t, 8, wol.ActionReboot, [][]byte{magic}, []error{nil, context.Canceled})
+	fixture := newFixture(t, 8, wol.ActionReboot, [][]byte{magic}, []error{nil, context.Canceled}, false)
 
 	err := fixture.service.Run(context.Background(), "en0")
 	require.NoError(t, err)
@@ -155,13 +171,28 @@ func TestListenServiceRun_MagicPacketReboot(t *testing.T) {
 	require.Equal(t, wol.ActionReboot, fixture.power.action)
 }
 
+func TestListenServiceRun_NoopActionIsLogged(t *testing.T) {
+	t.Parallel()
+
+	mac := net.HardwareAddr{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	magic := wol.BuildMagicPacket(mac)
+
+	fixture := newFixture(t, 9, wol.ActionNoop, [][]byte{magic}, []error{nil, context.Canceled}, false)
+
+	err := fixture.service.Run(context.Background(), "en0")
+	require.NoError(t, err)
+
+	require.Equal(t, 1, fixture.power.calls)
+	require.Equal(t, wol.ActionNoop, fixture.power.action)
+}
+
 func TestListenServiceRun_DryRunSkipsPowerAction(t *testing.T) {
 	t.Parallel()
 
 	mac := net.HardwareAddr{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
 	magic := wol.BuildMagicPacket(mac)
 
-	fixture := newFixture(t, 9, wol.ActionShutdown, [][]byte{magic}, []error{context.Canceled})
+	fixture := newFixture(t, 8, wol.ActionShutdown, [][]byte{magic}, []error{nil, context.Canceled}, true)
 
 	err := fixture.service.Run(context.Background(), "en0")
 	require.NoError(t, err)
@@ -172,9 +203,7 @@ func TestListenServiceRun_ContextCanceled(t *testing.T) {
 	t.Parallel()
 
 	mac := net.HardwareAddr{1, 2, 3, 4, 5, 6}
-
-	policy, err := wol.NewRoutingPolicy([]wol.Rule{{Port: 9, Action: wol.ActionShutdown}}, mac)
-	require.NoError(t, err)
+	policy := mustPolicy(t, mac, []wol.Rule{ruleFor(8, wol.ActionShutdown)})
 
 	listener := &listenerMock{
 		packets: [][]byte{},
@@ -195,18 +224,19 @@ func TestListenServiceRun_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err = svc.Run(ctx, "en0")
+	err := svc.Run(ctx, "en0")
 	require.NoError(t, err)
 }
 
 func TestListenServiceRun_DuplicatePortRules(t *testing.T) {
 	t.Parallel()
 
-	mac := []byte{1, 2, 3, 4, 5, 6}
+	mac := net.HardwareAddr{1, 2, 3, 4, 5, 6}
 
-	_, err := wol.NewRoutingPolicy([]wol.Rule{
-		{Port: 9, Action: wol.ActionShutdown},
-		{Port: 9, Action: wol.ActionReboot},
-	}, mac)
+	_, err := wol.NewRoutingPolicy(
+		[]wol.Rule{ruleFor(8, wol.ActionShutdown), ruleFor(8, wol.ActionReboot)},
+		[]wol.IfaceInfo{{Name: "en0", MAC: mac}},
+		wol.PolicyOptions{},
+	)
 	require.Error(t, err)
 }

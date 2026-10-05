@@ -2,6 +2,7 @@ package deps
 
 import (
 	"fmt"
+	"net"
 	"sync"
 
 	"github.com/bavix/sol/internal/app"
@@ -66,7 +67,13 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 			return
 		}
 
-		policy, err := wol.NewRoutingPolicy(b.cfg.Rules, ifaceMAC)
+		ifaces := []wol.IfaceInfo{{
+			Name: b.cfg.InterfaceName,
+			MAC:  ifaceMAC,
+			IPs:  []net.IP{ifaceIP},
+		}}
+
+		policy, err := wol.NewRoutingPolicy(b.cfg.Rules, ifaces, wol.PolicyOptions{})
 		if err != nil {
 			buildErr = err
 

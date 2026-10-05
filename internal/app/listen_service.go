@@ -83,7 +83,7 @@ func (s *ListenService) Run(ctx context.Context, interfaceName string) error {
 func (s *ListenService) logRules() {
 	rules := s.policy.Rules()
 	for i, rule := range rules {
-		log.Printf("Rule %d: port=%d action=%s", i+1, rule.Port, rule.Action)
+		log.Printf("Rule %d: ports=%v action=%s", i+1, rule.Match.Ports, rule.Action)
 	}
 }
 
@@ -178,7 +178,13 @@ func (s *ListenService) eventLoop(ctx context.Context, pktCh chan packet, errCh 
 }
 
 func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
-	action, matched := s.policy.Match(pkt.payload, pkt.port)
+	ev := wol.Event{Payload: pkt.payload, DstPort: pkt.port}
+	if pkt.src != nil {
+		ev.SrcIP = pkt.src.IP
+		ev.SrcPort = pkt.src.Port
+	}
+
+	action, matched := s.policy.Resolve(ev)
 	if !matched {
 		log.Printf("Non-matching packet from %s, port=%d, len=%d", pkt.src, pkt.port, len(pkt.payload))
 

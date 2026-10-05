@@ -11,7 +11,10 @@ import (
 	"github.com/bavix/sol/internal/domain/wol"
 )
 
-var ErrUnsupportedOS = errors.New("unsupported operating system")
+var (
+	ErrUnsupportedOS     = errors.New("unsupported operating system")
+	ErrUnsupportedAction = errors.New("unsupported power action")
+)
 
 type PowerController struct{}
 
@@ -21,12 +24,14 @@ func NewPowerController() *PowerController {
 
 func (p *PowerController) Execute(ctx context.Context, action wol.Action) error {
 	switch action {
+	case wol.ActionNoop:
+		return nil
 	case wol.ActionShutdown:
 		return p.shutdown(ctx)
 	case wol.ActionReboot:
 		return p.reboot(ctx)
 	default:
-		return fmt.Errorf("%w: %s", ErrUnsupportedOS, action)
+		return fmt.Errorf("%w: %s", ErrUnsupportedAction, action)
 	}
 }
 

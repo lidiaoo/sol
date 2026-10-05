@@ -3,6 +3,8 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"log"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -55,7 +57,8 @@ func init() {
 	listenCmd.Flags().StringVar(&interfaceName, "iface", "", "Network interface name to bind to (required)")
 	listenCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Log when a matching packet is received instead of executing the power action")
 	listenCmd.Flags().StringArrayVar(&portStrings, "port", nil,
-		"UDP port to listen on, optionally with action (e.g. '9' for shutdown, '8:reboot' for specific action). Can be specified multiple times")
+		"UDP port to listen on, optionally with action (e.g. '8' for shutdown, '8:reboot'). "+
+			"Ports 7 and 9 are reserved for plain WOL and always map to noop. Can be specified multiple times")
 
 	_ = listenCmd.MarkFlagRequired("iface")
 }
@@ -65,36 +68,51 @@ func parsePorts() ([]wol.Rule, error) {
 		return nil, errNoPorts
 	}
 
-	defaultAction := wol.ActionShutdown
-
 	rules := make([]wol.Rule, 0, len(portStrings))
-	for _, ps := range portStrings {
-		parts := strings.Split(ps, ":")
-		portStr := parts[0]
-		actionStr := ""
 
-		if len(parts) == portPartsCount {
-			actionStr = parts[1]
+	for _, spec := range portStrings {
+		port, action, err := parsePortSpec(spec)
+		if err != nil {
+			return nil, err
 		}
 
-		var port int
-		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
-			return nil, fmt.Errorf("invalid port %s: %w", portStr, err)
-		}
-
-		action := defaultAction
-
-		if actionStr != "" {
-			var err error
-
-			action, err = wol.ParseAction(actionStr)
-			if err != nil {
-				return nil, fmt.Errorf("invalid action in port %s: %w", ps, err)
-			}
-		}
-
-		rules = append(rules, wol.Rule{Port: port, Action: action})
+		rules = append(rules, wol.Rule{
+			Match:  wol.Match{Ports: []int{port}, MAC: wol.MACSelector{Kind: wol.MACSelf}},
+			Action: guardReservedPort(port, action),
+		})
 	}
 
 	return rules, nil
+}
+
+func parsePortSpec(spec string) (int, wol.Action, error) {
+	parts := strings.Split(spec, ":")
+	action := wol.ActionShutdown
+
+	if len(parts) == portPartsCount {
+		parsed, err := wol.ParseAction(parts[1])
+		if err != nil {
+			return 0, "", fmt.Errorf("invalid action in port %s: %w", spec, err)
+		}
+
+		action = parsed
+	}
+
+	var port int
+	if _, err := fmt.Sscanf(parts[0], "%d", &port); err != nil {
+		return 0, "", fmt.Errorf("invalid port %s: %w", parts[0], err)
+	}
+
+	return port, action, nil
+}
+
+// guardReservedPort forces reserved WOL ports to noop and warns about the behaviour change.
+func guardReservedPort(port int, action wol.Action) wol.Action {
+	if action == wol.ActionNoop || !slices.Contains(wol.DefaultReservedPorts(), port) {
+		return action
+	}
+
+	log.Printf("WARNING: port %d is reserved for plain WOL packets; downgrading action %q to noop", port, action)
+
+	return wol.ActionNoop
 }

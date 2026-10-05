@@ -3,13 +3,24 @@ package wol
 import "bytes"
 
 const (
+	PortEcho    = 7
 	PortDefault = 9
+
 	BufferSize  = 2048
 	HeaderSize  = 6
 	RepeatCount = 16
 	MACSize     = 6
 	MagicByte   = 0xFF
+
+	SecureOnSize      = 6
+	PacketLenPlain    = HeaderSize + RepeatCount*MACSize
+	PacketLenSecureOn = PacketLenPlain + SecureOnSize
 )
+
+// DefaultReservedPorts returns the reserved WOL ports ({7, 9}).
+func DefaultReservedPorts() []int {
+	return []int{PortEcho, PortDefault}
+}
 
 func BuildMagicPacket(mac []byte) []byte {
 	pkt := make([]byte, HeaderSize+RepeatCount*MACSize)
