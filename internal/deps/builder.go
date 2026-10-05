@@ -19,6 +19,7 @@ import (
 	"github.com/bavix/sol/internal/infra/outbound"
 	"github.com/bavix/sol/internal/infra/sequence"
 	"github.com/bavix/sol/internal/infra/system"
+	"github.com/bavix/sol/internal/infra/wolsend"
 )
 
 var (
@@ -46,7 +47,9 @@ type Builder struct {
 
 	// sequencer runs sequence steps through the registry; it is built with the registry
 	// itself because the two reference each other.
-	sequencer *sequence.Executor
+	sequencer  *sequence.Executor
+	sender     *wolsend.Executor
+	senderOnce sync.Once
 
 	listenOnce sync.Once
 	listen     *app.ListenService
@@ -101,6 +104,7 @@ func (b *Builder) Registry() *wol.Registry {
 		)
 		registry.Register(b.ExecExecutor(), wol.ActionTypeExec)
 		registry.Register(b.HTTPExecutor(), wol.ActionTypeHTTP)
+		registry.Register(b.Sender(), wol.ActionTypeSend)
 
 		// The sequence executor dispatches through this very registry, so it is built
 		// here instead of in a helper that would re-enter this sync.Once.
@@ -306,6 +310,16 @@ func (b *Builder) SequenceExecutor() *sequence.Executor {
 	return b.sequencer
 }
 
+// Sender returns the executor that transmits Wake-on-LAN magic packets (§19.13). It is
+// stateless, so one instance serves every wol.send action.
+func (b *Builder) Sender() *wolsend.Executor {
+	b.senderOnce.Do(func() {
+		b.sender = wolsend.NewExecutor()
+	})
+
+	return b.sender
+}
+
 // buildRuntime validates the configuration and assembles the rule set, the action
 // registry and the interfaces it resolves to.
 func (b *Builder) buildRuntime() (*wol.Registry, *wol.RoutingPolicy, []wol.IfaceInfo, error) {
@@ -359,30 +373,33 @@ func (b *Builder) validateActions(registry *wol.Registry) error {
 		return err
 	}
 
-	executor := b.ExecExecutor()
-	outboundExecutor := b.HTTPExecutor()
-	sequencer := b.SequenceExecutor()
+	// One validator per type, so a new action type is a single line here.
+	validators := map[wol.ActionType]actionValidator{
+		wol.ActionTypeExec:     {"exec action", b.ExecExecutor().Validate},
+		wol.ActionTypeHTTP:     {"http action", b.HTTPExecutor().Validate},
+		wol.ActionTypeSequence: {"sequence action", b.SequenceExecutor().Validate},
+		wol.ActionTypeSend:     {"wol.send action", b.Sender().Validate},
+	}
 
 	for _, def := range registry.Actions() {
-		switch def.Type {
-		case wol.ActionTypeExec:
-			if err := executor.Validate(def); err != nil {
-				return fmt.Errorf("exec action %s: %w", def.Name, err)
-			}
-		case wol.ActionTypeHTTP:
-			if err := outboundExecutor.Validate(def); err != nil {
-				return fmt.Errorf("http action %s: %w", def.Name, err)
-			}
-		case wol.ActionTypeSequence:
-			if err := sequencer.Validate(def); err != nil {
-				return fmt.Errorf("sequence action %s: %w", def.Name, err)
-			}
-		case wol.ActionTypeNoop, wol.ActionTypeSleep, wol.ActionTypeShutdown, wol.ActionTypeReboot:
-			// built-in power actions carry no parameters to validate
+		validator, known := validators[def.Type]
+		if !known {
+			// The built-in power actions carry no parameters to validate.
+			continue
+		}
+
+		if err := validator.check(def); err != nil {
+			return fmt.Errorf("%s %s: %w", validator.label, def.Name, err)
 		}
 	}
 
 	return nil
+}
+
+// actionValidator pairs the error label of a type with its start-up check.
+type actionValidator struct {
+	label string
+	check func(wol.ActionDef) error
 }
 
 func (b *Builder) statusFunc(svc *app.ListenService) func() httpapi.Status {

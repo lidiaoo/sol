@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"strings"
 	"time"
 )
@@ -36,6 +37,7 @@ const (
 	ActionTypeExec     ActionType = "exec"
 	ActionTypeHTTP     ActionType = "http"
 	ActionTypeSequence ActionType = "sequence"
+	ActionTypeSend     ActionType = "wol.send"
 )
 
 // ExecParams describes a custom command action (type: exec).
@@ -79,6 +81,25 @@ type SequenceParams struct {
 	Steps []Action
 }
 
+// SendParams describes a wol.send action: it wakes another machine by transmitting a magic
+// packet (§19.13). The target MAC is fixed in the configuration; nothing from the triggering
+// packet is interpolated, so a broadcast cannot choose whom to wake.
+type SendParams struct {
+	// MAC is the target NIC, exactly 6 bytes.
+	MAC net.HardwareAddr
+	// Broadcast is the destination IPv4 address: a subnet broadcast (192.168.0.255) or a
+	// unicast address. Empty means the limited broadcast 255.255.255.255.
+	Broadcast string
+	// Port is the destination UDP port; the WOL default is 9.
+	Port int
+	// SecureOn is the optional password the target expects after the magic packet.
+	SecureOn []byte
+	// Repeat is how many copies to send (a single packet may be lost).
+	Repeat int
+	// Interval is the gap between two copies.
+	Interval time.Duration
+}
+
 // ActionDef is a named action together with its type and parameters.
 type ActionDef struct {
 	Name Action
@@ -89,6 +110,8 @@ type ActionDef struct {
 	HTTP *HTTPParams
 	// Sequence carries the steps of a sequence action.
 	Sequence *SequenceParams
+	// Send carries the parameters of a wol.send action.
+	Send *SendParams
 }
 
 // BuiltinActions returns the built-in action definitions.

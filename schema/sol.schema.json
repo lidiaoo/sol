@@ -413,7 +413,7 @@
           "description": "Unique action name."
         },
         "type": {
-          "enum": ["noop", "power.sleep", "power.shutdown", "power.reboot", "exec", "http", "sequence"],
+          "enum": ["noop", "power.sleep", "power.shutdown", "power.reboot", "exec", "http", "sequence", "wol.send"],
           "description": "Action type."
         },
         "command": {
@@ -489,6 +489,35 @@
           "items": {
             "type": "string"
           }
+        },
+        "mac": {
+          "type": "string",
+          "description": "Target NIC of a wol.send action, e.g. \"AA:BB:CC:DD:EE:FF\".",
+          "pattern": "^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$"
+        },
+        "broadcast": {
+          "type": "string",
+          "description": "Destination of a wol.send packet: a subnet broadcast such as 192.168.0.255, or a unicast address. Empty means 255.255.255.255."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Destination UDP port of a wol.send action; 0 or absent means the WOL default 9."
+        },
+        "secure_on": {
+          "type": "string",
+          "description": "Optional SecureOn password appended to a wol.send packet; exactly 6 bytes. Point it at an environment variable (${SOL_...}) rather than writing the password in the file."
+        },
+        "repeat": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many copies a wol.send action transmits; 0 or absent means one."
+        },
+        "interval": {
+          "type": "string",
+          "description": "Gap between two wol.send copies, e.g. 100ms; absent means 100ms and the maximum is 10s."
         }
       },
       "required": ["name", "type"],
@@ -527,6 +556,18 @@
           },
           "then": {
             "required": ["steps"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "wol.send"
+              }
+            }
+          },
+          "then": {
+            "required": ["mac"]
           }
         }
       ]

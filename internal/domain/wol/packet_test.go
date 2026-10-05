@@ -127,3 +127,53 @@ func brokenPacket(mac []byte) []byte {
 
 	return pkt
 }
+
+// TestEncodeMagicPacketRoundTrip is the sender's side of the contract: whatever wol.send
+// transmits must be exactly what our own receiver accepts, with and without SecureOn.
+func TestEncodeMagicPacketRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	mac := []byte{0x58, 0x11, 0x22, 0xbc, 0x78, 0x66}
+	secureOn := []byte("s3cret")
+
+	plain, err := wol.EncodeMagicPacket(mac, nil)
+	require.NoError(t, err)
+	require.Len(t, plain, wol.PacketLenPlain)
+
+	parsed, ok := wol.ParsePacket(plain, nil)
+	require.True(t, ok)
+	require.Equal(t, mac, []byte(parsed.MAC))
+	require.Empty(t, parsed.Content)
+
+	guarded, err := wol.EncodeMagicPacket(mac, secureOn)
+	require.NoError(t, err)
+	require.Len(t, guarded, wol.PacketLenSecureOn)
+	require.Equal(t, plain, guarded[:wol.PacketLenPlain], "the password only appends")
+
+	parsed, ok = wol.ParsePacket(guarded, secureOn)
+	require.True(t, ok)
+	require.Equal(t, mac, []byte(parsed.MAC))
+
+	// A receiver that expects no password still accepts it: the password shows up as content.
+	// That is why a SecureOn-protected target must also be configured with the password.
+	parsed, ok = wol.ParsePacket(guarded, nil)
+	require.True(t, ok)
+	require.Equal(t, string(secureOn), string(parsed.Content))
+
+	// A receiver with a different password refuses it.
+	_, ok = wol.ParsePacket(guarded, []byte("wrong!"))
+	require.False(t, ok)
+}
+
+func TestEncodeMagicPacketRejects(t *testing.T) {
+	t.Parallel()
+
+	_, err := wol.EncodeMagicPacket([]byte{0x01, 0x02}, nil)
+	require.ErrorIs(t, err, wol.ErrMACLength)
+
+	_, err = wol.EncodeMagicPacket(make([]byte, 8), nil)
+	require.ErrorIs(t, err, wol.ErrMACLength)
+
+	_, err = wol.EncodeMagicPacket([]byte{0x58, 0x11, 0x22, 0xbc, 0x78, 0x66}, []byte("short"))
+	require.ErrorIs(t, err, wol.ErrSecureOnLength)
+}

@@ -233,7 +233,7 @@ func TestLoadActionErrors(t *testing.T) {
 			match: ErrDuplicateAction,
 		},
 		"unknown type": {
-			body:  "version: 1\nactions:\n  - { name: lock, type: wol.send }\n",
+			body:  "version: 1\nactions:\n  - { name: lock, type: wol.wake }\n",
 			match: ErrUnknownActionType,
 		},
 		"http action without url": {
@@ -687,4 +687,80 @@ func newTestPolicy(t *testing.T, cfg *Config) (wol.Decision, bool) {
 	payload := append(wol.BuildMagicPacket(mac), []byte("lock")...)
 
 	return policy.Resolve(wol.Event{Payload: payload, DstPort: 10})
+}
+
+// A commented-out line must never make an environment variable required: the README example
+// comments out an optional secure_on and would otherwise refuse to start.
+func TestLoadIgnoresEnvRefsInComments(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfig(t, `
+version: 1
+actions:
+  - name: wake
+    type: wol.send
+    mac: "58:11:22:BC:78:66"
+    # secure_on: "${SOL_TEST_UNSET_VAR}"   # only if the target requires SecureOn
+    repeat: 2  # was ${SOL_TEST_UNSET_VAR}
+`)
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Equal(t, 2, cfg.Actions["wake"].Send.Repeat)
+}
+
+// A '#' inside a quoted scalar is data, not a comment, so a reference after it still resolves.
+func TestLoadExpandsEnvAfterQuotedHash(t *testing.T) {
+	t.Setenv("SOL_TEST_QUOTED_HASH", "cret")
+
+	path := writeConfig(t, `
+version: 1
+security:
+  secure_on: "a #${SOL_TEST_QUOTED_HASH}"
+`)
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Equal(t, []byte("a #cret"), cfg.SecureOn)
+}
+
+// A block scalar body is data even when one of its lines looks like a comment.
+func TestLoadExpandsEnvInBlockScalar(t *testing.T) {
+	t.Setenv("SOL_TEST_BODY", "hunter2")
+
+	path := writeConfig(t, `
+version: 1
+actions:
+  - name: notify
+    type: http
+    method: POST
+    url: "https://hooks.example.com/x"
+    body: |
+      {"token":"${SOL_TEST_BODY}"}
+      # not a comment here: ${SOL_TEST_BODY}
+`)
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Contains(t, cfg.Actions["notify"].HTTP.Body, `{"token":"hunter2"}`)
+	require.Contains(t, cfg.Actions["notify"].HTTP.Body, "# not a comment here: hunter2")
+}
+
+// A reference inside a block scalar is still a reference: a missing variable is an error.
+func TestLoadBlockScalarStillNeedsEnvVars(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfig(t, `
+version: 1
+actions:
+  - name: notify
+    type: http
+    method: POST
+    url: "https://hooks.example.com/x"
+    body: |
+      {"token":"${SOL_TEST_UNSET_VAR}"}
+`)
+
+	_, err := Load(path)
+	require.ErrorIs(t, err, ErrMissingEnvVar)
 }

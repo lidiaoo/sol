@@ -55,9 +55,17 @@ configured, a 6-byte password follows (108 bytes).
 | `exec` | Runs a configured command (argv, no shell by default; optional `shell: true`, command allow-list, timeout, workdir, env, and `user`/`group` privilege drop) |
 | `http` | Calls a webhook (method, url, headers, body, timeout, retries; destination restricted by `security.url_allowlist`) |
 | `sequence` | Runs an ordered list of the above as one action (a failing step never skips the ones behind it) |
+| `wol.send` | Wakes another machine: sends a magic packet to a fixed target (`mac`, optional `broadcast`, `port`, `secure_on`, `repeat`, `interval`) |
 | `remote:<id>` | A whitelisted remote command, registered as an ordinary action |
 
-The trust ladder is documented in §20 of the design: log only < sleep/lock <
+sol can also wake *another* machine. `wol.send` sends a magic packet to a fixed target
+(`mac` is the only required parameter; `broadcast` defaults to `255.255.255.255`, `port` to 9,
+`repeat` to 1 and `interval` to 100ms). Trigger it from a rule, from a sequence step, or with
+`POST /v1/actions/wake-nas` on the control plane. The target MAC must come from the
+configuration — sol never takes it from the packet that triggered the action — and the action
+goes through the same cooldown, rate limit, dry-run and audit path as every other one.
+
+The trust ladder is documented in §20 of the design: log only < outbound wake-up < sleep/lock <
 shutdown/reboot < custom command < outbound HTTP < raw remote command (off by default).
 
 ## Run the service
@@ -132,6 +140,13 @@ actions:
     type: sequence
     steps: [notify, power.shutdown]
 
+  - name: wake-nas
+    type: wol.send
+    mac: "58:11:22:BC:78:66"        # the target machine; the only required parameter
+    broadcast: 192.168.0.255        # default 255.255.255.255; a unicast address works too
+    repeat: 3                       # a broadcast can be lost, send it a few times
+    # secure_on: "${NAS_WOL_PASSWORD}"   # only if the target requires SecureOn (6 bytes)
+
 rules:
   - match: { ports: [10010], content: { kind: suffix, value: "lock" } }
     action: lock
@@ -183,6 +198,11 @@ logging and `POST /v1/actions/remote:<id>` all apply to it.
 `server.http.enabled: true` starts an HTTP control plane on `127.0.0.1:8080` by default with
 mandatory authentication (`bearer` with `${SOL_TOKEN}`, `basic`, or `mtls`). It never binds a
 public address unless you ask for one, and there is no unauthenticated mode.
+
+The token itself comes from the environment (`export SOL_TOKEN=...`) or a 0600 file; it is never
+written in the YAML, and a reference to an unset variable fails the start-up rather than running
+with an empty secret. References inside comments are ignored, so commenting out an optional
+line — like the `secure_on` above — always leaves a loadable configuration.
 
 Endpoints: `GET /healthz`, `GET /v1/status`, `GET /v1/rules`, `GET /v1/interfaces`,
 `GET /metrics`, `POST /v1/actions/{name}`, `POST /v1/commands/{id}`, `POST /v1/reload`.

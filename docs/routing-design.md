@@ -39,7 +39,7 @@ bavix/sol（本仓库）       ✅    ✅    ✅      简单    反向WoL       
 4. 标准 WOL 端口（7/9）作为保留端口：只允许纯魔法包，且只能映射到 `noop`（只记日志），形成安全边界。
 5. 动作与触发解耦：动作是"具名 + 类型 + 参数"，由执行器注册表分发。
 
-非目标（本期不做，但模型预留）：发送 WOL 唤醒别的机器（`wol.send`，§4 预留）、自定义命令执行（`exec`，设计见 §4.3）、HTTP（控制面 + 出站动作，§18）、远端命令通道（含裸 shell，§21）。
+非目标（本期不做，但模型预留）：发送 WOL 唤醒别的机器（`wol.send`，§4 预留，**已落地见 §19.13**）、自定义命令执行（`exec`，设计见 §4.3）、HTTP（控制面 + 出站动作，§18）、远端命令通道（含裸 shell，§21）。
 
 ---
 
@@ -159,7 +159,7 @@ bavix/sol（本仓库）       ✅    ✅    ✅      简单    反向WoL       
         ActionTypeShutdown ActionType = "power.shutdown"
         ActionTypeReboot   ActionType = "power.reboot"
         ActionTypeSleep    ActionType = "power.sleep"   // 本期实现
-        // 预留（P4 后续）：wol.send
+        // wol.send 已落地（§19.13）
     )
 
     type ActionDef struct {
@@ -245,7 +245,7 @@ actions:
     steps: [power.shutdown, notify]
 ```
 
-阶段：`exec` / `http` / `sequence` 均已落地（§19.4 / §19.8 / §19.10），`wol.send` 仍预留。
+阶段：`exec` / `http` / `sequence` / `wol.send` 均已落地（§19.4 / §19.8 / §19.10 / §19.13）。
 
 ---
 
@@ -739,6 +739,7 @@ actions[].steps             sequence 用：按顺序执行的动作名列表（�
 actions[].command / timeout / workdir / env / shell   exec 用：argv 数组（非 shell）；shell: true 走 /bin/sh -c（逃生舱）
 actions[].user / group                                exec 用：降权到该用户/组（仅 unix；要求 sol 以 root 跑；附加组不继承 sol 自己的）
 actions[].method / url / headers / body / timeout / retries   http 出站动作用（§19.8）；url/headers/body 支持 {{.Action}} 等白名单插值
+actions[].mac / broadcast / port / secure_on / repeat / interval   wol.send 用（§19.13）：目标 MAC 必填（6 字节，只来自配置，不从触发包插值）；默认广播 255.255.255.255、端口 9、1 份、间隔 100ms（上限 10s）；出站不受保留端口限制
 security.url_allowlist      可选，出站 http 动作的目标白名单（SSRF 防护，§19.8）：裸串 = scheme+host+path 前缀（边界匹配）、`=` 前缀 = 整串精确、`~` 前缀 = 正则；条目写错启动即报错
 security.exec_allowlist     可选，限 exec 的绝对路径命令只能落在这些目录下（§19.4）
 security.cooldown           可选，同一动作两次执行的最小间隔（如 5s；空 = 关闭，§19.6）
@@ -747,6 +748,7 @@ security.rate_limit         可选，全局令牌桶：跨所有动作与触发�
 security.rate_burst         可选，桶容量（吸收瞬时突发；0 = 一秒的 rate_limit；只写 burst 不写 rate 启动即报错）
 commands[].id / type / command / args{type,enum,pattern,required} / timeout / workdir / env / user / group   远端白名单命令（§21 / §19.7），type 暂只支持 exec；user/group 复用 exec 的降权
 security.allow_remote_commands / remote_command_auth{type,key_env,key_file} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）
+（`${VAR}` / `$VAR` 插值只在**数据**上生效：注释里写 `${VAR}` 不会变成必填变量，块标量正文照常插值）
 server.http.{enabled,listen,auth,tls}        控制面（§18 / §19.5）：auth.type = bearer|basic|mtls（默认 bearer，无 none）
 server.watch                可选，配置文件的轮询间隔（如 5s；空/0 = 关闭，最小 1s）；变了就自动 reload（§19.9），CLI `--watch` 优先
 server.http.auth.token_env / token_file      bearer 密钥来源（二选一；文件必须 600 权限）
@@ -818,6 +820,27 @@ User=root
 - 效果：命中后以降权用户执行脚本，记录退出码；dry-run 时只打印不执行
 - 注意：exec 属 P4（见 TODO.md）；不允许挂在保留端口
 
+### 案例 11：唤醒另一台机器（wol.send，§19.13）
+- 场景：工位机关机后要开家里的 NAS；不想为它再装一个守护进程，就让**已经在线的那台 sol** 代发唤醒包。
+- 配置（wake-nas 这台 sol 上）：
+```yaml
+version: 1
+actions:
+  - name: wake-nas
+    type: wol.send
+    mac: "58:11:22:BC:78:66"        # 目标机器的 MAC（只来自配置）
+    broadcast: 192.168.1.255        # 默认 255.255.255.255；写单播地址可做定向/自测
+    repeat: 3                       # 广播可能丢包，多发几份
+    # secure_on: "${NAS_WOL_PASSWORD}"   # 目标要求 SecureOn 时（6 字节，走环境变量）
+rules:
+  - match: { ports: [10132] }       # 给它自己留的触发端口
+    action: wake-nas
+```
+- 发送：`wakeonlan -p 10132 <这台 sol 的 MAC>`（任何标准 WOL 工具都行，无需内容区）
+- 效果：sol 日志 `msg="wol packet sent" action=wake-nas mac=... broadcast=192.168.1.255 port=9 secure_on=false copies=3 bytes=102`；目标机器被唤醒。
+- 变体：让它由**别的**动作顺带触发 —— 写在 `sequence` 的 `steps` 里（例如"收到包 → 先唤醒 NAS → 再降权跑备份"），或由远端命令 / `POST /v1/actions/wake-nas` 手动触发；护栏（cooldown / 令牌桶 / dry-run）与其它动作共用。
+- 注意：目标地址若要求 SecureOn，密码必须与目标一致，否则对方收到包但不认（见 §19.13 冒烟的第二、三条：无密码的发送方在目标侧记 `non-matching`）。
+
 ---
 
 ## 15. 发送端配方
@@ -854,6 +877,7 @@ s.sendto(payload, ("192.168.1.255", 8))    # 只改端口即可切换动作
 - 内容区上限受读缓冲约束（`BufferSize=2048` 减去魔法包部分），足够常规 token 使用。
 - 内容 token 本期是明文、无认证。破坏性动作（关机/重启）建议**同时**配 `src_cidrs` 白名单；更强的包级认证（HMAC）列为后续项。
 - 路由器固件 / 手机 WOL App 一般只能发 102 字节纯包，因此它们只能命中 `content: { kind: none }` 的默认规则。
+- 不想写脚本也有个现成选项：让**另一台 sol** 去发（`type: wol.send`，§19.13）——它支持子网广播 / 单播、`repeat`、SecureOn，并且能把"发唤醒包"串进 `sequence` 或远端命令；上面的 Python 脚本等价于它在做的事。
 
 ---
 
@@ -1252,7 +1276,7 @@ P4  自定义命令 + HTTP
       + 远端命令通道（白名单 id + 参数校验 + HMAC，§21）✅（§19.7）
       + sequence 顺序组合 ✅（§19.10）
       + 原始命令（裸 shell，默认关闭，§21.6）⏳ 未做
-      + 预留 wol.send ⏳ 未做
+      + wol.send（唤醒别的机器）✅（§19.13）
 ```
 
 ### 19.1 P1 已落地（实现对照）
@@ -1298,7 +1322,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - YAML（`gopkg.in/yaml.v3`）+ `KnownFields(true)` **严格解码**：未知字段直接报错，不静默忽略。为此在 `.golangci.yml` 的 depguard 允许列表加了 `gopkg.in`（原本只允许 std / github.com / golang.org / google.golang.org）。
 - `version: 1` 校验，其它值 -> `ErrUnsupportedVersion`。
 - 发现顺序：`--config` > `$SOL_CONFIG` > `/etc/sol/sol.yaml` > `~/.config/sol/sol.yaml`；都不存在则用内置默认（此时无规则，CLI 报 `no rules configured`）。
-- `${VAR}` / `$VAR` 插值：引用了未设置的变量直接报错（避免凭据静默变空）。
+- `${VAR}` / `$VAR` 插值：引用了未设置的变量直接报错（避免凭据静默变空）。插值是**逐行**做的并且跳过 YAML 注释——注释里写 `${SOME_VAR}` 不会变成必填（否则把 `secure_on: "${X}"` 注释掉就没法启动，README 示例自己就会打挂）；`#` 在引号内不算注释；块标量（`|` / `>`）的正文整段都算数据，其中的 `#` 行也照常插值。
 - 环境变量覆盖（在文件之后、CLI flag 之前）：`SOL_DRY_RUN`、`SOL_ALLOW_RESERVED_PORT_ACTIONS`、`SOL_INTERFACES`（逗号分隔）、`SOL_SECURE_ON`、`SOL_LOG_LEVEL`、`SOL_LOG_FORMAT`。
 - 规则来源：`server.rules`（规范写法）与顶层 `rules` 等价，二者同现 -> `ErrRulesConflict`。
 - `server.interfaces`：字符串简写或块 `{name, dry_run?, rules?}`；块内规则在加载期展开为 `MACSelector{Kind: interface, Ifaces: [块名]}`（即 §17.8/17.9 的"等价写法"），块级 `dry_run` 落成 `Rule.DryRun`——命中仍打印 action，但打 `DRY-RUN` 不执行。
@@ -1460,6 +1484,22 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - `rate_limit: fast` -> `invalid security.rate_limit: "fast": want a positive number, e.g. 10/s, 600/m or 3600/h`；只写 `rate_burst: 5` -> `invalid security.rate_limit: security.rate_burst is set without a security.rate_limit`（均 exit 1）。
 - 单测：`internal/app/ratelimit_internal_test.go`（注入时钟：突发、按 rate 回补、补满不超容量、`0.5/s` 的下限、`matches` 语义、8×50 并发下"冻结时钟只发出桶内令牌数"）+ `internal/config/ratelimit_internal_test.go`（8 种合法写法 + 7 种拒绝写法）。app 覆盖率 93.4%。
 
+### 19.13 wol.send（反向：唤醒别的机器）
+
+- 动机：sol 已经能"被唤醒后关机 / 重启 / 跑命令 / 发 webhook"，缺的最后一环是**主动唤醒**：一台 sol 收到包后去唤醒另一台机器（NAS、工位机、同网段从机），或由远端命令通道 / 手动触发唤醒。
+- 配置：`actions[].type: wol.send` 必填 `mac`（6 字节），可选 `broadcast`（默认 `255.255.255.255`；也可写子网广播 `192.168.0.255` 或单播地址，便于定向与测试）、`port`（默认 9；**出站不受保留端口限制**）、`secure_on`（6 字节，附在魔法包之后）、`repeat`（1..10，默认 1）、`interval`（默认 100ms，上限 10s）。默认值在**加载期**就填好，执行器不做猜测。
+- 与接收端互为逆函数：新增 `wol.EncodeMagicPacket(mac, secureOn)`，与 `wol.ParsePacket` 配对，单测做往返校验（自己发的包必须自己认），发送侧与解析侧不会各自漂移。
+- 安全：目标 MAC 只来自**配置**，不从触发包插值 —— 否则一个未认证的广播就能决定"去唤醒谁"。动作本身走既有护栏（cooldown / 令牌桶 / dry-run / 审计日志），"谁能触发唤醒"沿用同一套认证与来源限制。
+- 广播发送：Linux 对发往广播地址的数据报要求 `SO_BROADCAST`，普通 dial 不带该选项会直接 `EACCES`（实测：裸 socket 发 255.255.255.255 → `[Errno 13] Permission denied`；设了选项即成功）。因此 `internal/infra/wolsend/broadcast_unix.go` 在 dial 之后用 `SyscallConn().Control` + `setsockopt(SO_BROADCAST)` 补上，非 unix 平台空实现。否则默认目标会在**运行期**失败而不是启动期。
+- 实现：`internal/domain/wol/wol.go`（`EncodeMagicPacket` + `SendDefaultInterval`/`SendMaxRepeat`/`SendMaxInterval`/`ErrMACLength`）、`internal/infra/wolsend/{executor.go,broadcast_unix.go,broadcast_other.go}`、`internal/config/load.go`（`buildSendDef` + `parseSendMAC`/`parseSendBroadcast`/`parseSendPort`/`parseSendRepeat`/`parseSendInterval`；`ErrSendMAC`/`ErrSendBroadcast`/`ErrSendPort`/`ErrSendRepeat`/`ErrSendInterval`）、`deps.Builder.Sender()` 注册进 registry，`validateActions` 改用 `actionValidator` 表（新类型 = 一行）。
+- 顺带修掉的既有漏洞：把"哪些参数属于哪种动作类型"重构成一张表（`paramGroups` / `allowedParams` / `rejectForeignParams`）。此前 `timeout` 写在 sequence 上会被**静默忽略**，现在启动即报 `ErrActionParams`。
+- 单测：域层往返（普通 / 带 SecureOn / 长度错）；执行器（真实 127.0.0.1 UDP 收包：包能被自己解析、SecureOn 正确与错误密码、`repeat: 3` 且最后一发不留尾等待、ctx 取消立即返回、dial 注入缝、`Validate` 10 种拒绝）；配置（默认值 / 显式值 / `${ENV}` 里的密码 / 12 种拒绝）。
+- 冒烟（真机，同机跑两个 sol 实例 —— 等价于"唤醒别人"，且完全可观测）：
+  - A（waker，规则端口 10132 → `wol.send` 到 `127.0.0.1:10131`，`repeat: 3`）收到 1 个包 → 日志 `msg="wol packet sent" action=wake-target mac=58:11:22:bc:78:66 broadcast=127.0.0.1 port=10131 secure_on=false copies=3 bytes=102`；B（wakee，监听 10131，`interfaces: [enp6s0]`，规则 → noop）匹配 **3** 次，`/v1/status` 显示 `actions.noop=3`、`matched=3`。
+  - B 配 `security.secure_on: "s3cret"` 后：不带密码的 A → B **0 命中 / 3 条 non-matching**；换带 `secure_on: "s3cret"` 的 A（`repeat: 2`，`bytes=108`）→ B 命中 2 次。
+  - 默认目标：`broadcast=255.255.255.255 port=9`、102 字节，发送成功且无 `action failed`（即 `SO_BROADCAST` 生效）。
+  - `mac: "not-a-mac"` → `invalid wol.send mac: "not-a-mac"`；`repeat: 20` → `invalid wol.send repeat: 20 (1..10)`（均 exit 1）。
+
 ---
 
 ## 20. 安全模型总览（汇总）
@@ -1467,8 +1507,10 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 分层信任（风险从低到高）：
 
 ```
-noop/记日志  <  power.sleep/lock  <  power.shutdown/reboot  <  exec 自定义命令  <  HTTP 出站/控制面  <  远端原始命令(裸 shell, 默认关闭)
+noop/记日志  <  wol.send 唤醒别处  <  power.sleep/lock  <  power.shutdown/reboot  <  exec 自定义命令  <  HTTP 出站/控制面  <  远端原始命令(裸 shell, 默认关闭)
 ```
+
+（`wol.send` 排在这里是因为它对本机只是"发包"，破坏性最小；它的风险是**对别人**：一个未认证的广播就能让某台机器开机。因此目标 MAC 只来自配置、不插值，并沿用同一套 cooldown / 限流 / dry-run / 审计。）
 
 要点：
 

@@ -208,7 +208,7 @@ func TestSchemaEnumsMatchTheDomain(t *testing.T) {
 			values: []string{
 				string(wol.ActionTypeNoop), string(wol.ActionTypeSleep), string(wol.ActionTypeShutdown),
 				string(wol.ActionTypeReboot), string(wol.ActionTypeExec), string(wol.ActionTypeHTTP),
-				string(wol.ActionTypeSequence),
+				string(wol.ActionTypeSequence), string(wol.ActionTypeSend),
 			},
 		},
 		{

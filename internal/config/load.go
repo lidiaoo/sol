@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,11 @@ var (
 	ErrActionNameRequired    = errors.New("actions[] entry requires a name")
 	ErrPerInterfaceSecureOn  = errors.New("per-interface secure_on is not implemented yet")
 	ErrExecCommandRequired   = errors.New("exec action requires command")
+	ErrSendMAC               = errors.New("invalid wol.send mac")
+	ErrSendBroadcast         = errors.New("invalid wol.send broadcast address")
+	ErrSendPort              = errors.New("invalid wol.send port")
+	ErrSendRepeat            = errors.New("invalid wol.send repeat")
+	ErrSendInterval          = errors.New("invalid wol.send interval")
 	ErrExecTimeout           = errors.New("invalid exec timeout")
 	ErrActionParams          = errors.New("action parameters do not match its type")
 	ErrHTTPListen            = errors.New("invalid server.http.listen address")
@@ -156,8 +162,15 @@ func resolvePath(path string) string {
 }
 
 // minWatch keeps the poll interval sane: watching a config file must stay cheaper than the
-// reload it triggers.
+// work it saves.
 const minWatch = time.Second
+
+const (
+	// maxSendPort is the highest usable UDP port.
+	maxSendPort = 65535
+	// sendDefaultBroadcast is the limited broadcast address used when wol.send sets none.
+	sendDefaultBroadcast = "255.255.255.255"
+)
 
 // parseWatch reads server.watch. Empty and "0" disable watching; anything below minWatch is
 // rejected, so a typo ("50" meaning 50ms?) fails the start-up instead of polling hot.
@@ -187,27 +200,114 @@ func defaults() *Config {
 	return &Config{Actions: wol.BuiltinActions()}
 }
 
-// expandEnv substitutes $VAR and ${VAR} using the process environment and fails
-// loudly when a referenced variable is missing.
+// expandEnv substitutes $VAR and ${VAR} using the process environment and fails loudly when a
+// referenced variable is missing.
+//
+// Substitution is per line and skips YAML comments, because a commented-out line must never be
+// able to make a variable required (the README example alone would fail to load otherwise).
+// Block scalar bodies (| and >) are data even when a line in them looks like a comment, so they
+// are expanded as a whole.
 func expandEnv(text string) (string, error) {
-	var missing []string
+	var (
+		missing []string
+		out     strings.Builder
+		block   int // indentation of the block scalar whose body we are inside, -1 when outside
+	)
 
-	expanded := os.Expand(text, func(key string) string {
-		value, ok := os.LookupEnv(key)
-		if !ok {
-			missing = append(missing, key)
+	block = -1
 
-			return ""
-		}
+	for line := range strings.Lines(text) {
+		plain := plainData(line, block)
+		block = plain.block
 
-		return value
-	})
+		out.WriteString(os.Expand(plain.data, func(key string) string {
+			value, ok := os.LookupEnv(key)
+			if !ok {
+				missing = append(missing, key)
+
+				return ""
+			}
+
+			return value
+		}))
+		out.WriteString(plain.comment)
+	}
 
 	if len(missing) > 0 {
 		return "", fmt.Errorf("%w: %s", ErrMissingEnvVar, strings.Join(missing, ", "))
 	}
 
-	return expanded, nil
+	return out.String(), nil
+}
+
+// lineParts is a YAML line split into the part that carries data (and is therefore subject to
+// substitution) and the comment that must be left alone.
+type lineParts struct {
+	data    string
+	comment string
+	block   int // indentation of the block scalar the next line belongs to, -1 when outside
+}
+
+// plainData decides which part of a line is data. A '#' opens a comment at the start of a line
+// or after whitespace, unless it sits inside a quoted scalar; inside a block scalar every line
+// is data.
+func plainData(line string, block int) lineParts {
+	indent := len(line) - len(strings.TrimLeft(line, " 	"))
+
+	if block >= 0 {
+		// Inside a block scalar: only a non-blank line that is not indented deeper than the
+		// header ends it.
+		if strings.TrimSpace(line) == "" || indent > block {
+			return lineParts{data: line, block: block}
+		}
+	}
+
+	data, comment := cutComment(line)
+
+	return lineParts{data: data, comment: comment, block: blockAfter(data, indent)}
+}
+
+// cutComment splits a line at the '#' that starts a YAML comment.
+func cutComment(line string) (string, string) {
+	var quote byte
+
+	for i := range len(line) {
+		ch := line[i]
+
+		switch {
+		case quote != 0:
+			if ch == quote {
+				quote = 0
+			}
+		case ch == '\'' || ch == '"':
+			quote = ch
+		case ch == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '	'):
+			return line[:i], line[i:]
+		}
+	}
+
+	return line, ""
+}
+
+// blockAfter reports the indentation of the block scalar that starts on this line, or -1.
+func blockAfter(data string, indent int) int {
+	trimmed := strings.TrimRight(strings.TrimSpace(data), " 	")
+	if trimmed == "" || trimmed[0] == '#' {
+		return -1
+	}
+
+	// A block scalar header ends with '|' or '>' plus optional chomping/indent indicators.
+	_, header, ok := strings.Cut(strings.TrimSpace(data), ":")
+	if !ok {
+		return -1
+	}
+
+	header = strings.TrimSpace(header)
+	if strings.HasPrefix(header, "|") || strings.HasPrefix(header, ">") {
+		return indent
+	}
+
+	return -1
 }
 
 func applyEnv(cfg *Config) error {
@@ -386,64 +486,207 @@ func buildActions(entries []actionConfig) (map[wol.Action]wol.ActionDef, error) 
 func buildActionDef(entry actionConfig, actionType wol.ActionType) (wol.ActionDef, error) {
 	def := wol.ActionDef{Name: wol.Action(entry.Name), Type: actionType}
 
+	if err := rejectForeignParams(entry, actionType); err != nil {
+		return wol.ActionDef{}, err
+	}
+
 	switch actionType {
 	case wol.ActionTypeExec:
-		if hasHTTPParams(entry) {
-			return wol.ActionDef{}, fmt.Errorf("%w: http parameters on an exec action", ErrActionParams)
-		}
-
 		return buildExecDef(entry, def)
 	case wol.ActionTypeHTTP:
-		if hasActorParams(entry) {
-			return wol.ActionDef{}, fmt.Errorf("%w: exec parameters on an http action", ErrActionParams)
-		}
-
 		return buildHTTPDef(entry, def)
 	case wol.ActionTypeSequence:
-		if err := checkSequenceParams(entry); err != nil {
-			return wol.ActionDef{}, err
-		}
-
 		return buildSequenceDef(entry, def)
+	case wol.ActionTypeSend:
+		return buildSendDef(entry, def)
 	case wol.ActionTypeNoop, wol.ActionTypeSleep, wol.ActionTypeShutdown, wol.ActionTypeReboot:
-		if err := checkBuiltinParams(entry, actionType); err != nil {
-			return wol.ActionDef{}, err
-		}
-
 		return def, nil
 	}
 
 	return def, nil
 }
 
-// checkSequenceParams rejects the action parameters that belong to other types.
-func checkSequenceParams(entry actionConfig) error {
-	if hasActorParams(entry) {
-		return fmt.Errorf("%w: exec parameters on a sequence action", ErrActionParams)
+// paramGroups is which parameter groups an action entry carries, and which ones its type may
+// carry. Keeping both in one place means a new type cannot silently swallow another type's
+// fields (§19.4/§19.13), and a stray "timeout" on a sequence is caught instead of ignored.
+type paramGroups struct {
+	exec    bool
+	http    bool
+	steps   bool
+	send    bool
+	timeout bool
+}
+
+// groups reports the parameter groups an entry carries. Timeout is tracked on its own because
+// exec and http share it.
+func (entry actionConfig) groups() paramGroups {
+	return paramGroups{
+		exec:    hasActorParams(entry),
+		http:    hasHTTPParams(entry),
+		steps:   len(entry.Steps) > 0,
+		send:    hasSendParams(entry),
+		timeout: entry.Timeout != "",
+	}
+}
+
+// allowedParams reports the parameter groups an action type may carry.
+func allowedParams(actionType wol.ActionType) paramGroups {
+	switch actionType {
+	case wol.ActionTypeExec:
+		return paramGroups{exec: true, timeout: true}
+	case wol.ActionTypeHTTP:
+		return paramGroups{http: true, timeout: true}
+	case wol.ActionTypeSequence:
+		return paramGroups{steps: true}
+	case wol.ActionTypeSend:
+		return paramGroups{send: true}
+	case wol.ActionTypeNoop, wol.ActionTypeSleep, wol.ActionTypeShutdown, wol.ActionTypeReboot:
+		// The built-in power actions take no parameters at all.
+		return paramGroups{}
 	}
 
-	if hasHTTPParams(entry) {
-		return fmt.Errorf("%w: http parameters on a sequence action", ErrActionParams)
+	return paramGroups{}
+}
+
+// rejectForeignParams refuses the parameters that belong to another action type.
+func rejectForeignParams(entry actionConfig, actionType wol.ActionType) error {
+	present, allowed := entry.groups(), allowedParams(actionType)
+
+	for _, group := range []struct {
+		name    string
+		present bool
+		allowed bool
+	}{
+		{"exec", present.exec, allowed.exec},
+		{"http", present.http, allowed.http},
+		{"steps", present.steps, allowed.steps},
+		{"wol.send", present.send, allowed.send},
+		{"timeout", present.timeout, allowed.timeout},
+	} {
+		if group.present && !group.allowed {
+			return fmt.Errorf("%w: %s parameters on a %s action", ErrActionParams, group.name, actionType)
+		}
 	}
 
 	return nil
 }
 
-// checkBuiltinParams rejects any action parameter on a parameterless built-in action.
-func checkBuiltinParams(entry actionConfig, actionType wol.ActionType) error {
-	if hasExecParams(entry) {
-		return fmt.Errorf("%w: exec parameters on a %s action", ErrActionParams, actionType)
+// buildSendDef builds a wol.send action (§19.13): the target is fixed here, and the defaults
+// (limited broadcast, port 9, one copy, 100ms apart) are applied at load time so the executor
+// never has to guess.
+func buildSendDef(entry actionConfig, def wol.ActionDef) (wol.ActionDef, error) {
+	mac, err := parseSendMAC(entry.MAC)
+	if err != nil {
+		return wol.ActionDef{}, err
 	}
 
-	if hasHTTPParams(entry) {
-		return fmt.Errorf("%w: http parameters on a %s action", ErrActionParams, actionType)
+	broadcast, err := parseSendBroadcast(entry.Broadcast)
+	if err != nil {
+		return wol.ActionDef{}, err
 	}
 
-	if len(entry.Steps) > 0 {
-		return fmt.Errorf("%w: steps on a %s action", ErrActionParams, actionType)
+	port, err := parseSendPort(entry.Port)
+	if err != nil {
+		return wol.ActionDef{}, err
 	}
 
-	return nil
+	repeat, err := parseSendRepeat(entry.Repeat)
+	if err != nil {
+		return wol.ActionDef{}, err
+	}
+
+	interval, err := parseSendInterval(entry.Interval)
+	if err != nil {
+		return wol.ActionDef{}, err
+	}
+
+	if len(entry.SecureOn) != 0 && len(entry.SecureOn) != wol.SecureOnSize {
+		return wol.ActionDef{}, fmt.Errorf("%w: got %d bytes", wol.ErrSecureOnLength, len(entry.SecureOn))
+	}
+
+	def.Send = &wol.SendParams{
+		MAC:       mac,
+		Broadcast: broadcast,
+		Port:      port,
+		SecureOn:  secureOnBytes(entry.SecureOn),
+		Repeat:    repeat,
+		Interval:  interval,
+	}
+
+	return def, nil
+}
+
+// parseSendMAC reads the target MAC of a wol.send action.
+func parseSendMAC(value string) (net.HardwareAddr, error) {
+	mac, err := net.ParseMAC(value)
+	if err != nil || len(mac) != wol.MACSize {
+		return nil, fmt.Errorf("%w: %q", ErrSendMAC, value)
+	}
+
+	return mac, nil
+}
+
+// parseSendBroadcast reads the destination; empty means the limited broadcast.
+func parseSendBroadcast(value string) (string, error) {
+	if value == "" {
+		return sendDefaultBroadcast, nil
+	}
+
+	if _, err := netip.ParseAddr(value); err != nil {
+		return "", fmt.Errorf("%w: %q", ErrSendBroadcast, value)
+	}
+
+	return value, nil
+}
+
+// parseSendPort reads the destination port; zero means the WOL default.
+func parseSendPort(value int) (int, error) {
+	if value == 0 {
+		return wol.PortDefault, nil
+	}
+
+	if value < 1 || value > maxSendPort {
+		return 0, fmt.Errorf("%w: %d", ErrSendPort, value)
+	}
+
+	return value, nil
+}
+
+// parseSendRepeat reads the copy count; zero means one.
+func parseSendRepeat(value int) (int, error) {
+	if value == 0 {
+		return 1, nil
+	}
+
+	if value < 1 || value > wol.SendMaxRepeat {
+		return 0, fmt.Errorf("%w: %d (1..%d)", ErrSendRepeat, value, wol.SendMaxRepeat)
+	}
+
+	return value, nil
+}
+
+// parseSendInterval reads a wol.send interval; empty means the default gap.
+func parseSendInterval(value string) (time.Duration, error) {
+	if value == "" {
+		return wol.SendDefaultInterval, nil
+	}
+
+	interval, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %q: %w", ErrSendInterval, value, err)
+	}
+
+	if interval < 0 || interval > wol.SendMaxInterval {
+		return 0, fmt.Errorf("%w: %s (0..%s)", ErrSendInterval, interval, wol.SendMaxInterval)
+	}
+
+	return interval, nil
+}
+
+// hasSendParams reports the wol.send parameters of an entry.
+func hasSendParams(entry actionConfig) bool {
+	return entry.MAC != "" || entry.Broadcast != "" || entry.Port != 0 ||
+		entry.SecureOn != "" || entry.Repeat != 0 || entry.Interval != ""
 }
 
 // buildSequenceDef builds an ordered action list (§18); the steps are validated
@@ -513,11 +756,6 @@ func buildExecDef(entry actionConfig, def wol.ActionDef) (wol.ActionDef, error) 
 	}
 
 	return def, nil
-}
-
-func hasExecParams(entry actionConfig) bool {
-	return len(entry.Command) > 0 || entry.Timeout != "" || entry.Workdir != "" ||
-		len(entry.Env) > 0 || entry.Shell || entry.User != "" || entry.Group != ""
 }
 
 // hasActorParams reports the exec-only parameters of an entry whose timeout is shared
@@ -982,7 +1220,7 @@ func readSecretFile(name string, label string) (string, error) {
 func parseActionType(value string) (wol.ActionType, error) {
 	switch wol.ActionType(value) {
 	case wol.ActionTypeNoop, wol.ActionTypeShutdown, wol.ActionTypeReboot, wol.ActionTypeSleep,
-		wol.ActionTypeExec, wol.ActionTypeHTTP, wol.ActionTypeSequence:
+		wol.ActionTypeExec, wol.ActionTypeHTTP, wol.ActionTypeSequence, wol.ActionTypeSend:
 		return wol.ActionType(value), nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrUnknownActionType, value)

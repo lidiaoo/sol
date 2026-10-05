@@ -150,21 +150,27 @@ type argConfig struct {
 }
 
 type actionConfig struct {
-	Name    string            `yaml:"name"`
-	Type    string            `yaml:"type"`
-	Command []string          `yaml:"command"`
-	Timeout string            `yaml:"timeout"`
-	Workdir string            `yaml:"workdir"`
-	Env     []string          `yaml:"env"`
-	User    string            `yaml:"user"`
-	Group   string            `yaml:"group"`
-	Shell   bool              `yaml:"shell"`
-	Method  string            `yaml:"method"`
-	URL     string            `yaml:"url"`
-	Headers map[string]string `yaml:"headers"`
-	Body    string            `yaml:"body"`
-	Retries int               `yaml:"retries"`
-	Steps   []string          `yaml:"steps"`
+	Name      string            `yaml:"name"`
+	Type      string            `yaml:"type"`
+	Command   []string          `yaml:"command"`
+	Timeout   string            `yaml:"timeout"`
+	Workdir   string            `yaml:"workdir"`
+	Env       []string          `yaml:"env"`
+	User      string            `yaml:"user"`
+	Group     string            `yaml:"group"`
+	Shell     bool              `yaml:"shell"`
+	Method    string            `yaml:"method"`
+	URL       string            `yaml:"url"`
+	Headers   map[string]string `yaml:"headers"`
+	Body      string            `yaml:"body"`
+	Retries   int               `yaml:"retries"`
+	Steps     []string          `yaml:"steps"`
+	MAC       string            `yaml:"mac"`
+	Broadcast string            `yaml:"broadcast"`
+	Port      int               `yaml:"port"`
+	SecureOn  string            `yaml:"secure_on"`
+	Repeat    int               `yaml:"repeat"`
+	Interval  string            `yaml:"interval"`
 }
 
 type ruleConfig struct {

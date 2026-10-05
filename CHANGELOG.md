@@ -46,8 +46,17 @@ tagged release.
   declared). A test compares it against the configuration structs and the domain constants, so
   a new field or a renamed value fails the build until the schema follows.
 - **Actions**: `noop`, `power.sleep`, `power.shutdown`, `power.reboot`, `exec` (argv, optional
-  `shell`, `timeout`, `workdir`, `env`, `security.exec_allowlist`) and `sequence` (ordered
-  steps, one action to the guards).
+  `shell`, `timeout`, `workdir`, `env`, `security.exec_allowlist`), `sequence` (ordered
+  steps, one action to the guards) and `wol.send` (wake another machine: `mac`, `broadcast`,
+  `port`, `secure_on`, `repeat`, `interval`).
+- **Outbound wake-ups (`wol.send`)**: send a magic packet to a fixed target — `mac` (the only
+  required parameter), `broadcast` (default `255.255.255.255`, a subnet broadcast or a unicast
+  address both work), `port` (default 9), `secure_on` (6 bytes, appended to the packet),
+  `repeat` (1..10) and `interval` (default 100ms, max 10s). Defaults are applied when the
+  configuration is loaded. The target MAC comes from the configuration only, never from the
+  triggering packet, and the action goes through the same cooldown / rate limit / dry-run /
+  audit path as every other one. Sending to a broadcast address needs `SO_BROADCAST`, which the
+  executor sets explicitly (a plain socket is refused with `EACCES`).
 - **`exec` privilege drop**: `user`/`group` (name or id) run the command as that account with
   that account's groups; requires root, and the drop is validated at start-up rather than
   silently skipped.
@@ -72,6 +81,14 @@ tagged release.
   `sol ifaces [--json]` to inspect the interface selection. A guarded action is logged, counted
   (`suppressed`, plus `rate_limited` for the bucket) and refused with 429 on the control plane.
 - **Sleep action** (`power.sleep`) and the `--default-action` flag.
+
+### Fixed
+
+- **A `${VAR}` inside a YAML comment no longer makes that variable required.** Environment
+  substitution ran over the raw file, so commenting out a line such as
+  `# secure_on: "${NAS_WOL_PASSWORD}"` made sol refuse to start. Substitution is now per line,
+  skips comments (a `#` inside a quoted scalar is still data) and treats block scalar bodies
+  (`|`, `>`) as data in full.
 
 ### Security
 

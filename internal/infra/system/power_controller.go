@@ -39,8 +39,8 @@ func (p *PowerController) Execute(ctx context.Context, def wol.ActionDef, _ wol.
 		return p.reboot(ctx)
 	case wol.ActionTypeSleep:
 		return p.sleep(ctx)
-	case wol.ActionTypeExec, wol.ActionTypeHTTP, wol.ActionTypeSequence:
-		// exec, http and sequence actions go to their own executors; reaching here
+	case wol.ActionTypeExec, wol.ActionTypeHTTP, wol.ActionTypeSequence, wol.ActionTypeSend:
+		// exec, http, send and sequence actions go to their own executors; reaching here
 		// means the registry miswired them.
 		return fmt.Errorf("%w: %s", ErrUnsupportedAction, def.Type)
 	default:
