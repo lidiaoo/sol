@@ -26,8 +26,14 @@ type fileConfig struct {
 	Version  int            `yaml:"version"`
 	Server   serverConfig   `yaml:"server"`
 	Security securityConfig `yaml:"security"`
+	Logging  loggingConfig  `yaml:"logging"`
 	Actions  []actionConfig `yaml:"actions"`
 	Rules    []ruleConfig   `yaml:"rules"`
+}
+
+type loggingConfig struct {
+	Level  string `yaml:"level"`
+	Format string `yaml:"format"`
 }
 
 type serverConfig struct {

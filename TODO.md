@@ -64,7 +64,7 @@
 
 - [x] 引入 YAML 库（`gopkg.in/yaml.v3`）+ 严格解码（未知字段报错）——顺带在 `.golangci.yml` 的 depguard 允许列表加 `gopkg.in`
 - [x] `--config` flag + 配置发现顺序：`--config` > `$SOL_CONFIG` > `/etc/sol/sol.yaml` > `~/.config/sol/sol.yaml`
-- [x] 优先级：默认 < 文件 < 环境变量（`SOL_DRY_RUN` / `SOL_ALLOW_RESERVED_PORT_ACTIONS` / `SOL_INTERFACES` / `SOL_SECURE_ON`）< flag
+- [x] 优先级：默认 < 文件 < 环境变量（`SOL_DRY_RUN` / `SOL_ALLOW_RESERVED_PORT_ACTIONS` / `SOL_INTERFACES` / `SOL_SECURE_ON` / `SOL_LOG_LEVEL` / `SOL_LOG_FORMAT`）< flag
 - [x] 环境变量插值 `${VAR}` / `$VAR`（未设置即报错）
 - [x] 全局规则 `server.rules` + 顶层 `rules` 简写（同现 -> `ErrRulesConflict`）
 - [x] `server.interfaces`：字符串简写 + 块 `{name, dry_run?, rules?}`
@@ -73,7 +73,7 @@
 - [x] `secure_on` 接线（全局；长度必须 6 字节 -> `ErrSecureOnLength`）
 - [x] 同名网卡 / 端口重复 / 歧义规则校验（`ErrDuplicateInterface` / `ErrDuplicatePort` / `ErrAmbiguousRule`）
 - [x] `actions` 段 + 命名动作引用（注册进 Registry；重名 -> `ErrDuplicateAction`）
-- [ ] `logging` 段：需要先把 `log` 换成 `slog`（`level` / `format`：text/json）
+- [x] `logging` 段（`level` / `format`：text/json）+ `log` -> `log/slog` 结构化日志迁移（`internal/infra/logging`）
 - [ ] 每网卡 `secure_on`：需要支持 per-rule secureOn 的包解析（现状是整 policy 一个）
 - [ ] 冲突检测 `ErrRuleConflict` / `ErrInterfaceScopeConflict`：跨作用域（全局 vs 块）冲突的显式报错
 - [ ] 热重载（可选，等价 SIGHUP）

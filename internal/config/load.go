@@ -33,6 +33,8 @@ const (
 	EnvAllowReservedPortActions = "SOL_ALLOW_RESERVED_PORT_ACTIONS"
 	EnvInterfaces               = "SOL_INTERFACES"
 	EnvSecureOn                 = "SOL_SECURE_ON"
+	EnvLogLevel                 = "SOL_LOG_LEVEL"
+	EnvLogFormat                = "SOL_LOG_FORMAT"
 )
 
 // DefaultPaths returns the configuration file locations checked in order.
@@ -172,6 +174,14 @@ func applyEnv(cfg *Config) error {
 		cfg.SecureOn = []byte(value)
 	}
 
+	if value, ok := os.LookupEnv(EnvLogLevel); ok {
+		cfg.Logging.Level = value
+	}
+
+	if value, ok := os.LookupEnv(EnvLogFormat); ok {
+		cfg.Logging.Format = value
+	}
+
 	return nil
 }
 
@@ -224,6 +234,7 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		ReservedPorts:        f.Security.ReservedPorts,
 		SecureOn:             secureOnBytes(f.Security.SecureOn),
 		Actions:              actions,
+		Logging:              Logging{Level: f.Logging.Level, Format: f.Logging.Format},
 		Rules:                append(global, scoped...),
 	}, nil
 }

@@ -335,3 +335,28 @@ func TestLoadExplicitPathMissing(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
 	require.Error(t, err)
 }
+
+func TestLoadLoggingSection(t *testing.T) {
+	path := writeConfig(t, "version: 1\nlogging:\n  level: debug\n  format: json\n")
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Equal(t, "debug", cfg.Logging.Level)
+	require.Equal(t, "json", cfg.Logging.Format)
+}
+
+func TestApplyEnvLoggingOverrides(t *testing.T) {
+	t.Setenv(EnvLogLevel, "error")
+	t.Setenv(EnvLogFormat, "json")
+
+	cfg, err := Load(writeConfig(t, "version: 1\nlogging:\n  level: info\n"))
+	require.NoError(t, err)
+	require.Equal(t, "error", cfg.Logging.Level)
+	require.Equal(t, "json", cfg.Logging.Format)
+}
+
+func TestLoadUnknownLoggingFieldIsRejected(t *testing.T) {
+	_, err := Load(writeConfig(t, "version: 1\nlogging:\n  level: info\n  colour: true\n"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "colour")
+}

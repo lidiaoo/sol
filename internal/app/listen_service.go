@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 
 	"github.com/bavix/sol/internal/domain/wol"
@@ -78,14 +78,23 @@ func (s *ListenService) Run(ctx context.Context) error {
 
 func (s *ListenService) logIfaces() {
 	for _, iface := range s.ifaces {
-		log.Printf("Using interface %q: IP=%s, MAC=%s", iface.Name, iface.IPv4(), iface.MAC)
+		slog.Info("using interface",
+			"name", iface.Name,
+			"ip", iface.IPv4().String(),
+			"mac", iface.MAC.String(),
+		)
 	}
 }
 
 func (s *ListenService) logRules() {
 	rules := s.policy.Rules()
 	for i, rule := range rules {
-		log.Printf("Rule %d: ports=%v action=%s", i+1, rule.Match.Ports, rule.Action)
+		slog.Info("rule",
+			"index", i+1,
+			"ports", rule.Match.Ports,
+			"action", string(rule.Action),
+			"dry_run", rule.DryRun,
+		)
 	}
 }
 
@@ -107,7 +116,7 @@ func (s *ListenService) createListeners() ([]PacketListener, error) {
 	}
 
 	for _, p := range ports {
-		log.Printf("Listening on 0.0.0.0:%d", p)
+		slog.Info("listening", "port", p)
 	}
 
 	return listeners, nil
@@ -147,7 +156,7 @@ func (s *ListenService) listenOnPort(ctx context.Context, listener PacketListene
 		}
 
 		if err != nil {
-			log.Printf("read error on port %d: %v", port, err)
+			slog.Warn("read error", "port", port, "error", err)
 
 			continue
 		}
@@ -172,7 +181,7 @@ func (s *ListenService) eventLoop(ctx context.Context, pktCh chan packet, errCh 
 				return
 			}
 
-			log.Printf("listener error: %v", err)
+			slog.Warn("listener error", "error", err)
 		case pkt := <-pktCh:
 			s.handlePacket(ctx, pkt)
 		}
@@ -188,23 +197,40 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 
 	decision, matched := s.policy.Resolve(ev)
 	if !matched {
-		log.Printf("Non-matching packet from %s, port=%d, len=%d", pkt.src, pkt.port, len(pkt.payload))
+		slog.Info("non-matching packet",
+			"src", addrString(pkt.src),
+			"port", pkt.port,
+			"length", len(pkt.payload),
+		)
 
 		return
 	}
 
 	logOnly := s.dryRun || decision.DryRun
 	trigger := ternary(logOnly, "DRY-RUN", string(decision.Action))
-	log.Printf("Magic packet match from %s, port=%d, action=%s - triggering %s",
-		pkt.src, pkt.port, decision.Action, trigger)
+
+	slog.Info("magic packet matched",
+		"src", addrString(pkt.src),
+		"port", pkt.port,
+		"action", string(decision.Action),
+		"trigger", trigger,
+	)
 
 	if logOnly {
 		return
 	}
 
 	if dispatchErr := s.registry.Dispatch(ctx, decision.Action, ev); dispatchErr != nil {
-		log.Printf("%s failed: %v", decision.Action, dispatchErr)
+		slog.Error("action failed", "action", string(decision.Action), "error", dispatchErr)
 	}
+}
+
+func addrString(addr *net.UDPAddr) string {
+	if addr == nil {
+		return ""
+	}
+
+	return addr.String()
 }
 
 func shouldStop(err error) bool {

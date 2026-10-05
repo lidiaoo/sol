@@ -18,6 +18,15 @@ type Config struct {
 	SecureOn []byte
 	// Actions are the known named actions; empty means the built-in set.
 	Actions map[wol.Action]wol.ActionDef
+	// Logging holds the raw logging settings; empty values mean the defaults.
+	Logging Logging
 	// Rules are the routing rules, already expanded from any interface blocks.
 	Rules []wol.Rule
+}
+
+// Logging holds the configured log level and format. Empty values mean the built-in
+// defaults (info / text); validation lives in internal/infra/logging.
+type Logging struct {
+	Level  string
+	Format string
 }

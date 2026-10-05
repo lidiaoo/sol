@@ -3,7 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -12,6 +12,7 @@ import (
 	"github.com/bavix/sol/internal/config"
 	"github.com/bavix/sol/internal/deps"
 	"github.com/bavix/sol/internal/domain/wol"
+	"github.com/bavix/sol/internal/infra/logging"
 )
 
 var errNoRules = errors.New("no rules configured: pass --port or set rules in the config file")
@@ -77,6 +78,11 @@ func buildConfig(command *cobra.Command) (*config.Config, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, err
+	}
+
+	// Install the configured logger before anything else logs.
+	if _, logErr := logging.Setup(cfg.Logging.Level, cfg.Logging.Format); logErr != nil {
+		return nil, logErr
 	}
 
 	if len(interfaceNames) > 0 {
@@ -158,7 +164,7 @@ func guardReservedPort(port int, action wol.Action, allow bool) wol.Action {
 		return action
 	}
 
-	log.Printf("WARNING: port %d is reserved for plain WOL packets; downgrading action %q to noop", port, action)
+	slog.Warn("reserved port downgraded to noop", "port", port, "action", string(action))
 
 	return wol.ActionNoop
 }
