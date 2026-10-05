@@ -19,29 +19,30 @@ import (
 )
 
 var (
-	ErrEnvValue             = errors.New("invalid environment override")
-	ErrMissingEnvVar        = errors.New("environment variable referenced by the config is not set")
-	ErrActionRequired       = errors.New("rule requires an action")
-	ErrInterfaceDryRun      = errors.New("dry_run on an interface block requires block-level rules")
-	ErrActionNameRequired   = errors.New("actions[] entry requires a name")
-	ErrPerInterfaceSecureOn = errors.New("per-interface secure_on is not implemented yet")
-	ErrExecCommandRequired  = errors.New("exec action requires command")
-	ErrExecTimeout          = errors.New("invalid exec timeout")
-	ErrActionParams         = errors.New("action parameters do not match its type")
-	ErrHTTPListen           = errors.New("invalid server.http.listen address")
-	ErrHTTPAuthType         = errors.New("unknown server.http.auth.type")
-	ErrHTTPSecret           = errors.New("cannot resolve the http auth secret")
-	ErrHTTPUser             = errors.New("server.http.auth.user is required for basic auth")
-	ErrHTTPTLS              = errors.New("invalid server.http.tls configuration")
-	ErrCooldown             = errors.New("invalid security.cooldown")
-	ErrRemoteCommandID      = errors.New("invalid remote command id")
-	ErrRemoteCommandType    = errors.New("unsupported remote command type")
-	ErrRemoteCommandDef     = errors.New("invalid remote command definition")
-	ErrRemoteArgSpec        = errors.New("invalid remote command argument spec")
-	ErrRemoteAuth           = errors.New("remote command authorization is required")
-	ErrRemotePorts          = errors.New("invalid security.remote_command_ports")
-	ErrRemotePort           = errors.New("remote command port must not be a reserved port")
-	ErrHTTPURLRequired      = errors.New("http action requires url")
+	ErrEnvValue              = errors.New("invalid environment override")
+	ErrMissingEnvVar         = errors.New("environment variable referenced by the config is not set")
+	ErrActionRequired        = errors.New("rule requires an action")
+	ErrInterfaceDryRun       = errors.New("dry_run on an interface block requires block-level rules")
+	ErrActionNameRequired    = errors.New("actions[] entry requires a name")
+	ErrPerInterfaceSecureOn  = errors.New("per-interface secure_on is not implemented yet")
+	ErrExecCommandRequired   = errors.New("exec action requires command")
+	ErrExecTimeout           = errors.New("invalid exec timeout")
+	ErrActionParams          = errors.New("action parameters do not match its type")
+	ErrHTTPListen            = errors.New("invalid server.http.listen address")
+	ErrHTTPAuthType          = errors.New("unknown server.http.auth.type")
+	ErrHTTPSecret            = errors.New("cannot resolve the http auth secret")
+	ErrHTTPUser              = errors.New("server.http.auth.user is required for basic auth")
+	ErrHTTPTLS               = errors.New("invalid server.http.tls configuration")
+	ErrCooldown              = errors.New("invalid security.cooldown")
+	ErrRemoteCommandID       = errors.New("invalid remote command id")
+	ErrRemoteCommandType     = errors.New("unsupported remote command type")
+	ErrRemoteCommandDef      = errors.New("invalid remote command definition")
+	ErrRemoteArgSpec         = errors.New("invalid remote command argument spec")
+	ErrRemoteAuth            = errors.New("remote command authorization is required")
+	ErrRemotePorts           = errors.New("invalid security.remote_command_ports")
+	ErrRemotePort            = errors.New("remote command port must not be a reserved port")
+	ErrSequenceStepsRequired = errors.New("sequence action requires steps")
+	ErrHTTPURLRequired       = errors.New("http action requires url")
 )
 
 const (
@@ -353,17 +354,72 @@ func buildActionDef(entry actionConfig, actionType wol.ActionType) (wol.ActionDe
 		}
 
 		return buildHTTPDef(entry, def)
-	case wol.ActionTypeNoop, wol.ActionTypeSleep, wol.ActionTypeShutdown, wol.ActionTypeReboot:
-		if hasExecParams(entry) {
-			return wol.ActionDef{}, fmt.Errorf("%w: exec parameters on a %s action", ErrActionParams, actionType)
+	case wol.ActionTypeSequence:
+		if err := checkSequenceParams(entry); err != nil {
+			return wol.ActionDef{}, err
 		}
 
-		if hasHTTPParams(entry) {
-			return wol.ActionDef{}, fmt.Errorf("%w: http parameters on a %s action", ErrActionParams, actionType)
+		return buildSequenceDef(entry, def)
+	case wol.ActionTypeNoop, wol.ActionTypeSleep, wol.ActionTypeShutdown, wol.ActionTypeReboot:
+		if err := checkBuiltinParams(entry, actionType); err != nil {
+			return wol.ActionDef{}, err
 		}
 
 		return def, nil
 	}
+
+	return def, nil
+}
+
+// checkSequenceParams rejects the action parameters that belong to other types.
+func checkSequenceParams(entry actionConfig) error {
+	if hasActorParams(entry) {
+		return fmt.Errorf("%w: exec parameters on a sequence action", ErrActionParams)
+	}
+
+	if hasHTTPParams(entry) {
+		return fmt.Errorf("%w: http parameters on a sequence action", ErrActionParams)
+	}
+
+	return nil
+}
+
+// checkBuiltinParams rejects any action parameter on a parameterless built-in action.
+func checkBuiltinParams(entry actionConfig, actionType wol.ActionType) error {
+	if hasExecParams(entry) {
+		return fmt.Errorf("%w: exec parameters on a %s action", ErrActionParams, actionType)
+	}
+
+	if hasHTTPParams(entry) {
+		return fmt.Errorf("%w: http parameters on a %s action", ErrActionParams, actionType)
+	}
+
+	if len(entry.Steps) > 0 {
+		return fmt.Errorf("%w: steps on a %s action", ErrActionParams, actionType)
+	}
+
+	return nil
+}
+
+// buildSequenceDef builds an ordered action list (§18); the steps are validated
+// against the registry at startup.
+func buildSequenceDef(entry actionConfig, def wol.ActionDef) (wol.ActionDef, error) {
+	if len(entry.Steps) == 0 {
+		return wol.ActionDef{}, ErrSequenceStepsRequired
+	}
+
+	steps := make([]wol.Action, 0, len(entry.Steps))
+
+	for _, step := range entry.Steps {
+		name := wol.Action(strings.TrimSpace(step))
+		if name == "" {
+			return wol.ActionDef{}, ErrSequenceStepsRequired
+		}
+
+		steps = append(steps, name)
+	}
+
+	def.Sequence = &wol.SequenceParams{Steps: steps}
 
 	return def, nil
 }
@@ -800,7 +856,7 @@ func readSecretFile(name string, label string) (string, error) {
 func parseActionType(value string) (wol.ActionType, error) {
 	switch wol.ActionType(value) {
 	case wol.ActionTypeNoop, wol.ActionTypeShutdown, wol.ActionTypeReboot, wol.ActionTypeSleep,
-		wol.ActionTypeExec, wol.ActionTypeHTTP:
+		wol.ActionTypeExec, wol.ActionTypeHTTP, wol.ActionTypeSequence:
 		return wol.ActionType(value), nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrUnknownActionType, value)

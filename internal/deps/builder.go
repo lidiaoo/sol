@@ -17,6 +17,7 @@ import (
 	"github.com/bavix/sol/internal/infra/httpapi"
 	"github.com/bavix/sol/internal/infra/network"
 	"github.com/bavix/sol/internal/infra/outbound"
+	"github.com/bavix/sol/internal/infra/sequence"
 	"github.com/bavix/sol/internal/infra/system"
 )
 
@@ -42,6 +43,10 @@ type Builder struct {
 
 	outboundOnce sync.Once
 	outbound     *outbound.Executor
+
+	// sequencer runs sequence steps through the registry; it is built with the registry
+	// itself because the two reference each other.
+	sequencer *sequence.Executor
 
 	listenOnce sync.Once
 	listen     *app.ListenService
@@ -96,6 +101,11 @@ func (b *Builder) Registry() *wol.Registry {
 		)
 		registry.Register(b.ExecExecutor(), wol.ActionTypeExec)
 		registry.Register(b.HTTPExecutor(), wol.ActionTypeHTTP)
+
+		// The sequence executor dispatches through this very registry, so it is built
+		// here instead of in a helper that would re-enter this sync.Once.
+		b.sequencer = sequence.NewExecutor(registry)
+		registry.Register(b.sequencer, wol.ActionTypeSequence)
 
 		// Named actions from the configuration (built-in names carry identical definitions).
 		for _, def := range b.cfg.Actions {
@@ -171,9 +181,6 @@ func (b *Builder) ReloadOptions() (app.ReloadOptions, error) {
 		RemoteKey:   b.cfg.Remote.HMACKey,
 	}, nil
 }
-
-// buildRuntime validates the configuration and assembles the rule set, the action
-// registry and the interfaces it resolves to.
 
 // cooldownWindows converts the per-action cooldown overrides into plain strings.
 func cooldownWindows(perAction map[wol.Action]time.Duration) map[string]time.Duration {
@@ -285,6 +292,13 @@ func (b *Builder) HTTPExecutor() *outbound.Executor {
 	return b.outbound
 }
 
+// SequenceExecutor returns the executor that runs sequence steps through the registry.
+func (b *Builder) SequenceExecutor() *sequence.Executor {
+	b.Registry()
+
+	return b.sequencer
+}
+
 // buildRuntime validates the configuration and assembles the rule set, the action
 // registry and the interfaces it resolves to.
 func (b *Builder) buildRuntime() (*wol.Registry, *wol.RoutingPolicy, []wol.IfaceInfo, error) {
@@ -334,6 +348,7 @@ func (b *Builder) reloadFunc() func(ctx context.Context) error {
 func (b *Builder) validateActions(registry *wol.Registry) error {
 	executor := b.ExecExecutor()
 	outboundExecutor := b.HTTPExecutor()
+	sequencer := b.SequenceExecutor()
 
 	for _, def := range registry.Actions() {
 		switch def.Type {
@@ -344,6 +359,10 @@ func (b *Builder) validateActions(registry *wol.Registry) error {
 		case wol.ActionTypeHTTP:
 			if err := outboundExecutor.Validate(def); err != nil {
 				return fmt.Errorf("http action %s: %w", def.Name, err)
+			}
+		case wol.ActionTypeSequence:
+			if err := sequencer.Validate(def); err != nil {
+				return fmt.Errorf("sequence action %s: %w", def.Name, err)
 			}
 		case wol.ActionTypeNoop, wol.ActionTypeSleep, wol.ActionTypeShutdown, wol.ActionTypeReboot:
 			// built-in power actions carry no parameters to validate

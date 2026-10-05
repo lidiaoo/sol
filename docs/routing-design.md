@@ -159,7 +159,7 @@ bavix/sol（本仓库）       ✅    ✅    ✅      简单    反向WoL       
         ActionTypeShutdown ActionType = "power.shutdown"
         ActionTypeReboot   ActionType = "power.reboot"
         ActionTypeSleep    ActionType = "power.sleep"   // 本期实现
-        // 预留（P4）：exec / http / wol.send / sequence
+        // 预留（P4 后续）：wol.send
     )
 
     type ActionDef struct {
@@ -236,7 +236,7 @@ rules:
     action: notify
 ```
 
-顺序组合（预留动作类型 `sequence`）：
+顺序组合（动作类型 `sequence`，已落地，见 §19.10）：
 
 ```yaml
 actions:
@@ -245,7 +245,7 @@ actions:
     steps: [power.shutdown, notify]
 ```
 
-阶段：`exec` / `sequence` 属 P4（见 [TODO.md](../TODO.md)），本期模型预留。
+阶段：`exec` / `http` / `sequence` 均已落地（§19.4 / §19.8 / §19.10），`wol.send` 仍预留。
 
 ---
 
@@ -733,7 +733,8 @@ security.dry_run            可选，默认 false
 security.reserved_ports     可选，默认 [7, 9]
 security.allow_reserved_port_actions  可选，默认 false
 actions[].name              动作名，唯一
-actions[].type              noop | power.shutdown | power.reboot | power.sleep | exec | http（sequence 见 P4）
+actions[].type              noop | power.shutdown | power.reboot | power.sleep | exec | http | sequence
+actions[].steps             sequence 用：按顺序执行的动作名列表（如 [power.shutdown, notify]；不能嵌套 sequence）
 actions[].command / timeout / workdir / env / shell   exec 用：argv 数组（非 shell）；shell: true 走 /bin/sh -c（逃生舱）
 actions[].user / group                                exec 用：降权到该用户/组（仅 unix；要求 sol 以 root 跑；附加组不继承 sol 自己的）
 actions[].method / url / headers / body / timeout / retries   http 出站动作用（§19.8）；url/headers/body 支持 {{.Action}} 等白名单插值
@@ -1401,6 +1402,17 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 冒烟（真机，规则端口 10061，控制面 `127.0.0.1:18084`，bearer）：① reload 前 10061 -> `mark-a`，生成 marker；② 文件改成 `mark-b`（端口集合不变）-> `POST /v1/reload` 200 `{"reloaded":true}` -> 10061 改为生成 `mark-b` marker；③ `kill -HUP` -> 日志 `reload signal received` + `configuration reloaded`，行为不变；④ 换成多一个端口的配置 -> 409 `restart required: ... [10061] -> [10061 10062]`，10061 仍按新规则触发、10062 没有被监听（无 marker）；⑤ 换成引用不存在动作的文件 -> 400 `unknown action reference: mark-typo`，老规则照旧；启动期只有 1 条 `listening`（端口集合始终是启动时那一套）。
 - 并发冒烟（`-race` 构建的二进制）：一边 60 次 reload（40 次成功 + 20 次因端口变更被拒），一边持续灌魔法包（期间 5813 条命中/执行日志），race detector **0 data race**。
 - 未做：端口 / 网卡集合变化后自动重绑（现在要求重启）、配置文件变更自动 reload（fsnotify/watch）、旧 policy 的平滑过渡（当前是换指针，旧对象等 GC）。
+
+### 19.10 P4 部分落地（`sequence` 顺序组合）
+
+- 配置：`actions[].type: sequence` + `actions[].steps: [动作名, ...]`（有序，写 `steps` 就必须是非空、非空白的名字列表，否则 `ErrSequenceStepsRequired`）。steps 可以引用内置动作（`noop`/`power.*`）、配置里的具名动作、远端命令动作 `remote:<id>`。
+- 执行器 `internal/infra/sequence.Executor`：持有 registry 引用，按顺序 `registry.Dispatch` 每个 step——**每个 step 走自己的执行器**，所以 exec 的 allowlist/降权、http 的 url_allowlist、remote 的签名校验全部照旧生效。
+- **失败策略：一趟跑完，不因失败中断**。`sequence` 是"通知 + 关机"这种彼此独立的组合，通知失败不该把关机一起吞掉；每个失败用 `errors.Join` 汇总，最终错误形如 `action seq-fail: step mark-fail: action mark-fail: exit status 1`，审计里每个 step 各一条 `sequence step finished`（带 `failed` 布尔）。
+- 启动期校验（fail fast）：steps 非空、每个 step 都能解析（否则 `ErrUnknownStep`）、**step 不能是另一个 sequence**（`ErrNestedSequence`——这一条同时排除了自引用和环，代价是不支持嵌套，收益是组合关系一眼可读完）。
+- 与 cooldown / dry-run / 指标的关系：`sequence` 在护栏眼里就是**一个动作**——冷却按组合名计算，抑制计数与 `sol_actions_total{action="seq-all"}` 也按组合名；实例或规则级 `dry-run` 命中时整个组合都不执行（不做"只跑前一半"）。
+- 语义细节：step 的 `{{.Action}}` 插值看到的是 **step 自己的动作名**（不是组合名）——实测 webhook 收到 `/seq/notify` 与 `{"action":"notify"}`。
+- 冒烟（真机，端口 10071 -> `seq-all`、10072 -> `seq-fail`，webhook 探针 `127.0.0.1:18091`）：① `seq-all = [mark-a, notify, mark-b]` 三个 step 按序执行，两个 marker 都生成、webhook 收到请求，日志三条 `sequence step finished ... failed=false`；② 30s 冷却内的第二个包被抑制（`action suppressed by cooldown action=seq-all`，说明冷却按组合名生效）；③ `seq-fail = [mark-fail, mark-a]`（第一步 `/usr/bin/false` 必失败）——第一步失败后第二步**照样执行**（生成 `sol-seq-a.marker`），日志 `failed=true` + `ERROR action failed ... step mark-fail: action mark-fail: exit status 1`；④ 启动期拒绝：`steps: [noop, mark-typo]` -> exit 1 `sequence action combo: unknown sequence step: mark-typo`；`steps: [inner, noop]`（inner 也是 sequence）-> exit 1 `sequence action outer: sequence steps may not be sequences: inner`。
+- 未做：嵌套 / 条件 / 并行 step、per-step 的 `continue_on_error` 开关（当前统一"不中断"）、step 级别的 dry-run 覆盖。
 
 ---
 

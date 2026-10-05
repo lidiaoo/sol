@@ -35,6 +35,7 @@ const (
 	ActionTypeReboot   ActionType = "power.reboot"
 	ActionTypeExec     ActionType = "exec"
 	ActionTypeHTTP     ActionType = "http"
+	ActionTypeSequence ActionType = "sequence"
 )
 
 // ExecParams describes a custom command action (type: exec).
@@ -71,6 +72,13 @@ type HTTPParams struct {
 	Retries int
 }
 
+// SequenceParams describes a sequence action: an ordered list of other actions.
+type SequenceParams struct {
+	// Steps are the actions to run, in order. Every step runs even when an earlier
+	// one fails (a broken notification must not block a shutdown).
+	Steps []Action
+}
+
 // ActionDef is a named action together with its type and parameters.
 type ActionDef struct {
 	Name Action
@@ -79,6 +87,8 @@ type ActionDef struct {
 	Exec *ExecParams
 	// HTTP carries the parameters of an outbound HTTP action.
 	HTTP *HTTPParams
+	// Sequence carries the steps of a sequence action.
+	Sequence *SequenceParams
 }
 
 // BuiltinActions returns the built-in action definitions.

@@ -233,7 +233,7 @@ func TestLoadActionErrors(t *testing.T) {
 			match: ErrDuplicateAction,
 		},
 		"unknown type": {
-			body:  "version: 1\nactions:\n  - { name: lock, type: sequence }\n",
+			body:  "version: 1\nactions:\n  - { name: lock, type: wol.send }\n",
 			match: ErrUnknownActionType,
 		},
 		"http action without url": {

@@ -157,6 +157,7 @@ type actionConfig struct {
 	Headers map[string]string `yaml:"headers"`
 	Body    string            `yaml:"body"`
 	Retries int               `yaml:"retries"`
+	Steps   []string          `yaml:"steps"`
 }
 
 type ruleConfig struct {
