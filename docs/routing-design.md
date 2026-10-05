@@ -737,7 +737,10 @@ actions[].type              noop | power.shutdown | power.reboot | power.sleep |
 actions[].command / timeout / workdir / env / shell   exec 用：argv 数组（非 shell）；shell: true 走 /bin/sh -c（逃生舱）；user/group 未实现
 security.exec_allowlist     可选，限 exec 的绝对路径命令只能落在这些目录下（§19.4）
 commands[].id / type / command / args        远端白名单命令（§21）
-server.http.{enabled,listen,auth,tls}        控制面（§18）
+server.http.{enabled,listen,auth,tls}        控制面（§18 / §19.5）：auth.type = bearer|basic|mtls（默认 bearer，无 none）
+server.http.auth.token_env / token_file      bearer 密钥来源（二选一；文件必须 600 权限）
+server.http.auth.user + password_env / password_file   basic 认证
+server.http.tls.{cert_file,key_file,client_ca_file}    TLS / mTLS（client_ca_file 用于 mtls）
 security.allow_remote_commands / allow_raw_shell / remote_command_ports / raw_shell_ports   远端命令（§21）
 rules[].match.ports         端口列表（留空 = 任意端口，一般不推荐）
 rules[].match.content       { kind: any|none|suffix|prefix, value | value_hex, offset }
@@ -1086,7 +1089,7 @@ server:
 - A. 控制面（入站，sol 当服务端）：起一个 HTTP server，对外提供状态查询、手动触发动作、热重载。对应 SR-G/sleep-on-lan 那套 REST API。
 - B. 出站动作（sol 当客户端）：规则命中后，动作类型 `http` 向某个 URL 发请求（webhook 通知/联动）。
 
-阶段：本期（第 1 阶段）都不做；模型已预留（动作注册表可加 `type=http`）。建议放在第 4 阶段，且**必须带认证**。
+阶段：A（控制面）已在 P4 部分落地（见 §19.5）：`/healthz`、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`POST /v1/actions/{name}`、`/metrics` 已实现，`POST /v1/reload` 返回 501（热重载未做）；`/v1/commands/{id}`、`/v1/exec` 随远端命令通道留到后续。B（出站动作）仍未做。
 
 ### 18.1 A. 控制面（入站 REST API）
 
@@ -1294,7 +1297,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 
 **未实现（本小节不装作已有）**：
 
-- `server.http`、`security.allow_remote_commands` / `allow_raw_shell` / `remote_command_ports` / `raw_shell_ports`、`commands` 段：留到 P4。
+- `security.allow_remote_commands` / `allow_raw_shell` / `remote_command_ports` / `raw_shell_ports`、`commands` 段：留到 P4 后续（HTTP 控制面本体见 §19.5）。
 - 每网卡 `secure_on`：解析到就报错（`ErrPerInterfaceSecureOn`），因为包解析目前是"整个 policy 一个 secure_on"。
 - 热重载、JSON Schema：未做。
 - `--default-action` 只作用于 `--port` 生成的规则；文件里的规则必须显式写 `action`（缺 `action` -> `ErrActionRequired`）。
@@ -1311,7 +1314,22 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 审计：执行前后 `slog` 记录动作名、argv、来源 IP、网卡、耗时、退出码与输出；非零退出/超时按错误上报。
 - dry-run：`security.dry_run` 或规则级 `dry_run` 命中时只记日志（`trigger=DRY-RUN`），不执行。
 - 冒烟（真机 enp6s0 + enp9s0f3u1，端口 10031）：按 allowlist 执行脚本，插值出 `mark=enp6s0 src=127.0.0.1 port=10031 mac=58:11:22:bc:78:66`，`env` 生效、审计行含 `exit_code=0`；allowlist 越界与命令不存在都在启动期 exit 1；dry-run 下目标文件不增长。
-- 未做（继续留 P4）：`user`/`group` 降权、cooldown / 速率限制、HTTP 控制面与出站动作、远端命令通道。
+- 未做（继续留 P4）：`user`/`group` 降权、cooldown / 速率限制、HTTP 出站动作、远端命令通道（控制面见 §19.5）。
+
+### 19.5 P4 部分落地（HTTP 控制面）
+
+- 包 `internal/infra/httpapi`：纯 `net/http`（Go 1.22+ 方法模式路由），无框架依赖；配置段 `server.http.{enabled,listen,auth,tls}`，默认 `listen: 127.0.0.1:8080`、默认 `auth.type: bearer`。
+- 已实现端点：`GET /healthz`（免认证，只回 `{"status":"ok"}`）、`GET /v1/status`（uptime、计数器、最近命中事件、网卡、规则数、dry_run、auth 类型）、`GET /v1/rules`（脱敏视图：ports / mac / content / src_cidrs / action / dry_run）、`GET /v1/interfaces`、`POST /v1/actions/{name}`（手动触发 -> 202，未知动作 -> 404）、`GET /metrics`（`sol_packets_total` / `sol_matched_total` / `sol_actions_total{action=...}` / `sol_rules` / `sol_uptime_seconds`）；`POST /v1/reload` 显式 501（热重载未做）。
+- 认证三选一，**没有 `none`**：`bearer`（`crypto/subtle` 常量时间比较）、`basic`（用户名在 YAML，口令走环境变量或 600 文件）、`mtls`（TLS 层 `RequireAndVerifyClientCert` + `client_ca_file`）；所有 `/v1/*` 与 `/metrics` 强制认证，401 带 `WWW-Authenticate`。
+- 密钥不落 YAML：只从 `*_env` 或 `*_file` 读；文件带 group/other 权限位直接启动报错（`ErrHTTPSecret`）。TLS 证书与客户端 CA 启动时加载，失败即失败。
+- 审计：认证拒绝、手动触发、触发失败、reload 请求都进 slog（带来源地址与动作名）。
+- 手动触发走 `ListenService.Dispatch`：实例处于 dry-run 时只记日志不执行；成功后计入 `sol_actions_total`。
+- 冒烟（真机，`127.0.0.1:18080`，token 来自环境变量）：`/healthz` 免认证 200；无 token / 错 token 401；带 token 的 `/v1/status` 显示 `packets=1 matched=1 last_event={port:10040, interface:enp6s0, action:noop}`；`/v1/rules` 回 `{ports:[10040], mac:self, content:none, action:noop}`；`POST /v1/actions/noop` -> 202，未知动作 -> 404，`/v1/reload` -> 501。
+- 未做（留后续）：热重载、`/v1/commands/{id}` 与 `/v1/exec`（随远端命令通道）、出站 `type: http` 动作、`/v1/status` 的版本号（需构建期注入）、mTLS 端到端冒烟。
+
+---
+
+## 20. 安全模型总览（汇总）
 
 分层信任（风险从低到高）：
 

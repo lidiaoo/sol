@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -355,6 +356,132 @@ func TestApplyEnvLoggingOverrides(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "error", cfg.Logging.Level)
 	require.Equal(t, "json", cfg.Logging.Format)
+}
+
+func TestLoadHTTPSection(t *testing.T) {
+	t.Setenv("SOL_TEST_TOKEN", "tok-from-env")
+
+	cfg, err := Load(writeConfig(t, `
+version: 1
+server:
+  http:
+    enabled: true
+    listen: 127.0.0.1:9090
+    auth: { type: bearer, token_env: SOL_TEST_TOKEN }
+rules:
+  - { match: { ports: [8] }, action: noop }
+`))
+
+	require.NoError(t, err)
+	require.True(t, cfg.HTTP.Enabled)
+	require.Equal(t, "127.0.0.1:9090", cfg.HTTP.Listen)
+	require.Equal(t, AuthTypeBearer, cfg.HTTP.AuthType)
+	require.Equal(t, "tok-from-env", cfg.HTTP.Token)
+}
+
+func TestLoadHTTPDisabledByDefault(t *testing.T) {
+	cfg, err := Load(writeConfig(t, "version: 1\nrules:\n  - { match: { ports: [8] }, action: noop }\n"))
+	require.NoError(t, err)
+	require.False(t, cfg.HTTP.Enabled)
+	require.Empty(t, cfg.HTTP.Token)
+}
+
+func TestLoadHTTPBasicAuth(t *testing.T) {
+	t.Setenv("SOL_TEST_PASSWORD", "pw")
+
+	cfg, err := Load(writeConfig(t, `
+version: 1
+server:
+  http:
+    enabled: true
+    listen: 0.0.0.0:8080
+    auth: { type: basic, user: sol, password_env: SOL_TEST_PASSWORD }
+rules:
+  - { match: { ports: [8] }, action: noop }
+`))
+
+	require.NoError(t, err)
+	require.Equal(t, AuthTypeBasic, cfg.HTTP.AuthType)
+	require.Equal(t, "sol", cfg.HTTP.User)
+	require.Equal(t, "pw", cfg.HTTP.Password)
+}
+
+func TestLoadHTTPSecretFilePermissions(t *testing.T) {
+	t.Setenv("SOL_TEST_TOKEN", "")
+
+	path := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(path, []byte("file-token\n"), 0o600))
+
+	body := `
+version: 1
+server:
+  http:
+    enabled: true
+    auth: { type: bearer, token_file: %s }
+rules:
+  - { match: { ports: [8] }, action: noop }
+`
+
+	cfg, err := Load(writeConfig(t, fmt.Sprintf(body, path)))
+	require.NoError(t, err)
+	require.Equal(t, "file-token", cfg.HTTP.Token)
+
+	require.NoError(t, os.Chmod(path, 0o644))
+
+	_, err = Load(writeConfig(t, fmt.Sprintf(body, path)))
+	require.ErrorIs(t, err, ErrHTTPSecret)
+}
+
+func TestLoadHTTPErrors(t *testing.T) {
+	configBody := func(httpBlock string) string {
+		return "version: 1\nserver:\n  http:\n" + httpBlock +
+			"rules:\n  - { match: { ports: [8] }, action: noop }\n"
+	}
+
+	tests := map[string]struct {
+		block string
+		match error
+	}{
+		"unknown auth type": {
+			block: "    enabled: true\n    auth: { type: none }\n",
+			match: ErrHTTPAuthType,
+		},
+		"bearer without secret": {
+			block: "    enabled: true\n    auth: { type: bearer }\n",
+			match: ErrHTTPSecret,
+		},
+		"env variable empty": {
+			block: "    enabled: true\n    auth: { type: bearer, token_env: SOL_DEFINITELY_UNSET }\n",
+			match: ErrHTTPSecret,
+		},
+		"env and file together": {
+			block: "    enabled: true\n    auth: { type: bearer, token_env: SOL_X, token_file: /tmp/x }\n",
+			match: ErrHTTPSecret,
+		},
+		"basic without user": {
+			block: "    enabled: true\n    auth: { type: basic, password_env: SOL_X }\n",
+			match: ErrHTTPUser,
+		},
+		"bad listen address": {
+			block: "    enabled: true\n    listen: 8080\n    auth: { type: bearer, token_env: SOL_X }\n",
+			match: ErrHTTPListen,
+		},
+		"mtls without client ca": {
+			block: "    enabled: true\n    auth: { type: mtls }\n",
+			match: ErrHTTPTLS,
+		},
+		"tls half configured": {
+			block: "    enabled: true\n    tls: { cert_file: /tmp/cert.pem }\n",
+			match: ErrHTTPTLS,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, configBody(tt.block)))
+			require.ErrorIs(t, err, tt.match)
+		})
+	}
 }
 
 func TestLoadUnknownLoggingFieldIsRejected(t *testing.T) {

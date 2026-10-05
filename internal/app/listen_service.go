@@ -5,7 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/bavix/sol/internal/domain/wol"
 )
@@ -35,12 +39,40 @@ type PacketListenerFactory interface {
 	Create(port int) (PacketListener, error)
 }
 
+// EventRecord describes the most recently matched packet.
+type EventRecord struct {
+	Time      time.Time
+	Src       string
+	Port      int
+	Interface string
+	TargetMAC string
+	Action    string
+	DryRun    bool
+}
+
+// Stats is a snapshot of the listener counters, used by the control plane.
+type Stats struct {
+	StartedAt time.Time
+	Packets   uint64
+	Matched   uint64
+	Actions   map[string]uint64
+	LastEvent *EventRecord
+}
+
 type ListenService struct {
 	factory  PacketListenerFactory
 	registry *wol.Registry
 	policy   *wol.RoutingPolicy
 	ifaces   []wol.IfaceInfo
 	dryRun   bool
+
+	startedAt time.Time
+	packets   atomic.Uint64
+	matched   atomic.Uint64
+
+	mu       sync.Mutex
+	actions  map[string]uint64
+	lastSeen *EventRecord
 }
 
 func NewListenService(
@@ -51,12 +83,58 @@ func NewListenService(
 	dryRun bool,
 ) *ListenService {
 	return &ListenService{
-		factory:  factory,
-		registry: registry,
-		policy:   policy,
-		ifaces:   ifaces,
-		dryRun:   dryRun,
+		factory:   factory,
+		registry:  registry,
+		policy:    policy,
+		ifaces:    ifaces,
+		dryRun:    dryRun,
+		startedAt: time.Now(),
+		actions:   make(map[string]uint64),
 	}
+}
+
+// Stats returns a snapshot of the counters for the control plane.
+func (s *ListenService) Stats() Stats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	actions := make(map[string]uint64, len(s.actions))
+	maps.Copy(actions, s.actions)
+
+	return Stats{
+		StartedAt: s.startedAt,
+		Packets:   s.packets.Load(),
+		Matched:   s.matched.Load(),
+		Actions:   actions,
+		LastEvent: s.lastSeen,
+	}
+}
+
+// Rules returns the loaded routing rules.
+func (s *ListenService) Rules() []wol.Rule {
+	return s.policy.Rules()
+}
+
+// Interfaces returns the interfaces this instance listens for.
+func (s *ListenService) Interfaces() []wol.IfaceInfo {
+	return s.ifaces
+}
+
+// Dispatch triggers a named action outside the packet path (control plane).
+func (s *ListenService) Dispatch(ctx context.Context, action wol.Action, ev wol.Event) error {
+	if s.dryRun {
+		slog.Warn("dry run: manual action not executed", "action", string(action))
+
+		return nil
+	}
+
+	if err := s.registry.Dispatch(ctx, action, ev); err != nil {
+		return err
+	}
+
+	s.recordAction(string(action))
+
+	return nil
 }
 
 func (s *ListenService) Run(ctx context.Context) error {
@@ -74,6 +152,20 @@ func (s *ListenService) Run(ctx context.Context) error {
 	s.eventLoop(ctx, pktCh, errCh)
 
 	return nil
+}
+
+func (s *ListenService) recordAction(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.actions[name]++
+}
+
+func (s *ListenService) recordEvent(rec EventRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.lastSeen = &rec
 }
 
 func (s *ListenService) logIfaces() {
@@ -189,6 +281,8 @@ func (s *ListenService) eventLoop(ctx context.Context, pktCh chan packet, errCh 
 }
 
 func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
+	s.packets.Add(1)
+
 	ev := wol.Event{Payload: pkt.payload, DstPort: pkt.port}
 	if pkt.src != nil {
 		ev.SrcIP = pkt.src.IP
@@ -206,8 +300,20 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 		return
 	}
 
+	s.matched.Add(1)
+
 	logOnly := s.dryRun || decision.DryRun
 	trigger := ternary(logOnly, "DRY-RUN", string(decision.Action))
+
+	s.recordEvent(EventRecord{
+		Time:      time.Now(),
+		Src:       addrString(pkt.src),
+		Port:      pkt.port,
+		Interface: decision.Interface,
+		TargetMAC: decision.TargetMAC.String(),
+		Action:    string(decision.Action),
+		DryRun:    logOnly,
+	})
 
 	slog.Info("magic packet matched",
 		"src", addrString(pkt.src),
@@ -228,7 +334,11 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 
 	if dispatchErr := s.registry.Dispatch(ctx, decision.Action, dispatchEv); dispatchErr != nil {
 		slog.Error("action failed", "action", string(decision.Action), "error", dispatchErr)
+
+		return
 	}
+
+	s.recordAction(string(decision.Action))
 }
 
 func addrString(addr *net.UDPAddr) string {

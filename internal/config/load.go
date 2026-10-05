@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,6 +28,18 @@ var (
 	ErrExecTimeout          = errors.New("invalid exec timeout")
 	ErrExecUserUnsupported  = errors.New("exec user/group privilege drop is not implemented yet")
 	ErrActionParams         = errors.New("action parameters do not match its type")
+	ErrHTTPListen           = errors.New("invalid server.http.listen address")
+	ErrHTTPAuthType         = errors.New("unknown server.http.auth.type")
+	ErrHTTPSecret           = errors.New("cannot resolve the http auth secret")
+	ErrHTTPUser             = errors.New("server.http.auth.user is required for basic auth")
+	ErrHTTPTLS              = errors.New("invalid server.http.tls configuration")
+)
+
+const (
+	authTypeBearer    = AuthTypeBearer
+	authTypeBasic     = AuthTypeBasic
+	authTypeMTLS      = AuthTypeMTLS
+	defaultHTTPListen = "127.0.0.1:8080"
 )
 
 // systemConfigPath is the system-wide configuration location.
@@ -233,6 +246,11 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		return nil, err
 	}
 
+	httpCfg, err := buildHTTP(f.Server.HTTP)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		InterfaceNames:       names,
 		DryRun:               f.Security.DryRun,
@@ -242,6 +260,7 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		ExecAllowlist:        f.Security.ExecAllowlist,
 		Actions:              actions,
 		Logging:              Logging{Level: f.Logging.Level, Format: f.Logging.Format},
+		HTTP:                 httpCfg,
 		Rules:                append(global, scoped...),
 	}, nil
 }
@@ -349,6 +368,117 @@ func parseTimeout(value string) (time.Duration, error) {
 	}
 
 	return timeout, nil
+}
+
+func buildHTTP(cfg httpConfig) (HTTP, error) {
+	httpCfg := HTTP{
+		Enabled:      cfg.Enabled,
+		Listen:       cfg.Listen,
+		AuthType:     cfg.Auth.Type,
+		User:         cfg.Auth.User,
+		CertFile:     cfg.TLS.CertFile,
+		KeyFile:      cfg.TLS.KeyFile,
+		ClientCAFile: cfg.TLS.ClientCAFile,
+	}
+
+	if (httpCfg.CertFile == "") != (httpCfg.KeyFile == "") {
+		return HTTP{}, fmt.Errorf("%w: cert_file and key_file must be set together", ErrHTTPTLS)
+	}
+
+	if !cfg.Enabled {
+		return httpCfg, nil
+	}
+
+	if httpCfg.Listen == "" {
+		httpCfg.Listen = defaultHTTPListen
+	}
+
+	if _, _, err := net.SplitHostPort(httpCfg.Listen); err != nil {
+		return HTTP{}, fmt.Errorf("%w: %q: %w", ErrHTTPListen, cfg.Listen, err)
+	}
+
+	if httpCfg.AuthType == "" {
+		httpCfg.AuthType = authTypeBearer
+	}
+
+	if err := resolveHTTPAuth(&httpCfg, cfg.Auth); err != nil {
+		return HTTP{}, err
+	}
+
+	return httpCfg, nil
+}
+
+func resolveHTTPAuth(out *HTTP, cfg authConfig) error {
+	switch out.AuthType {
+	case authTypeBearer:
+		token, err := resolveSecret(cfg.TokenEnv, cfg.TokenFile, "token")
+		if err != nil {
+			return err
+		}
+
+		out.Token = token
+	case authTypeBasic:
+		if cfg.User == "" {
+			return ErrHTTPUser
+		}
+
+		password, err := resolveSecret(cfg.PasswordEnv, cfg.PasswordFile, "password")
+		if err != nil {
+			return err
+		}
+
+		out.Password = password
+	case authTypeMTLS:
+		if out.ClientCAFile == "" {
+			return fmt.Errorf("%w: auth type mtls requires tls.client_ca_file", ErrHTTPTLS)
+		}
+	default:
+		return fmt.Errorf("%w: %q (bearer | basic | mtls)", ErrHTTPAuthType, out.AuthType)
+	}
+
+	return nil
+}
+
+// resolveSecret reads a secret from an environment variable or a 0600 file; never from YAML.
+func resolveSecret(envName string, fileName string, label string) (string, error) {
+	switch {
+	case envName != "" && fileName != "":
+		return "", fmt.Errorf("%w: %s: set the env variable or the file, not both", ErrHTTPSecret, label)
+	case envName != "":
+		value := os.Getenv(envName)
+		if value == "" {
+			return "", fmt.Errorf("%w: %s: environment variable %s is empty", ErrHTTPSecret, label, envName)
+		}
+
+		return value, nil
+	case fileName != "":
+		return readSecretFile(fileName, label)
+	default:
+		return "", fmt.Errorf("%w: %s: no environment variable or file configured", ErrHTTPSecret, label)
+	}
+}
+
+func readSecretFile(name string, label string) (string, error) {
+	info, err := os.Stat(name)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s: %w", ErrHTTPSecret, label, err)
+	}
+
+	if info.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("%w: %s: %s must not be group/other readable (chmod 600)", ErrHTTPSecret, label, name)
+	}
+
+	data, err := os.ReadFile(name)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s: %w", ErrHTTPSecret, label, err)
+	}
+
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return "", fmt.Errorf("%w: %s: %s is empty", ErrHTTPSecret, label, name)
+	}
+
+	return value, nil
 }
 
 func parseActionType(value string) (wol.ActionType, error) {

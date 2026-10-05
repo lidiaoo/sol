@@ -1,15 +1,27 @@
 package deps
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/bavix/sol/internal/app"
 	"github.com/bavix/sol/internal/config"
 	"github.com/bavix/sol/internal/domain/wol"
 	"github.com/bavix/sol/internal/infra/exec"
+	"github.com/bavix/sol/internal/infra/httpapi"
 	"github.com/bavix/sol/internal/infra/network"
 	"github.com/bavix/sol/internal/infra/system"
+)
+
+var (
+	errUnknownAuthType = errors.New("unknown http auth type")
+	errNoCertificates  = errors.New("http tls: no certificates found")
 )
 
 type Builder struct {
@@ -29,6 +41,10 @@ type Builder struct {
 
 	listenOnce sync.Once
 	listen     *app.ListenService
+
+	httpOnce   sync.Once
+	httpServer *httpapi.Server
+	httpErr    error
 }
 
 func NewBuilder(cfg *config.Config) *Builder {
@@ -127,6 +143,50 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 	return b.listen, buildErr
 }
 
+// BuildHTTPServer builds the optional control plane; it returns nil when disabled.
+func (b *Builder) BuildHTTPServer() (*httpapi.Server, error) {
+	b.httpOnce.Do(func() {
+		if !b.cfg.HTTP.Enabled {
+			return
+		}
+
+		auth, err := httpAuth(b.cfg.HTTP)
+		if err != nil {
+			b.httpErr = err
+
+			return
+		}
+
+		tlsConfig, err := httpTLS(b.cfg.HTTP)
+		if err != nil {
+			b.httpErr = err
+
+			return
+		}
+
+		listenSvc, err := b.BuildListenService()
+		if err != nil {
+			b.httpErr = err
+
+			return
+		}
+
+		b.httpServer = httpapi.New(
+			httpapi.Config{Listen: b.cfg.HTTP.Listen, Auth: auth, TLS: tlsConfig},
+			httpapi.Deps{
+				Status:     b.statusFunc(listenSvc),
+				Rules:      listenSvc.Rules,
+				Interfaces: listenSvc.Interfaces,
+				Dispatch: func(ctx context.Context, action wol.Action) error {
+					return listenSvc.Dispatch(ctx, action, wol.Event{})
+				},
+			},
+		)
+	})
+
+	return b.httpServer, b.httpErr
+}
+
 // validateExecActions statically checks every configured exec action at startup.
 func (b *Builder) validateExecActions(registry *wol.Registry) error {
 	executor := b.ExecExecutor()
@@ -142,4 +202,100 @@ func (b *Builder) validateExecActions(registry *wol.Registry) error {
 	}
 
 	return nil
+}
+
+func (b *Builder) statusFunc(svc *app.ListenService) func() httpapi.Status {
+	return func() httpapi.Status {
+		stats := svc.Stats()
+		uptime := time.Since(stats.StartedAt)
+
+		names := make([]string, 0, len(svc.Interfaces()))
+		for _, iface := range svc.Interfaces() {
+			names = append(names, iface.Name)
+		}
+
+		status := httpapi.Status{
+			Uptime:      uptime.Truncate(time.Second).String(),
+			UptimeSecs:  uptime.Seconds(),
+			Packets:     stats.Packets,
+			Matched:     stats.Matched,
+			Actions:     stats.Actions,
+			Rules:       len(svc.Rules()),
+			Interfaces:  names,
+			DryRun:      b.cfg.DryRun,
+			AuthType:    b.cfg.HTTP.AuthType,
+			HTTPAddress: b.cfg.HTTP.Listen,
+		}
+
+		if stats.LastEvent != nil {
+			status.LastEvent = &httpapi.Event{
+				Time:      stats.LastEvent.Time,
+				Src:       stats.LastEvent.Src,
+				Port:      stats.LastEvent.Port,
+				Interface: stats.LastEvent.Interface,
+				TargetMAC: stats.LastEvent.TargetMAC,
+				Action:    stats.LastEvent.Action,
+				DryRun:    stats.LastEvent.DryRun,
+			}
+		}
+
+		return status
+	}
+}
+
+func httpAuth(cfg config.HTTP) (httpapi.Authenticator, error) {
+	switch cfg.AuthType {
+	case config.AuthTypeBearer:
+		return httpapi.BearerAuth(cfg.Token), nil
+	case config.AuthTypeBasic:
+		return httpapi.BasicAuth(cfg.User, cfg.Password), nil
+	case config.AuthTypeMTLS:
+		return httpapi.MTLSAuth(), nil
+	default:
+		return nil, fmt.Errorf("%w: %q", errUnknownAuthType, cfg.AuthType)
+	}
+}
+
+func httpTLS(cfg config.HTTP) (*tls.Config, error) {
+	if cfg.CertFile == "" && cfg.ClientCAFile == "" {
+		//nolint:nilnil // nil means the control plane serves plain HTTP.
+		return nil, nil
+	}
+
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+
+	if cfg.CertFile != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("http tls: %w", err)
+		}
+
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	if cfg.ClientCAFile != "" {
+		pool, err := loadCertPool(cfg.ClientCAFile)
+		if err != nil {
+			return nil, err
+		}
+
+		tlsConfig.ClientCAs = pool
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	return tlsConfig, nil
+}
+
+func loadCertPool(path string) (*x509.CertPool, error) {
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("http tls: %w", err)
+	}
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("%w in %s", errNoCertificates, path)
+	}
+
+	return pool, nil
 }

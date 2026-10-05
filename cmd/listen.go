@@ -39,7 +39,22 @@ var listenCmd = &cobra.Command{
 			return buildErr
 		}
 
-		return application.Run(command.Context())
+		server, httpErr := builder.BuildHTTPServer()
+		if httpErr != nil {
+			return httpErr
+		}
+
+		ctx := command.Context()
+
+		if server != nil {
+			go func() {
+				if runErr := server.Run(ctx); runErr != nil {
+					slog.Error("http control plane stopped", "error", runErr)
+				}
+			}()
+		}
+
+		return application.Run(ctx)
 	},
 }
 

@@ -87,7 +87,9 @@
 - [x] `exec` 动作（argv 非 shell、timeout、workdir/env、审计日志、变量插值白名单）
 - [x] `exec` 启动期静态校验（可执行存在 / 非目录 / 有执行位 / `security.exec_allowlist` 目录）
 - [ ] `exec` 的 `user`/`group` 降权（配置里写了会在启动期报错 `ErrExecUserUnsupported`）
-- [ ] HTTP 控制面（bearer/basic/mTLS、默认 127.0.0.1、`/v1/*`、审计）
+- [x] HTTP 控制面（bearer/basic/mTLS、默认 127.0.0.1、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`/v1/actions/{name}`、`/metrics`、`/healthz`、审计）——实现对照见设计 §19.5
+- [ ] `/v1/reload` 热重载（当前显式 501）
+- [ ] mTLS 端到端冒烟（配置已支持 + 启动加载证书）
 - [ ] HTTP 出站动作（webhook、`url_allowlist`、超时 / 重试）
 - [ ] 远端命令通道（`commands[].id` 白名单 + args 校验 + HMAC）
 - [ ] 远端原始命令（`allow_raw_shell` 默认关 + `/bin/sh -c` + 认证 / 端口 / allowlist + 启动告警）

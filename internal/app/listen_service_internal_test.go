@@ -232,6 +232,48 @@ func TestListenServiceRun_ContextCanceled(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestListenServiceStatsAndControlPlane(t *testing.T) {
+	ifaces := testIfaces()
+	policy := mustPolicy(t, ifaces, []wol.Rule{ruleFor(8, wol.ActionShutdown)})
+	executor := &executorMock{}
+
+	svc := NewListenService(&factoryMock{}, testRegistry(executor), policy, ifaces, false)
+
+	svc.handlePacket(context.Background(), packet{
+		payload: wol.BuildMagicPacket(testMAC()),
+		src:     &net.UDPAddr{IP: net.IPv4(10, 0, 0, 5), Port: 9},
+		port:    8,
+	})
+	svc.handlePacket(context.Background(), packet{payload: []byte("junk"), port: 8})
+
+	stats := svc.Stats()
+	require.Equal(t, uint64(2), stats.Packets)
+	require.Equal(t, uint64(1), stats.Matched)
+	require.Equal(t, uint64(1), stats.Actions["power.shutdown"])
+	require.NotNil(t, stats.LastEvent)
+	require.Equal(t, 8, stats.LastEvent.Port)
+	require.Equal(t, "en0", stats.LastEvent.Interface)
+	require.Equal(t, 1, executor.calls)
+	require.Len(t, svc.Rules(), 1)
+	require.Equal(t, ifaces, svc.Interfaces())
+
+	require.NoError(t, svc.Dispatch(context.Background(), wol.ActionShutdown, wol.Event{}))
+	require.Equal(t, uint64(2), svc.Stats().Actions["power.shutdown"])
+	require.ErrorIs(t, svc.Dispatch(context.Background(), wol.Action("nope"), wol.Event{}), wol.ErrUnknownActionRef)
+}
+
+func TestListenServiceDispatchHonoursDryRun(t *testing.T) {
+	ifaces := testIfaces()
+	policy := mustPolicy(t, ifaces, []wol.Rule{ruleFor(8, wol.ActionShutdown)})
+	executor := &executorMock{}
+
+	svc := NewListenService(&factoryMock{}, testRegistry(executor), policy, ifaces, true)
+
+	require.NoError(t, svc.Dispatch(context.Background(), wol.ActionShutdown, wol.Event{}))
+	require.Zero(t, executor.calls)
+	require.Empty(t, svc.Stats().Actions)
+}
+
 func TestListenServiceRun_DuplicatePortRules(t *testing.T) {
 	t.Parallel()
 

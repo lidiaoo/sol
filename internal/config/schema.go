@@ -37,6 +37,7 @@ type loggingConfig struct {
 }
 
 type serverConfig struct {
+	HTTP       httpConfig    `yaml:"http"`
 	Interfaces []ifaceConfig `yaml:"interfaces"`
 	Rules      []ruleConfig  `yaml:"rules"`
 }
@@ -75,6 +76,28 @@ func (i *ifaceConfig) UnmarshalYAML(node *yaml.Node) error {
 	}
 
 	return nil
+}
+
+type httpConfig struct {
+	Enabled bool       `yaml:"enabled"`
+	Listen  string     `yaml:"listen"`
+	Auth    authConfig `yaml:"auth"`
+	TLS     tlsConfig  `yaml:"tls"`
+}
+
+type authConfig struct {
+	Type         string `yaml:"type"`
+	TokenEnv     string `yaml:"token_env"`
+	TokenFile    string `yaml:"token_file"`
+	User         string `yaml:"user"`
+	PasswordEnv  string `yaml:"password_env"`
+	PasswordFile string `yaml:"password_file"`
+}
+
+type tlsConfig struct {
+	CertFile     string `yaml:"cert_file"`
+	KeyFile      string `yaml:"key_file"`
+	ClientCAFile string `yaml:"client_ca_file"`
 }
 
 type securityConfig struct {
