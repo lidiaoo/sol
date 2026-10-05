@@ -27,7 +27,6 @@ var (
 	ErrPerInterfaceSecureOn = errors.New("per-interface secure_on is not implemented yet")
 	ErrExecCommandRequired  = errors.New("exec action requires command")
 	ErrExecTimeout          = errors.New("invalid exec timeout")
-	ErrExecUserUnsupported  = errors.New("exec user/group privilege drop is not implemented yet")
 	ErrActionParams         = errors.New("action parameters do not match its type")
 	ErrHTTPListen           = errors.New("invalid server.http.listen address")
 	ErrHTTPAuthType         = errors.New("unknown server.http.auth.type")
@@ -397,10 +396,6 @@ func buildExecDef(entry actionConfig, def wol.ActionDef) (wol.ActionDef, error) 
 		return wol.ActionDef{}, ErrExecCommandRequired
 	}
 
-	if entry.User != "" || entry.Group != "" {
-		return wol.ActionDef{}, ErrExecUserUnsupported
-	}
-
 	timeout, err := parseTimeout(entry.Timeout)
 	if err != nil {
 		return wol.ActionDef{}, err
@@ -412,6 +407,8 @@ func buildExecDef(entry actionConfig, def wol.ActionDef) (wol.ActionDef, error) 
 		Workdir: entry.Workdir,
 		Env:     entry.Env,
 		Shell:   entry.Shell,
+		User:    entry.User,
+		Group:   entry.Group,
 	}
 
 	return def, nil

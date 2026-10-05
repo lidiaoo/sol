@@ -627,10 +627,6 @@ func TestLoadExecActionErrors(t *testing.T) {
 			body:  "version: 1\nactions:\n  - { name: lock, type: exec }\n",
 			match: ErrExecCommandRequired,
 		},
-		"privilege drop unsupported": {
-			body:  "version: 1\nactions:\n  - { name: lock, type: exec, command: [loginctl], user: nobody }\n",
-			match: ErrExecUserUnsupported,
-		},
 		"bad timeout": {
 			body:  "version: 1\nactions:\n  - { name: lock, type: exec, command: [loginctl], timeout: soon }\n",
 			match: ErrExecTimeout,

@@ -734,7 +734,8 @@ security.reserved_ports     可选，默认 [7, 9]
 security.allow_reserved_port_actions  可选，默认 false
 actions[].name              动作名，唯一
 actions[].type              noop | power.shutdown | power.reboot | power.sleep | exec | http（sequence 见 P4）
-actions[].command / timeout / workdir / env / shell   exec 用：argv 数组（非 shell）；shell: true 走 /bin/sh -c（逃生舱）；user/group 未实现
+actions[].command / timeout / workdir / env / shell   exec 用：argv 数组（非 shell）；shell: true 走 /bin/sh -c（逃生舱）
+actions[].user / group                                exec 用：降权到该用户/组（仅 unix；要求 sol 以 root 跑；附加组不继承 sol 自己的）
 actions[].method / url / headers / body / timeout / retries   http 出站动作用（§19.8）；url/headers/body 支持 {{.Action}} 等白名单插值
 security.url_allowlist      可选，出站 http 动作的目标前缀白名单（SSRF 防护，§19.8）
 security.exec_allowlist     可选，限 exec 的绝对路径命令只能落在这些目录下（§19.4）
@@ -1311,15 +1312,22 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 
 ### 19.4 P4 已落地部分（exec 自定义命令）
 
-- 动作模型扩到 `exec`：`ActionDef` 的参数从 `Params map[string]any` 改为随类型携带的强类型字段 `Exec *ExecParams{Command, Timeout, Workdir, Env, Shell}`——`map` 会让每个执行器各自解析、丢掉编译期校验；后续 `http`/`sequence` 走同一方式。
+- 动作模型扩到 `exec`：`ActionDef` 的参数从 `Params map[string]any` 改为随类型携带的强类型字段 `Exec *ExecParams{Command, Timeout, Workdir, Env, Shell, User, Group}`——`map` 会让每个执行器各自解析、丢掉编译期校验；后续 `http`/`sequence` 走同一方式。
 - 配置：`actions[]` 增 `command`（argv 数组）/ `timeout`（`5s`、`5m`）/ `workdir` / `env` / `shell`；新增 `security.exec_allowlist`（绝对路径命令必须落在列出的目录内，空 = 不限制）。
 - 执行器 `internal/infra/exec.Executor`：默认 argv 直执（不经 shell），`context.WithTimeout`（默认 10s，超时即杀），`workdir` + 继承环境 + 追加 `env`，合并捕获 stdout/stderr；`shell: true` 才走 `/bin/sh -c`（Windows 用 `cmd /C`），启动时打 WARN。
-- 启动期静态校验（fail fast）：`command` 必填；绝对路径须存在、非目录、带执行位，且配了 allowlist 时须在允许目录内；裸命令名走 `PATH` 查找；`user`/`group` 降权未实现 -> 写进配置直接报错 `ErrExecUserUnsupported`。
+- 启动期静态校验（fail fast）：`command` 必填；绝对路径须存在、非目录、带执行位，且配了 allowlist 时须在允许目录内；裸命令名走 `PATH` 查找；模板语法必须可解析；配了 `user`/`group` 时用户与组必须能解析、且当前进程必须是 root（否则启动报错 `ErrNotRoot`，绝不"静默按当前身份跑"）。
 - 变量插值（白名单，§4.3）：`{{.Action}}` `{{.SrcIP}}` `{{.SrcPort}}` `{{.DstPort}}` `{{.Interface}}` `{{.MAC}}` `{{.Time}}`，用 `text/template` + `missingkey=error`（写错模板名在解析期就报错）。为此 `Decision` 增 `Interface`/`TargetMAC`（由包内目标 MAC 反查合格网卡），监听侧把上下文带进下发事件。
 - 审计：执行前后 `slog` 记录动作名、argv、来源 IP、网卡、耗时、退出码与输出；非零退出/超时按错误上报。
 - dry-run：`security.dry_run` 或规则级 `dry_run` 命中时只记日志（`trigger=DRY-RUN`），不执行。
 - 冒烟（真机 enp6s0 + enp9s0f3u1，端口 10031）：按 allowlist 执行脚本，插值出 `mark=enp6s0 src=127.0.0.1 port=10031 mac=58:11:22:bc:78:66`，`env` 生效、审计行含 `exit_code=0`；allowlist 越界与命令不存在都在启动期 exit 1；dry-run 下目标文件不增长。
-- 未做（继续留 P4）：`user`/`group` 降权、cooldown / 速率限制、HTTP 出站动作、远端命令通道（控制面见 §19.5）。
+- 降权（`actions[].user` / `actions[].group`，仅 unix 生效，`internal/infra/exec/credential_unix.go`）：
+  - 启动期解析：名字或数字 id 都支持（`user.Lookup`/`LookupId`、`LookupGroup`/`LookupGroupId`），解析不了 -> `ErrUnknownUser`/`ErrUnknownGroup`；配了降权但进程不是 root -> `ErrNotRoot`。
+  - 运行时走 `SysProcAttr.Credential`：只写 `user` 时补该账号的**主组**；写 `group` 时覆盖主组（可与 `user` 不同，如 `user: root, group: nobody`）。
+  - **附加组也要处理**：实测发现若用 `NoSetGroups: true`，子进程会**继承 sol 自己的附加组**（root 的 `0(root)`、调用者的 `1001(docker)`），uid 掉了但组没掉 = 降权不彻底（在装了 docker 的机器上等价于没降权）。现在 `NoSetGroups: false` 且传目标账号的组列表（`user.GroupIds()`，即 `initgroups` 语义）：只配 `group` 不配 `user` 时传空列表，等于清空全部附加组。
+  - 子进程拿到的组要么是目标账号自己的组，要么为空——sol 的组永远不会泄漏进命令。
+  - 未做：`user`/`group` 只支持 unix（其他平台写了直接报 `ErrUserUnsupported`）；不支持 `CAP_SETUID` 单权限（要求 root）。
+- 冒烟（真机 root，`sudo ./sol`，端口 10051–10055）：`user: nobody` -> `id -u` = 65534；`user: root, group: nobody` -> `id -g` = 65534；`user+group: nobody` -> `id` = `uid=65534(nobody) gid=65534(nobody) 组=65534(nobody)`（没有 `0(root)`/`1001(docker)` 泄漏，这是修掉 `NoSetGroups` 之后的结果）；不配降权的动作仍是 `0`；只配 `group: nobody` -> `id -G` 只有 `65534`（附加组被清空）。负向：非 root 进程配了降权 -> 启动 exit 1（`exec user/group requires root`）；`user: sol-no-such-user-xyz` -> 启动 exit 1（`unknown exec user`）；`group: nogroup`（本机无该组）-> 启动 exit 1（`unknown exec group`）。审计行带 `run_as=<user>[:<group>]`。
+- 未做（继续留 P4）：cooldown / 速率限制、HTTP 出站动作、远端命令通道（控制面见 §19.5）。
 
 ### 19.5 P4 部分落地（HTTP 控制面）
 

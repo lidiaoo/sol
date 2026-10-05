@@ -47,6 +47,10 @@ type ExecParams struct {
 	Workdir string
 	// Env holds extra "KEY=value" entries appended to the inherited environment.
 	Env []string
+	// User and Group drop privileges before exec'ing the command; empty values keep
+	// the identity of the sol process. Only honored on platforms with setuid support.
+	User  string
+	Group string
 	// Shell runs Command through a shell instead of exec'ing argv (escape hatch, off by default).
 	Shell bool
 }

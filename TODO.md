@@ -86,7 +86,8 @@
 
 - [x] `exec` 动作（argv 非 shell、timeout、workdir/env、审计日志、变量插值白名单）
 - [x] `exec` 启动期静态校验（可执行存在 / 非目录 / 有执行位 / `security.exec_allowlist` 目录）
-- [ ] `exec` 的 `user`/`group` 降权（配置里写了会在启动期报错 `ErrExecUserUnsupported`）
+- [x] `exec` 的 `user`/`group` 降权（仅 unix；启动期解析用户/组 + 要求 root，运行时 `SysProcAttr.Credential` + `initgroups` 语义，sol 自己的附加组不泄漏）——见设计 §19.4
+- [ ] 降权只支持 root（`CAP_SETUID`/`CAP_SETGID` 单权限）；非 unix 平台直接报 `ErrUserUnsupported`
 - [x] HTTP 控制面（bearer/basic/mTLS、默认 127.0.0.1、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`/v1/actions/{name}`、`/metrics`、`/healthz`、审计）——实现对照见设计 §19.5
 - [ ] `/v1/reload` 热重载（当前显式 501）
 - [x] mTLS 端到端冒烟（配置已支持 + 启动加载证书；带证书 200、无证书/异 CA 证书握手被拒、明文 HTTP 400；注意 mTLS 下 `/healthz` 也需客户端证书）——见设计 §19.5

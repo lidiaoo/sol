@@ -48,6 +48,10 @@ func (e *Executor) Validate(def wol.ActionDef) error {
 		return err
 	}
 
+	if err := validateCredential(params); err != nil {
+		return err
+	}
+
 	if params.Shell {
 		slog.Warn("exec action runs through a shell: arguments are no longer argv-safe",
 			"action", string(def.Name),
@@ -60,6 +64,36 @@ func (e *Executor) Validate(def wol.ActionDef) error {
 	_, err := e.resolve(params.Command[0])
 
 	return err
+}
+
+// validateCredential resolves a configured privilege drop at startup so that an
+// unknown user/group, or a drop the process cannot perform, fails fast instead of
+// at trigger time.
+func validateCredential(params *wol.ExecParams) error {
+	cred, err := resolveCredential(params.User, params.Group)
+	if err != nil {
+		return err
+	}
+
+	if cred.isZero() {
+		return nil
+	}
+
+	return requirePrivilege()
+}
+
+// dropLabel describes the configured privilege drop for audit logs.
+func dropLabel(params *wol.ExecParams) string {
+	switch {
+	case params.User != "" && params.Group != "":
+		return params.User + ":" + params.Group
+	case params.User != "":
+		return params.User
+	case params.Group != "":
+		return ":" + params.Group
+	default:
+		return ""
+	}
 }
 
 // Execute runs the configured command with the whitelisted event values interpolated.
@@ -87,13 +121,20 @@ func (e *Executor) Execute(ctx context.Context, def wol.ActionDef, ev wol.Event)
 		return fmt.Errorf("action %s: %w", def.Name, err)
 	}
 
+	cred, err := resolveCredential(params.User, params.Group)
+	if err != nil {
+		return fmt.Errorf("action %s: %w", def.Name, err)
+	}
+
+	applyCredential(cmd, cred)
+
 	cmd.Dir = params.Workdir
 	cmd.Env = append(os.Environ(), params.Env...)
 
 	started := time.Now()
 	output, runErr := cmd.CombinedOutput()
 
-	slog.Info("exec action finished",
+	attrs := []any{
 		"action", string(def.Name),
 		"command", argv,
 		"src", ipString(ev.SrcIP),
@@ -101,7 +142,13 @@ func (e *Executor) Execute(ctx context.Context, def wol.ActionDef, ev wol.Event)
 		"duration", time.Since(started).String(),
 		"exit_code", exitCode(runErr),
 		"output", strings.TrimSpace(string(output)),
-	)
+	}
+
+	if label := dropLabel(params); label != "" {
+		attrs = append(attrs, "run_as", label)
+	}
+
+	slog.Info("exec action finished", attrs...)
 
 	if runErr != nil {
 		return fmt.Errorf("action %s: %w", def.Name, runErr)
