@@ -75,6 +75,15 @@ tagged release.
   cache. Refusals are counted: `/v1/status` reports `replayed` with a `replay_reasons` breakdown
   and `/metrics` exports `sol_replayed_total` (plus a line per reason), so a channel under replay
   is visible without scraping logs.
+- SecureOn can be set per interface block and per rule, not only globally: a rule inherits its
+  block's password, the block inherits `security.secure_on`, and an explicitly empty
+  `secure_on: ""` opts out of the default (it means "no password", which is not the same as
+  leaving the key out). Packets are read by trying every configured password, and a rule only
+  matches the one it asks for.
+- Breaking: a password on a reserved port (7 or 9) is now refused at startup. Those ports take
+  plain magic packets, so `security.secure_on` together with `--port 9` used to start and then
+  silently never match anything.
+- Breaking: `server.interfaces[].secure_on` was rejected with "not implemented yet" and now works.
 - A trigger that arrives while the same action is still running is suppressed instead of starting
   a second run of it (the §19.6 open question: no merge-and-wait, because a run can take minutes
   and a control-plane request should not be pinned to it). The identity is the action plus what it

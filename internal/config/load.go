@@ -25,7 +25,6 @@ var (
 	ErrActionRequired        = errors.New("rule requires an action")
 	ErrInterfaceDryRun       = errors.New("dry_run on an interface block requires block-level rules")
 	ErrActionNameRequired    = errors.New("actions[] entry requires a name")
-	ErrPerInterfaceSecureOn  = errors.New("per-interface secure_on is not implemented yet")
 	ErrExecCommandRequired   = errors.New("exec action requires command")
 	ErrSendMAC               = errors.New("invalid wol.send mac")
 	ErrSendBroadcast         = errors.New("invalid wol.send broadcast address")
@@ -1222,7 +1221,7 @@ func remoteCommandPorts(ports []int, reserved []int) ([]int, error) {
 
 // buildAllRules expands the global rules and every interface block into one ordered list.
 func buildAllRules(f *fileConfig, actions map[wol.Action]wol.ActionDef) ([]wol.Rule, error) {
-	global, err := buildRules(globalRules(f), nil, false, actions)
+	global, err := buildRules(globalRules(f), nil, ruleDefaults{}, actions)
 	if err != nil {
 		return nil, err
 	}
@@ -1505,16 +1504,12 @@ func buildInterfaceNames(entries []ifaceConfig) ([]string, error) {
 	names := make([]string, 0, len(entries))
 	seen := make(map[string]bool, len(entries))
 
-	for i, entry := range entries {
+	for _, entry := range entries {
 		if seen[entry.Name] {
 			return nil, fmt.Errorf("%w: %s", wol.ErrDuplicateInterface, entry.Name)
 		}
 
 		seen[entry.Name] = true
-
-		if entry.SecureOn != "" {
-			return nil, fmt.Errorf("server.interfaces[%d] (%s): %w", i, entry.Name, ErrPerInterfaceSecureOn)
-		}
 
 		names = append(names, entry.Name)
 	}
@@ -1534,7 +1529,7 @@ func buildInterfaceRules(entries []ifaceConfig, actions map[wol.Action]wol.Actio
 
 		scope := wol.MACSelector{Kind: wol.MACInterface, Ifaces: []string{entry.Name}}
 
-		built, err := buildRules(entry.Rules, &scope, blockDryRun, actions)
+		built, err := buildRules(entry.Rules, &scope, ruleDefaults{dryRun: blockDryRun, secureOn: entry.SecureOn}, actions)
 		if err != nil {
 			return nil, fmt.Errorf("server.interfaces[%d] (%s): %w", i, entry.Name, err)
 		}
@@ -1545,11 +1540,23 @@ func buildInterfaceRules(entries []ifaceConfig, actions map[wol.Action]wol.Actio
 	return rules, nil
 }
 
-func buildRules(entries []ruleConfig, scope *wol.MACSelector, dryRun bool, actions map[wol.Action]wol.ActionDef) ([]wol.Rule, error) {
+// ruleDefaults are the values a scope hands down to the rules it holds: an interface block can
+// set both, the global rule list sets neither.
+type ruleDefaults struct {
+	dryRun   bool
+	secureOn *string
+}
+
+func buildRules(
+	entries []ruleConfig,
+	scope *wol.MACSelector,
+	defaults ruleDefaults,
+	actions map[wol.Action]wol.ActionDef,
+) ([]wol.Rule, error) {
 	rules := make([]wol.Rule, 0, len(entries))
 
 	for i, entry := range entries {
-		rule, err := buildRule(entry, scope, dryRun, actions)
+		rule, err := buildRule(entry, scope, defaults, actions)
 		if err != nil {
 			return nil, fmt.Errorf("rule %d: %w", i+1, err)
 		}
@@ -1560,7 +1567,7 @@ func buildRules(entries []ruleConfig, scope *wol.MACSelector, dryRun bool, actio
 	return rules, nil
 }
 
-func buildRule(entry ruleConfig, scope *wol.MACSelector, dryRun bool, actions map[wol.Action]wol.ActionDef) (wol.Rule, error) {
+func buildRule(entry ruleConfig, scope *wol.MACSelector, defaults ruleDefaults, actions map[wol.Action]wol.ActionDef) (wol.Rule, error) {
 	if entry.Action == "" {
 		return wol.Rule{}, ErrActionRequired
 	}
@@ -1583,9 +1590,14 @@ func buildRule(entry ruleConfig, scope *wol.MACSelector, dryRun bool, actions ma
 		return wol.Rule{}, err
 	}
 
-	ruleDryRun := dryRun
+	ruleDryRun := defaults.dryRun
 	if entry.DryRun != nil {
 		ruleDryRun = *entry.DryRun
+	}
+
+	secureOn, err := buildSecureOn(entry.Match.SecureOn, defaults.secureOn)
+	if err != nil {
+		return wol.Rule{}, err
 	}
 
 	return wol.Rule{
@@ -1595,10 +1607,36 @@ func buildRule(entry ruleConfig, scope *wol.MACSelector, dryRun bool, actions ma
 			Content:  buildContent(entry.Match.Content),
 			SrcCIDRs: entry.Match.SrcCIDRs,
 			Auth:     wol.AuthKind(entry.Match.Auth),
+			SecureOn: secureOn,
 		},
 		Action: action,
 		DryRun: ruleDryRun,
 	}, nil
+}
+
+// buildSecureOn resolves the password a rule requires: its own when given, else the one its block
+// declares, else nothing - which means "inherit security.secure_on" in the policy. An explicitly
+// empty value is not the same as leaving it out: it requires a packet without a password, which is
+// how a block opts out of the global default (§19.18).
+func buildSecureOn(rule *string, block *string) ([]byte, error) {
+	value := rule
+	if value == nil {
+		value = block
+	}
+
+	if value == nil {
+		return nil, nil
+	}
+
+	if *value == "" {
+		return []byte{}, nil
+	}
+
+	if len(*value) != wol.SecureOnSize {
+		return nil, fmt.Errorf("%w: got %d bytes", wol.ErrSecureOnLength, len(*value))
+	}
+
+	return []byte(*value), nil
 }
 
 // checkMatchAuth rejects an unknown match.auth value while the file is being read; the policy

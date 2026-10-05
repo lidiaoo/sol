@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/bavix/sol/master/schema/sol.schema.json",
   "title": "SoL configuration",
-  "description": "Configuration file of the sol listener (version 1). Unknown keys are rejected at start-up, so every object here sets additionalProperties to false. Field reference: docs/routing-design.md (\u5b57\u6bb5\u901f\u67e5).",
+  "description": "Configuration file of the sol listener (version 1). Unknown keys are rejected at start-up, so every object here sets additionalProperties to false. Field reference: docs/routing-design.md (字段速查).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -175,7 +175,7 @@
         },
         "secure_on": {
           "type": "string",
-          "description": "SecureOn password expected after the magic packet: 6 bytes, either 12 hex characters (aabbccddeeff) or 6 ASCII characters."
+          "description": "Default SecureOn password (6 bytes) for every rule that does not declare its own; reserved ports 7 and 9 always take plain magic packets."
         },
         "exec_allowlist": {
           "type": "array",
@@ -372,7 +372,7 @@
     },
     "duration": {
       "type": "string",
-      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+$",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
       "description": "Go duration, e.g. 5s, 200ms, 1m30s."
     },
     "interfaceBlock": {
@@ -390,7 +390,7 @@
         },
         "secure_on": {
           "type": "string",
-          "description": "Per-interface SecureOn password; not implemented yet, setting it is an error."
+          "description": "SecureOn password (6 bytes) the rules in this block require; a rule can override it, an empty string requires packets without a password."
         },
         "rules": {
           "type": "array",
@@ -471,6 +471,10 @@
             "hmac"
           ],
           "description": "hmac: only match packets carrying a valid tag (requires security.packet_auth)."
+        },
+        "secure_on": {
+          "type": "string",
+          "description": "SecureOn password (6 bytes) this rule requires; overrides the block's and security.secure_on. An empty string requires a packet without a password."
         }
       }
     },

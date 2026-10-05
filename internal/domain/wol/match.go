@@ -284,6 +284,11 @@ type Match struct {
 	SrcCIDRs []string
 	// Auth, when set to AuthHMAC, restricts the rule to authenticated packets.
 	Auth AuthKind
+	// SecureOn, when non-nil, is the SecureOn password this rule requires: a packet read with a
+	// different one - or with none - does not match. Leaving it nil inherits the policy default
+	// (security.secure_on), and an empty but non-nil value requires a packet without a password
+	// (§19.18).
+	SecureOn []byte
 }
 
 // Rule binds a Match to an Action.

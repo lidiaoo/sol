@@ -729,6 +729,9 @@ rules:
 ```
 version        必填，schema 版本，当前 1
 server.interfaces           可选；项可为字符串或块 { name, dry_run?, secure_on?, rules? }；省略/空 = auto 全部合格网卡；单网卡可 server.interface: eth0 简写
+security.secure_on          可选（现为**默认值**）：每个没自己声明口令的规则都要求它；6 字节，长度不对启动即报错（§19.18）
+server.interfaces[].secure_on  可选：该块的规则默认要求这个口令；块内规则可用规则级的覆盖它（§19.18）
+match.secure_on             可选：这条规则要求的口令（覆盖块级与全局）。`secure_on: ""` 表示"这条规则不要口令"（显式豁免全局默认，不是"继承"）；保留端口 7/9 不许要口令（§19.18）
 server.rules                可选，全局规则（对本实例所有网卡生效）；顶层 rules 为其简写，二者同现报错
 logging.level               可选，默认 info
 logging.format              可选，默认 text
@@ -1340,7 +1343,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 规则来源：`server.rules`（规范写法）与顶层 `rules` 等价，二者同现 -> `ErrRulesConflict`。
 - `server.interfaces`：字符串简写或块 `{name, dry_run?, rules?}`；块内规则在加载期展开为 `MACSelector{Kind: interface, Ifaces: [块名]}`（即 §17.8/17.9 的"等价写法"），块级 `dry_run` 落成 `Rule.DryRun`——命中仍打印 action，但打 `DRY-RUN` 不执行。
 - `match` 全字段接线：`ports` / `interfaces` / `mac`（标量 `self|any|<MAC>` 或块 `{kind, address, interfaces}`）/ `content`（`kind`、`value`、`value_hex`、`offset`）/ `src_cidrs`。
-- `security`：`dry_run`、`reserved_ports`、`allow_reserved_port_actions`、`secure_on`（全局；长度必须 6 字节，否则 `ErrSecureOnLength`——旧实现里长度不对会**静默永不匹配**，现在 fail fast）。
+- `security`：`dry_run`、`reserved_ports`、`allow_reserved_port_actions`、`secure_on`（现为**默认口令**，可被 `server.interfaces[].secure_on` 与 `match.secure_on` 覆盖；长度必须 6 字节，否则 `ErrSecureOnLength`——旧实现里长度不对会**静默永不匹配**，现在 fail fast。§19.18）。
 - `actions` 段：命名动作 `{name, type}`，type 暂限四种内置类型；定义会注册进 Registry，`rules[].action` 可直接引用；重名 -> `ErrDuplicateAction`（内置名不可重定义）。
 - `logging` 段：`level`（debug|info|warn|error，默认 info）+ `format`（text|json，默认 text）。程序日志已从 stdlib `log` 迁到 `log/slog` 结构化日志（`internal/infra/logging.Setup`，启动时装载、`slog.SetDefault`），非法 level/format fail fast。
 - 语义校验仍在 policy 构造期 fail fast：保留端口非 noop / 带内容、未知动作、端口范围、CIDR、重复与歧义规则等。
@@ -1351,7 +1354,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 **未实现（本小节不装作已有）**：
 
 - `security.allow_remote_commands` / `allow_raw_shell` / `remote_command_ports` / `raw_shell_ports`、`commands` 段：留到 P4 后续（HTTP 控制面本体见 §19.5）。
-- 每网卡 `secure_on`：解析到就报错（`ErrPerInterfaceSecureOn`），因为包解析目前是"整个 policy 一个 secure_on"。
+- 每网卡 `secure_on` 已落地（见 §19.18）：三级（规则 > 块 > 全局），包解析改成多候选试读，`ErrPerInterfaceSecureOn` 删除。
 - JSON Schema：未做（热重载已落地，见 §19.9）。
 - `--default-action` 只作用于 `--port` 生成的规则；文件里的规则必须显式写 `action`（缺 `action` -> `ErrActionRequired`）。
 
@@ -1754,3 +1757,18 @@ HTTP: POST /v1/exec  { "cmd": "..." }                    （认证）
 ```
 
 阶段：**P4 已落地**（§19.15；见 [TODO.md](../TODO.md)）。
+
+### 19.18 每作用域 SecureOn（规则 > 块 > 全局）
+
+此前 `secure_on` 只能全局设一个，`server.interfaces[].secure_on` 会被直接拒绝（`ErrPerInterfaceSecureOn`），因为包解析是"整个 policy 一个口令"。同一台机器上不同网卡/不同规则需要不同口令时就表达不出来。
+
+- **三级覆盖**：`match.secure_on`（规则级）> `server.interfaces[].secure_on`（块级）> `security.secure_on`（全局默认）。三级都没写 = 不要求口令。CLI `--port` 建出来的规则没有规则级值，照旧吃全局默认（老配置行为不变）。
+- **"没写"与"显式空"是两件事**：`secure_on: ""` 表示"这个块/这条规则**不要**口令"，用来在全局设了口令时给某个作用域开豁免。加载期把"显式空"变成 `Match.SecureOn = []byte{}`（非 nil 空值），域层用 `nil` = 继承、非 nil（含空）= 就用这个，`bytes.Equal(nil, []byte{})` 为真所以"不要求口令"只有一种语义。
+- **解析改成多候选试读**：`wol.ParsePacketAny(payload, passwords)` 依次试候选口令（全局 + 各规则的），命中哪个就记进 `ParsedPacket.SecureOn`；一个都不命中时按**明文**读（`SecureOn = nil`，那 6 个字节落进 content）。规则匹配要求 `bytes.Equal(rule.secureOn, parsed.SecureOn)`，于是"口令不对"的包只能落到不要求口令的规则上——而默认 `content` 是 `none`（要空内容），那 6 个字节让它匹配不上：**默认即 fail-closed**。
+  - 候选之间不互抢：所有口令都在同样的 6 个字节上，至多一个能命中，所以候选顺序无关。
+  - 已知代价（明说）：一个 content 恰好等于某个候选口令的*明文*包，会被读成"带口令"的读法。若某个作用域既要明文又匹配那段内容，它可能被丢掉——窗口极小且是 fail-closed 方向；要彻底避免，让该作用域显式写 `secure_on: ""`（它就不进候选集），或让内容规则避开那 6 个字节。
+- **命令通道仍是严格单口令**：远端命令 / 裸 shell 端口是 extraPorts、没有规则，用 `security.secure_on` 一个口令；`Policy.ParsePacket` 保持"口令不对 = 这不是包"（fail-closed、拒绝理由准确），不走明文回退。
+- **保留端口 {7,9} 不接受口令**：`ErrReservedPortAction`（`port 9 requires a plain magic packet`）——保留端口只收 102 字节纯魔法包，规则级和全局默认两条路径都会触发。**breaking**：以前"全局设了口令 + `--port 9`"能启动，但那个端口永远收不到包（108 字节才解析成功），现在启动即报错。
+- **冲突判定把口令算进去**：同端口同内容的两条规则若要求**不同**口令，是能区分的（一个包只带一个口令）→ 不算冲突（`sameScopeConflict` / `crossScopeConflict` 都比对口令）；口令相同才按原来的 ports/content/src 判。
+- **单测**：`internal/domain/wol/secureon_scope_test.go`（`ParsePacketAny` 的明文回退 / 命中摘除 / 短包 / 坏头；同端口同作用域两条不同口令各自命中、口令错与无口令都不命中；继承 / 覆盖 / 显式空三种语义；保留端口两级拒绝；长度校验）+ `internal/config/load_internal_test.go` 的 `TestLoadPerInterfaceSecureOn` / `TestLoadSecureOnLength`（块级下发、规则级覆盖、显式空非 nil、长度 fail fast）+ schema 加 `match.secure_on`（防漂移测试当场抓到过）。
+- **冒烟（真机 s26）**：全局口令 A + 块 B 自己的口令 B，同端口两条规则各自要求一个口令；发 B 网卡的 MAC + 口令 B 命中 B 的规则，发 A 网卡的 MAC + 口令 A 命中全局规则，口令错 / 不带口令一个都不动，保留端口配口令启动即报错。

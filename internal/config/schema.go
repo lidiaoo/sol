@@ -47,9 +47,11 @@ type serverConfig struct {
 }
 
 type ifaceConfig struct {
-	Name     string       `yaml:"name"`
-	DryRun   *bool        `yaml:"dry_run"`
-	SecureOn string       `yaml:"secure_on"`
+	Name   string `yaml:"name"`
+	DryRun *bool  `yaml:"dry_run"`
+	// SecureOn is the password this block's rules require; a rule can override it, and an
+	// explicitly empty value requires packets without a password (§19.18).
+	SecureOn *string      `yaml:"secure_on"`
 	Rules    []ruleConfig `yaml:"rules"`
 }
 
@@ -210,6 +212,7 @@ type matchConfig struct {
 	Content    contentConfig `yaml:"content"`
 	SrcCIDRs   []string      `yaml:"src_cidrs"`
 	Auth       string        `yaml:"auth"`
+	SecureOn   *string       `yaml:"secure_on"`
 }
 
 type macConfig struct {

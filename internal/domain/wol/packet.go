@@ -14,6 +14,9 @@ import (
 type ParsedPacket struct {
 	MAC     net.HardwareAddr
 	Content []byte
+	// SecureOn is the password the payload carried, or nil when it was read as a plain magic
+	// packet. A rule only matches when its own password agrees with this (§19.18).
+	SecureOn []byte
 	// Authenticated reports that a valid trailing tag was stripped from the payload
 	// (§19.14); it stays false for every packet when no packet key is configured.
 	Authenticated bool
@@ -106,16 +109,72 @@ func TimestampBytes(at time.Time) []byte {
 	return stamp
 }
 
-// ParsePacket parses payload as a magic packet starting at offset 0.
-// When secureOn is non-empty it must appear right after the 16 MAC repetitions.
+// ParsePacket parses payload as a magic packet starting at offset 0. When secureOn is non-empty
+// the payload has to carry it: this is the strict form, used where exactly one password is
+// expected (the command channels), so a payload with a different one is not a packet at all.
 func ParsePacket(payload []byte, secureOn []byte) (ParsedPacket, bool) {
-	if len(payload) < PacketLenPlain {
+	mac, ok := parseMagicHeader(payload)
+	if !ok {
 		return ParsedPacket{}, false
+	}
+
+	if len(secureOn) == 0 {
+		return ParsedPacket{MAC: mac, Content: slices.Clone(payload[PacketLenPlain:])}, true
+	}
+
+	if len(payload) < PacketLenSecureOn || !bytes.Equal(payload[PacketLenPlain:PacketLenSecureOn], secureOn) {
+		return ParsedPacket{}, false
+	}
+
+	return ParsedPacket{
+		MAC:      mac,
+		Content:  slices.Clone(payload[PacketLenSecureOn:]),
+		SecureOn: slices.Clone(secureOn),
+	}, true
+}
+
+// ParsePacketAny parses payload as a magic packet, trying every configured password: the reading
+// that carries a password wins over the plain one, and the result records which one was used. A
+// payload that matches none of them is still read as plain, so a rule that requires a password
+// refuses it while a rule that wants a plain packet sees the leftover bytes as content
+// (§19.18). At most one candidate can match, since they all sit at the same six bytes.
+func ParsePacketAny(payload []byte, passwords [][]byte) (ParsedPacket, bool) {
+	mac, ok := parseMagicHeader(payload)
+	if !ok {
+		return ParsedPacket{}, false
+	}
+
+	for _, password := range passwords {
+		if len(password) == 0 || len(payload) < PacketLenSecureOn {
+			continue
+		}
+
+		if !bytes.Equal(payload[PacketLenPlain:PacketLenSecureOn], password) {
+			continue
+		}
+
+		return ParsedPacket{
+			MAC:      mac,
+			Content:  slices.Clone(payload[PacketLenSecureOn:]),
+			SecureOn: slices.Clone(password),
+		}, true
+	}
+
+	return ParsedPacket{
+		MAC:     mac,
+		Content: slices.Clone(payload[PacketLenPlain:]),
+	}, true
+}
+
+// parseMagicHeader checks the six magic bytes and the sixteen repetitions of one MAC address.
+func parseMagicHeader(payload []byte) (net.HardwareAddr, bool) {
+	if len(payload) < PacketLenPlain {
+		return nil, false
 	}
 
 	for i := range HeaderSize {
 		if payload[i] != MagicByte {
-			return ParsedPacket{}, false
+			return nil, false
 		}
 	}
 
@@ -123,24 +182,9 @@ func ParsePacket(payload []byte, secureOn []byte) (ParsedPacket, bool) {
 	for rep := 1; rep < RepeatCount; rep++ {
 		start := HeaderSize + rep*MACSize
 		if !bytes.Equal(payload[start:start+MACSize], mac) {
-			return ParsedPacket{}, false
+			return nil, false
 		}
 	}
 
-	offset := PacketLenPlain
-
-	if len(secureOn) > 0 {
-		if len(payload) < PacketLenSecureOn || !bytes.Equal(payload[PacketLenPlain:PacketLenSecureOn], secureOn) {
-			return ParsedPacket{}, false
-		}
-
-		offset = PacketLenSecureOn
-	}
-
-	parsed := ParsedPacket{
-		MAC:     net.HardwareAddr(slices.Clone(mac)),
-		Content: slices.Clone(payload[offset:]),
-	}
-
-	return parsed, true
+	return net.HardwareAddr(slices.Clone(mac)), true
 }

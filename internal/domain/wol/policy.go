@@ -92,13 +92,14 @@ type PolicyOptions struct {
 }
 
 type compiledRule struct {
-	rule    Rule
-	ports   []int
-	mac     compiledMAC
-	content ContentMatcher
-	auth    AuthKind
-	srcNets []*net.IPNet
-	score   int
+	rule     Rule
+	ports    []int
+	mac      compiledMAC
+	content  ContentMatcher
+	auth     AuthKind
+	srcNets  []*net.IPNet
+	secureOn []byte
+	score    int
 }
 
 // RoutingPolicy resolves an incoming packet to an action.
@@ -172,7 +173,7 @@ type Decision struct {
 
 // Resolve returns the decision for a received packet.
 func (p *RoutingPolicy) Resolve(ev Event) (Decision, bool) {
-	parsed, ok := ParsePacket(ev.Payload, p.secureOn)
+	parsed, ok := ParsePacketAny(ev.Payload, p.secureOns())
 	if !ok {
 		return Decision{}, false
 	}
@@ -225,7 +226,9 @@ func (p *RoutingPolicy) Ports() []int {
 	return ports
 }
 
-// ParsePacket parses a UDP payload with the policy's secure-on value.
+// ParsePacket parses a command-channel payload with the policy's default secure-on value. The
+// command ports carry no rules, so the per-rule passwords do not apply to them and a frame with a
+// different password is refused instead of being read as plain (§19.18).
 func (p *RoutingPolicy) ParsePacket(payload []byte) (ParsedPacket, bool) {
 	return ParsePacket(payload, p.secureOn)
 }
@@ -259,7 +262,7 @@ func (p *RoutingPolicy) compileRule(rule Rule, ifaceMACs map[string]net.Hardware
 		return compiledRule{}, ErrMACConflict
 	}
 
-	content, auth, err := p.compileMatch(rule)
+	content, auth, secureOn, err := p.compileConditions(rule)
 	if err != nil {
 		return compiledRule{}, err
 	}
@@ -274,18 +277,19 @@ func (p *RoutingPolicy) compileRule(rule Rule, ifaceMACs map[string]net.Hardware
 		return compiledRule{}, err
 	}
 
-	if err := p.checkReserved(rule.Match.Ports, def, content, auth); err != nil {
+	if err := p.checkReserved(rule.Match.Ports, def, content, auth, secureOn); err != nil {
 		return compiledRule{}, err
 	}
 
 	compiled := compiledRule{
-		rule:    rule,
-		ports:   rule.Match.Ports,
-		mac:     mac,
-		content: content,
-		auth:    auth,
-		srcNets: srcNets,
-		score:   scoreRule(rule.Match.Ports, content, srcNets, mac, auth),
+		rule:     rule,
+		ports:    rule.Match.Ports,
+		mac:      mac,
+		content:  content,
+		auth:     auth,
+		srcNets:  srcNets,
+		secureOn: secureOn,
+		score:    scoreRule(rule.Match.Ports, content, srcNets, mac, auth),
 	}
 
 	return compiled, nil
@@ -301,7 +305,7 @@ func (p *RoutingPolicy) authenticate(payload []byte, parsed ParsedPacket) Parsed
 		return parsed
 	}
 
-	stripped, ok := ParsePacket(data, p.secureOn)
+	stripped, ok := ParsePacketAny(data, p.secureOns())
 	if !ok {
 		return parsed
 	}
@@ -358,7 +362,71 @@ func (p *RoutingPolicy) compileMatch(rule Rule) (ContentMatcher, AuthKind, error
 	return content, auth, nil
 }
 
-func (p *RoutingPolicy) checkReserved(ports []int, def ActionDef, content ContentMatcher, auth AuthKind) error {
+// compileConditions resolves everything a rule needs from its match block: the content matcher,
+// the authentication requirement and the password it expects (§19.18).
+func (p *RoutingPolicy) compileConditions(rule Rule) (ContentMatcher, AuthKind, []byte, error) {
+	content, auth, err := p.compileMatch(rule)
+	if err != nil {
+		return ContentMatcher{}, "", nil, err
+	}
+
+	secureOn, err := p.compileSecureOn(rule)
+	if err != nil {
+		return ContentMatcher{}, "", nil, err
+	}
+
+	return content, auth, secureOn, nil
+}
+
+// compileSecureOn resolves the password a rule requires: its own when set, the policy default
+// otherwise, so a configuration that only sets security.secure_on keeps working (§19.18).
+func (p *RoutingPolicy) compileSecureOn(rule Rule) ([]byte, error) {
+	secureOn := rule.Match.SecureOn
+	if secureOn == nil {
+		secureOn = p.secureOn
+	}
+
+	if len(secureOn) != 0 && len(secureOn) != MACSize {
+		return nil, fmt.Errorf("%w: got %d bytes", ErrSecureOnLength, len(secureOn))
+	}
+
+	return secureOn, nil
+}
+
+// secureOns lists every password a packet may carry: the policy default plus one per rule. The
+// order does not matter, since all passwords sit at the same six bytes and only one can match.
+func (p *RoutingPolicy) secureOns() [][]byte {
+	candidates := make([][]byte, 0, len(p.rules)+1)
+
+	if len(p.secureOn) > 0 {
+		candidates = append(candidates, p.secureOn)
+	}
+
+	for i := range p.rules {
+		secureOn := p.rules[i].secureOn
+		if len(secureOn) == 0 {
+			continue
+		}
+
+		known := false
+
+		for _, candidate := range candidates {
+			if bytes.Equal(candidate, secureOn) {
+				known = true
+
+				break
+			}
+		}
+
+		if !known {
+			candidates = append(candidates, secureOn)
+		}
+	}
+
+	return candidates
+}
+
+func (p *RoutingPolicy) checkReserved(ports []int, def ActionDef, content ContentMatcher, auth AuthKind, secureOn []byte) error {
 	for _, port := range ports {
 		if !p.reservedPorts[port] {
 			continue
@@ -366,6 +434,10 @@ func (p *RoutingPolicy) checkReserved(ports []int, def ActionDef, content Conten
 
 		if auth == AuthHMAC {
 			return fmt.Errorf("%w: port %d cannot require an authenticated packet", ErrReservedPortAction, port)
+		}
+
+		if len(secureOn) > 0 {
+			return fmt.Errorf("%w: port %d requires a plain magic packet", ErrReservedPortAction, port)
 		}
 
 		if content.kind() != ContentNone {
@@ -409,6 +481,10 @@ func (r *compiledRule) matches(ev Event, parsed ParsedPacket) bool {
 		return false
 	}
 
+	if !bytes.Equal(r.secureOn, parsed.SecureOn) {
+		return false
+	}
+
 	return srcMatches(r.srcNets, ev.SrcIP)
 }
 
@@ -431,6 +507,12 @@ func sameScopeConflict(a compiledRule, b compiledRule) error {
 		return nil
 	}
 
+	if !bytes.Equal(a.secureOn, b.secureOn) {
+		// Two rules asking for different passwords can never match one packet: the payload
+		// carries exactly one of them, so this is a real way to tell them apart (§19.18).
+		return nil
+	}
+
 	if a.content.key() == b.content.key() && samePorts(a.ports, b.ports) && sameSRC(a.srcNets, b.srcNets) {
 		return fmt.Errorf("%w: ports %v", ErrDuplicatePort, a.ports)
 	}
@@ -449,6 +531,10 @@ func crossScopeConflict(a compiledRule, b compiledRule) error {
 	}
 
 	if !samePorts(a.ports, b.ports) || a.content.key() != b.content.key() || !srcOverlap(a.srcNets, b.srcNets) {
+		return nil
+	}
+
+	if !bytes.Equal(a.secureOn, b.secureOn) {
 		return nil
 	}
 

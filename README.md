@@ -113,6 +113,7 @@ logging: { level: info, format: text }
 security:
   dry_run: false
   reserved_ports: [7, 9]
+  # secure_on: "${SOL_SECURE_ON}"   # default SecureOn password (6 bytes) every rule expects
   url_allowlist:              # outbound HTTP destinations; boundaries are enforced
     - "https://hooks.example.com/"
     - "=https://api.example.com/v1/notify"
@@ -239,6 +240,48 @@ authentication while no key is configured, a reserved port that requires it, and
 without a key are all refused at start-up instead of failing silently. It proves the packet came
 from someone holding the key. On its own it does not stop a replay of a captured packet: set
 `packet_auth.window` (below) or rely on cooldowns and the rate limit to bound that.
+
+### SecureOn per interface or per rule
+
+`security.secure_on` sets the password (6 bytes) every rule expects. An interface block or a
+single rule can require a different one, which is how two targets on one port stay separate:
+
+```yaml
+version: 1
+
+security:
+  secure_on: "${SOL_SECURE_ON}"     # the default
+
+actions:
+  - name: wake-server
+    type: wol.send
+    mac: "58:11:22:BC:78:66"
+
+server:
+  interfaces:
+    - name: enp9s0f3u1
+      secure_on: "${NAS_WOL_PASSWORD}"   # this block's rules expect this one instead
+      rules:
+        - match: { ports: [10020] }
+          action: wake-server
+
+  rules:
+    - match: { ports: [10020], secure_on: "${OTHER_WOL_PASSWORD}" }   # this rule only
+      action: noop
+```
+
+Both rules listen on port 10020 and one of them inherits the global password while the other
+declares its own: they can never match the same packet, so this is not a conflict.
+
+- A rule without `secure_on` inherits its block's, and a rule or block without one inherits
+  `security.secure_on`; with none of them set no password is required.
+- `secure_on: ""` is not the same as leaving it out: it opts *out* of the default and requires a
+  packet without a password.
+- Ports 7 and 9 always take plain magic packets, so a password there is refused at startup.
+- Two rules that differ only in their password are not a conflict: a packet carries exactly one of
+  them. A packet whose password matches nothing is read as a plain magic packet (the six bytes
+  become content), which the default `content: none` rejects - so a wrong password never opens a
+  rule that asks for one.
 
 ### Raw shell (off by default)
 

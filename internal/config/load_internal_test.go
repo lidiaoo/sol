@@ -150,18 +150,68 @@ server:
 	require.ErrorIs(t, err, wol.ErrDuplicateInterface)
 }
 
-func TestLoadPerInterfaceSecureOnUnsupported(t *testing.T) {
+func TestLoadPerInterfaceSecureOn(t *testing.T) {
 	path := writeConfig(t, `
 version: 1
 server:
   interfaces:
     - name: eth0
       secure_on: secret
+      rules:
+        - match: { ports: [8] }
+          action: noop
+        - match: { ports: [10], secure_on: other! }
+          action: noop
+        - match: { ports: [11], secure_on: "" }
+          action: noop
+    - name: eth1
+      rules:
+        - match: { ports: [12] }
+          action: noop
+  rules:
+    - match: { ports: [13] }
+      action: noop
+`)
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	// The block's password reaches the rules that do not declare one, a rule can override it,
+	// and an explicitly empty value means "no password" rather than "inherit".
+	secureOn := make(map[int]string, len(cfg.Rules))
+
+	for _, rule := range cfg.Rules {
+		require.Len(t, rule.Match.Ports, 1)
+
+		port := rule.Match.Ports[0]
+		secureOn[port] = string(rule.Match.SecureOn)
+
+		switch port {
+		case 11:
+			require.NotNil(t, rule.Match.SecureOn, "an explicit empty value is not the same as leaving it out")
+		case 12, 13:
+			require.Nil(t, rule.Match.SecureOn, "only the block declares a password")
+		}
+	}
+
+	require.Equal(t, "secret", secureOn[8])
+	require.Equal(t, "other!", secureOn[10])
+	require.Empty(t, secureOn[11])
+}
+
+func TestLoadSecureOnLength(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+server:
+  interfaces:
+    - name: eth0
+      rules:
+        - match: { ports: [8], secure_on: short }
+          action: noop
 `)
 
 	_, err := Load(path)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "secure_on")
+	require.ErrorIs(t, err, wol.ErrSecureOnLength)
 }
 
 func TestLoadMatchSHApes(t *testing.T) {

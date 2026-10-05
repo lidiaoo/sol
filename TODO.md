@@ -74,7 +74,7 @@
 - [x] 同名网卡 / 端口重复 / 歧义规则校验（`ErrDuplicateInterface` / `ErrDuplicatePort` / `ErrAmbiguousRule`）
 - [x] `actions` 段 + 命名动作引用（注册进 Registry；重名 -> `ErrDuplicateAction`）
 - [x] `logging` 段（`level` / `format`：text/json）+ `log` -> `log/slog` 结构化日志迁移（`internal/infra/logging`）
-- [ ] 每网卡 `secure_on`：需要支持 per-rule secureOn 的包解析（现状是整 policy 一个）
+- [x] 每作用域 `secure_on`：三级（`match.secure_on` > `server.interfaces[].secure_on` > `security.secure_on`），`secure_on: ""` = 显式不要口令；包解析改成多候选试读（`ParsePacketAny`，明文回退 + 规则级 `SecureOn` 对等比较，默认 `content: none` 让它 fail-closed）；命令通道仍用严格单口令；保留端口配口令启动即报错（breaking）；`ErrPerInterfaceSecureOn` 删除。见设计 §19.18，冒烟 s26
 - [x] 冲突检测 `ErrRuleConflict` / `ErrInterfaceScopeConflict`：跨作用域（全局 vs 块）冲突的显式报错
 - [x] 热重载（`SIGHUP` + `POST /v1/reload` + `server.watch`/`--watch` 自动 reload；见 §19.9）
 - [x] 附 JSON Schema（编辑器补全）：`schema/sol.schema.json`（2020-12，未知字段一律拒绝、enum/required 与加载器一致）+ 防漂移测试 `internal/config/schema_internal_test.go`（字段集合与 Go 结构体 yaml tag 双向比对；action/content/mac/auth/logging 的 enum 与 domain 常量比对——这条抓到了我手写 schema 时把 content kind 误写成 `exact`，实际是 any|none|suffix|prefix）
