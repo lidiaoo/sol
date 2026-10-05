@@ -7,9 +7,9 @@
 
 - 项目：sol（bavix/sol）—— 监听 Wake-on-LAN 魔法包，触发本机电源动作（反向 WoL）。
 - 本次目标：从"单端口 × 单网卡 × 单动作"扩成"多端口 × 多网卡 × 包内容匹配 × 具名动作"，并用**保留端口 {7,9}** 把标准 WOL 端口变成安全边界；HTTP、自定义命令、远端命令列为后续阶段。
-- 现状：**设计定稿**（docs/routing-design.md，21 节 + 背景）；**P1（domain 模型与匹配）、P2（动作模型与 CLI）已落地**，其余阶段待开发。
+- 现状：**设计定稿**（docs/routing-design.md，21 节 + 背景）；**P1（domain 模型与匹配）、P2（动作模型与 CLI）已落地，P3（配置文件）部分落地**，其余待开发。
 - 怎么读：设计文档讲"为什么这么做 / 具体怎么做"；本文件讲"做到哪了 / 下一步"。
-- 阶段：P1 模型 ✅ -> P2 动作与 CLI ✅ -> P3 配置文件 -> P4 自定义命令 + HTTP + 远端命令。
+- 阶段：P1 模型 ✅ -> P2 动作与 CLI ✅ -> P3 配置文件（进行中）-> P4 自定义命令 + HTTP + 远端命令。
 
 ---
 
@@ -57,21 +57,25 @@
 - [x] `--port 9` 行为改为 `noop` + 启动 warning（breaking）
 - [x] `PolicyOptions.Actions` 动作白名单（P3 的 `actions` 段从这里注入）
 
-## P3 配置文件（§9、§13、§17.3/17.9）
+## P3 配置文件（§9、§13、§17.3/17.9）进行中
 
 完成标准：同一套规则能用 YAML 表达并入参；严格解码；优先级正确。
+实现对照见设计 §19.3。
 
-- [ ] 引入 YAML 库（`gopkg.in/yaml.v3`）+ 严格解码（未知字段报错）
-- [ ] `--config` flag + 配置发现顺序：`--config` > `/etc/sol/sol.yaml` > `~/.config/sol/sol.yaml`
-- [ ] 优先级：默认 < 文件 < 环境变量 < flag
-- [ ] 环境变量插值 `${VAR}`
-- [ ] 全局规则 `server.rules` + 顶层 `rules` 简写（同现报错）
-- [ ] `server.interfaces`：字符串简写 + 块 `{name, dry_run?, secure_on?, rules?}`
-- [ ] 块内规则展开为 interface 作用域
-- [ ] `match.src_cidrs` 接线
-- [ ] `secure_on` 接线（`wol.SecureOn`）
-- [ ] 冲突检测 `ErrRuleConflict` / 同名网卡 / 块作用域校验
-- [ ] `actions` 段 + 命名动作引用（注入 `PolicyOptions.Actions`）
+- [x] 引入 YAML 库（`gopkg.in/yaml.v3`）+ 严格解码（未知字段报错）——顺带在 `.golangci.yml` 的 depguard 允许列表加 `gopkg.in`
+- [x] `--config` flag + 配置发现顺序：`--config` > `$SOL_CONFIG` > `/etc/sol/sol.yaml` > `~/.config/sol/sol.yaml`
+- [x] 优先级：默认 < 文件 < 环境变量（`SOL_DRY_RUN` / `SOL_ALLOW_RESERVED_PORT_ACTIONS` / `SOL_INTERFACES` / `SOL_SECURE_ON`）< flag
+- [x] 环境变量插值 `${VAR}` / `$VAR`（未设置即报错）
+- [x] 全局规则 `server.rules` + 顶层 `rules` 简写（同现 -> `ErrRulesConflict`）
+- [x] `server.interfaces`：字符串简写 + 块 `{name, dry_run?, rules?}`
+- [x] 块内规则展开为 interface 作用域 + 块级 `dry_run` -> `Rule.DryRun`
+- [x] `match.src_cidrs` 接线
+- [x] `secure_on` 接线（全局；长度必须 6 字节 -> `ErrSecureOnLength`）
+- [x] 同名网卡 / 端口重复 / 歧义规则校验（`ErrDuplicateInterface` / `ErrDuplicatePort` / `ErrAmbiguousRule`）
+- [x] `actions` 段 + 命名动作引用（注册进 Registry；重名 -> `ErrDuplicateAction`）
+- [ ] `logging` 段：需要先把 `log` 换成 `slog`（`level` / `format`：text/json）
+- [ ] 每网卡 `secure_on`：需要支持 per-rule secureOn 的包解析（现状是整 policy 一个）
+- [ ] 冲突检测 `ErrRuleConflict` / `ErrInterfaceScopeConflict`：跨作用域（全局 vs 块）冲突的显式报错
 - [ ] 热重载（可选，等价 SIGHUP）
 - [ ] 附 JSON Schema（编辑器补全）
 

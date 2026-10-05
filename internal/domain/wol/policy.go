@@ -14,6 +14,7 @@ var (
 	ErrAmbiguousRule      = errors.New("ambiguous rules: equal specificity can match the same packet")
 	ErrUnknownActionRef   = errors.New("unknown action reference")
 	ErrDuplicateInterface = errors.New("duplicate interface")
+	ErrSecureOnLength     = errors.New("secure_on must be exactly 6 bytes")
 )
 
 const (
@@ -84,6 +85,10 @@ type RoutingPolicy struct {
 
 // NewRoutingPolicy validates rules against the known interfaces and actions.
 func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*RoutingPolicy, error) {
+	if len(opts.SecureOn) != 0 && len(opts.SecureOn) != MACSize {
+		return nil, fmt.Errorf("%w: got %d bytes", ErrSecureOnLength, len(opts.SecureOn))
+	}
+
 	ifaceMACs, allMACs, err := indexIfaces(ifaces)
 	if err != nil {
 		return nil, err
@@ -116,20 +121,29 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 	return policy, nil
 }
 
-// Resolve returns the action name for a received packet.
-func (p *RoutingPolicy) Resolve(ev Event) (Action, bool) {
+// Decision is the outcome of resolving a packet against the policy.
+type Decision struct {
+	Action Action
+	DryRun bool
+}
+
+// Resolve returns the decision for a received packet.
+func (p *RoutingPolicy) Resolve(ev Event) (Decision, bool) {
 	parsed, ok := ParsePacket(ev.Payload, p.secureOn)
 	if !ok {
-		return "", false
+		return Decision{}, false
 	}
 
 	for i := range p.rules {
 		if p.rules[i].matches(ev, parsed) {
-			return p.rules[i].rule.Action, true
+			return Decision{
+				Action: p.rules[i].rule.Action,
+				DryRun: p.rules[i].rule.DryRun,
+			}, true
 		}
 	}
 
-	return "", false
+	return Decision{}, false
 }
 
 // Ports returns the distinct listen ports declared by the rules.

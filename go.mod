@@ -5,6 +5,7 @@ go 1.26
 require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

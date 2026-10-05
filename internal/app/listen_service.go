@@ -186,23 +186,24 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 		ev.SrcPort = pkt.src.Port
 	}
 
-	action, matched := s.policy.Resolve(ev)
+	decision, matched := s.policy.Resolve(ev)
 	if !matched {
 		log.Printf("Non-matching packet from %s, port=%d, len=%d", pkt.src, pkt.port, len(pkt.payload))
 
 		return
 	}
 
-	trigger := ternary(s.dryRun, "DRY-RUN", string(action))
+	logOnly := s.dryRun || decision.DryRun
+	trigger := ternary(logOnly, "DRY-RUN", string(decision.Action))
 	log.Printf("Magic packet match from %s, port=%d, action=%s - triggering %s",
-		pkt.src, pkt.port, action, trigger)
+		pkt.src, pkt.port, decision.Action, trigger)
 
-	if s.dryRun {
+	if logOnly {
 		return
 	}
 
-	if dispatchErr := s.registry.Dispatch(ctx, action, ev); dispatchErr != nil {
-		log.Printf("%s failed: %v", action, dispatchErr)
+	if dispatchErr := s.registry.Dispatch(ctx, decision.Action, ev); dispatchErr != nil {
+		log.Printf("%s failed: %v", decision.Action, dispatchErr)
 	}
 }
 

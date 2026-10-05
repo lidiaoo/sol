@@ -265,4 +265,6 @@ type Match struct {
 type Rule struct {
 	Match  Match
 	Action Action
+	// DryRun marks a log-only rule: matching packets are logged but not executed.
+	DryRun bool
 }

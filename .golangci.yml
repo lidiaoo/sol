@@ -20,6 +20,7 @@ linters:
             - github.com
             - golang.org
             - google.golang.org
+            - gopkg.in
     lll:
       line-length: 140
     wsl_v5:

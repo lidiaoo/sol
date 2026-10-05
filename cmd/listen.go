@@ -14,7 +14,7 @@ import (
 	"github.com/bavix/sol/internal/domain/wol"
 )
 
-var errNoPorts = errors.New("at least one --port flag is required")
+var errNoRules = errors.New("no rules configured: pass --port or set rules in the config file")
 
 const portPartsCount = 2
 
@@ -22,18 +22,13 @@ var listenCmd = &cobra.Command{
 	Use:   "listen",
 	Short: "Listen for magic packets and trigger an action",
 	Long: "Listen for Wake-on-LAN magic packets on the given interfaces (or every eligible\n" +
-		"interface by default) and trigger an action when a packet matches a rule.",
+		"interface by default) and trigger an action when a packet matches a rule.\n" +
+		"Rules come from the configuration file unless --port is given, which takes over\n" +
+		"the whole rule set.",
 	RunE: func(command *cobra.Command, _ []string) error {
-		parsedRules, err := parsePorts()
+		cfg, err := buildConfig(command)
 		if err != nil {
 			return err
-		}
-
-		cfg := &config.Config{
-			InterfaceNames:       interfaceNames,
-			DryRun:               dryRun,
-			AllowReservedActions: allowReservedActions,
-			Rules:                parsedRules,
 		}
 
 		builder := deps.NewBuilder(cfg)
@@ -53,11 +48,15 @@ var (
 	portStrings          []string
 	defaultActionName    string
 	allowReservedActions bool
+	configPath           string
 )
 
 func init() {
 	rootCmd.AddCommand(listenCmd)
 
+	listenCmd.Flags().StringVar(&configPath, "config", "",
+		"Configuration file to load (default: $SOL_CONFIG, then /etc/sol/sol.yaml, "+
+			"then ~/.config/sol/sol.yaml)")
 	listenCmd.Flags().StringArrayVar(&interfaceNames, "iface", nil,
 		"Network interface to match on; repeatable (--iface eth0 --iface wlan0). "+
 			"Omit to auto-select every eligible interface")
@@ -72,11 +71,44 @@ func init() {
 		"Allow non-noop actions on the reserved ports 7 and 9 (reverts to the old behaviour)")
 }
 
-func parsePorts() ([]wol.Rule, error) {
-	if len(portStrings) == 0 {
-		return nil, errNoPorts
+// buildConfig merges the configuration file with the CLI flags. Precedence is
+// defaults < file < environment < flags.
+func buildConfig(command *cobra.Command) (*config.Config, error) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return nil, err
 	}
 
+	if len(interfaceNames) > 0 {
+		cfg.InterfaceNames = interfaceNames
+	}
+
+	if command.Flags().Changed("dry-run") {
+		cfg.DryRun = dryRun
+	}
+
+	if command.Flags().Changed("allow-reserved-actions") {
+		cfg.AllowReservedActions = allowReservedActions
+	}
+
+	// Any --port makes the command line take over the rule set completely.
+	if len(portStrings) > 0 {
+		rules, rulesErr := parsePorts(cfg.AllowReservedActions)
+		if rulesErr != nil {
+			return nil, rulesErr
+		}
+
+		cfg.Rules = rules
+	}
+
+	if len(cfg.Rules) == 0 {
+		return nil, errNoRules
+	}
+
+	return cfg, nil
+}
+
+func parsePorts(allowReserved bool) ([]wol.Rule, error) {
 	defaultAction, err := wol.ParseAction(defaultActionName)
 	if err != nil {
 		return nil, fmt.Errorf("invalid --default-action: %w", err)
@@ -92,7 +124,7 @@ func parsePorts() ([]wol.Rule, error) {
 
 		rules = append(rules, wol.Rule{
 			Match:  wol.Match{Ports: []int{port}, MAC: wol.MACSelector{Kind: wol.MACSelf}},
-			Action: guardReservedPort(port, action, allowReservedActions),
+			Action: guardReservedPort(port, action, allowReserved),
 		})
 	}
 

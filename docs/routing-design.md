@@ -1269,6 +1269,33 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 保留端口：`--port 9`（无动作或显式非 noop 动作）在 CLI 层降级为 `noop` 并打 WARNING，除非 `--allow-reserved-actions`；策略层仍对"保留端口 + 内容规则 / 非 noop"报 `ErrReservedPortAction`（fail fast）。
 - 冒烟（真机 `enp6s0` + `enp9s0f3u1`）：`sol ifaces` 把 `docker0/br-*/veth*` 标为 virtual 且 `AUTO=no`、`wlp5s0`（down）`AUTO=no`；auto 模式启动打印两张网卡与规则列表；`--port 10010:sleep --port 10011:shutdown` 分别命中 sleep/shutdown；显式 `--iface enp9s0f3u1` 时 `enp6s0` 的魔法包被判为不匹配。
 
+### 19.3 P3 已落地部分（配置文件）
+
+代码位置：`internal/config/{config,schema,load}.go`（YAML 模式、严格解码、发现顺序、`${VAR}` 插值、环境变量覆盖、转换为 `Config`）、`internal/domain/wol/{match,policy}.go`（`Rule.DryRun` + `Decision`）、`cmd/listen.go`（`--config` + 合并优先级）、`internal/deps/builder.go`（把 `ReservedPorts` / `SecureOn` / `Actions` 交给策略）。测试 `internal/config/load_internal_test.go`（覆盖率约 91%）。
+
+已实现：
+
+- YAML（`gopkg.in/yaml.v3`）+ `KnownFields(true)` **严格解码**：未知字段直接报错，不静默忽略。为此在 `.golangci.yml` 的 depguard 允许列表加了 `gopkg.in`（原本只允许 std / github.com / golang.org / google.golang.org）。
+- `version: 1` 校验，其它值 -> `ErrUnsupportedVersion`。
+- 发现顺序：`--config` > `$SOL_CONFIG` > `/etc/sol/sol.yaml` > `~/.config/sol/sol.yaml`；都不存在则用内置默认（此时无规则，CLI 报 `no rules configured`）。
+- `${VAR}` / `$VAR` 插值：引用了未设置的变量直接报错（避免凭据静默变空）。
+- 环境变量覆盖（在文件之后、CLI flag 之前）：`SOL_DRY_RUN`、`SOL_ALLOW_RESERVED_PORT_ACTIONS`、`SOL_INTERFACES`（逗号分隔）、`SOL_SECURE_ON`。
+- 规则来源：`server.rules`（规范写法）与顶层 `rules` 等价，二者同现 -> `ErrRulesConflict`。
+- `server.interfaces`：字符串简写或块 `{name, dry_run?, rules?}`；块内规则在加载期展开为 `MACSelector{Kind: interface, Ifaces: [块名]}`（即 §17.8/17.9 的"等价写法"），块级 `dry_run` 落成 `Rule.DryRun`——命中仍打印 action，但打 `DRY-RUN` 不执行。
+- `match` 全字段接线：`ports` / `interfaces` / `mac`（标量 `self|any|<MAC>` 或块 `{kind, address, interfaces}`）/ `content`（`kind`、`value`、`value_hex`、`offset`）/ `src_cidrs`。
+- `security`：`dry_run`、`reserved_ports`、`allow_reserved_port_actions`、`secure_on`（全局；长度必须 6 字节，否则 `ErrSecureOnLength`——旧实现里长度不对会**静默永不匹配**，现在 fail fast）。
+- `actions` 段：命名动作 `{name, type}`，type 暂限四种内置类型；定义会注册进 Registry，`rules[].action` 可直接引用；重名 -> `ErrDuplicateAction`（内置名不可重定义）。
+- 语义校验仍在 policy 构造期 fail fast：保留端口非 noop / 带内容、未知动作、端口范围、CIDR、重复与歧义规则等。
+- 冒烟：文件版"全局 noop + 每网卡块 dry_run"生效（块规则命中打 `DRY-RUN`，全局规则照常执行）；出现 `--port` 时完全接管 rules；未设置变量 / 未知字段 / rules 双写 / 无规则 / secure_on 长度 / 保留端口违规 全部给出明确错误。
+
+**未实现（本小节不装作已有）**：
+
+- `logging` 段不在 schema 里：写了会因严格解码报 `field logging not found`。落地要先把 stdlib `log` 换成 `slog`（`level` / `format`）。
+- `server.http`、`security.allow_remote_commands` / `allow_raw_shell` / `remote_command_ports` / `raw_shell_ports`、`commands` 段：留到 P4。
+- 每网卡 `secure_on`：解析到就报错（`ErrPerInterfaceSecureOn`），因为包解析目前是"整个 policy 一个 secure_on"。
+- 热重载、JSON Schema：未做。
+- `--default-action` 只作用于 `--port` 生成的规则；文件里的规则必须显式写 `action`（缺 `action` -> `ErrActionRequired`）。
+
 ---
 
 ## 20. 安全模型总览（汇总）

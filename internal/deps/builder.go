@@ -59,6 +59,11 @@ func (b *Builder) Registry() *wol.Registry {
 			wol.ActionTypeSleep,
 		)
 
+		// Named actions from the configuration (built-in names carry identical definitions).
+		for _, def := range b.cfg.Actions {
+			registry.RegisterAction(def)
+		}
+
 		b.registry = registry
 	})
 
@@ -79,7 +84,9 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 		registry := b.Registry()
 
 		policy, err := wol.NewRoutingPolicy(b.cfg.Rules, ifaces, wol.PolicyOptions{
+			ReservedPorts: b.cfg.ReservedPorts,
 			AllowReserved: b.cfg.AllowReservedActions,
+			SecureOn:      b.cfg.SecureOn,
 			Actions:       registry.Actions(),
 		})
 		if err != nil {

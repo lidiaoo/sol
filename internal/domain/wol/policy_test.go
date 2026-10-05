@@ -226,9 +226,9 @@ func TestRoutingPolicyResolve(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			act, matched := policy.Resolve(wol.Event{Payload: tt.payload, DstPort: tt.port})
+			decision, matched := policy.Resolve(wol.Event{Payload: tt.payload, DstPort: tt.port})
 			require.Equal(t, tt.want, matched)
-			require.Equal(t, tt.wantAct, act)
+			require.Equal(t, tt.wantAct, decision.Action)
 		})
 	}
 }
@@ -246,7 +246,7 @@ func TestRoutingPolicyResolveSrcCIDR(t *testing.T) {
 
 	act, matched := policy.Resolve(wol.Event{Payload: magic, DstPort: 6, SrcIP: net.IPv4(10, 0, 0, 5)})
 	require.True(t, matched)
-	require.Equal(t, wol.ActionShutdown, act)
+	require.Equal(t, wol.ActionShutdown, act.Action)
 
 	_, matched = policy.Resolve(wol.Event{Payload: magic, DstPort: 6, SrcIP: net.IPv4(192, 168, 1, 5)})
 	require.False(t, matched)
@@ -268,7 +268,49 @@ func TestRoutingPolicyResolveExplicitMAC(t *testing.T) {
 
 	act, matched := policy.Resolve(wol.Event{Payload: wol.BuildMagicPacket(other), DstPort: 8})
 	require.True(t, matched)
-	require.Equal(t, wol.ActionNoop, act)
+	require.Equal(t, wol.ActionNoop, act.Action)
+}
+
+func TestNewRoutingPolicySecureOnLength(t *testing.T) {
+	t.Parallel()
+
+	_, err := wol.NewRoutingPolicy(
+		[]wol.Rule{plainRule(8, wol.ActionShutdown)},
+		testIfaces(),
+		wol.PolicyOptions{SecureOn: []byte("12345")},
+	)
+	require.ErrorIs(t, err, wol.ErrSecureOnLength)
+
+	_, err = wol.NewRoutingPolicy(
+		[]wol.Rule{plainRule(8, wol.ActionShutdown)},
+		testIfaces(),
+		wol.PolicyOptions{SecureOn: []byte("123456")},
+	)
+	require.NoError(t, err)
+}
+
+func TestRoutingPolicyResolveDryRun(t *testing.T) {
+	t.Parallel()
+
+	rule := plainRule(11, wol.ActionReboot)
+	rule.DryRun = true
+
+	policy, err := wol.NewRoutingPolicy([]wol.Rule{rule}, testIfaces(), wol.PolicyOptions{})
+	require.NoError(t, err)
+
+	decision, matched := policy.Resolve(wol.Event{Payload: wol.BuildMagicPacket(testMAC()), DstPort: 11})
+	require.True(t, matched)
+	require.Equal(t, wol.ActionReboot, decision.Action)
+	require.True(t, decision.DryRun)
+
+	plain := plainRule(12, wol.ActionReboot)
+
+	dryPolicy, err := wol.NewRoutingPolicy([]wol.Rule{plain}, testIfaces(), wol.PolicyOptions{})
+	require.NoError(t, err)
+
+	decision, matched = dryPolicy.Resolve(wol.Event{Payload: wol.BuildMagicPacket(testMAC()), DstPort: 12})
+	require.True(t, matched)
+	require.False(t, decision.DryRun)
 }
 
 func TestRoutingPolicyPortsAndRules(t *testing.T) {
