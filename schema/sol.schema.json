@@ -184,6 +184,16 @@
             "$ref": "#/$defs/duration"
           }
         },
+        "rate_limit": {
+          "type": "string",
+          "description": "Global cap on action executions, counted across every action and trigger: 10/s, 600/m, 3600/h, or a bare number meaning per second. Empty or 0 disables the guard. A suppressed action is logged, counted as rate_limited and answered with 429 on the control plane.",
+          "pattern": "^\\s*(0|[0-9]+(\\.[0-9]+)?)(\\s*/\\s*(s|sec|second|m|min|minute|h|hour))?\\s*$"
+        },
+        "rate_burst": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Bucket size in actions, absorbing a burst that arrives at once. 0 means one second of rate_limit. Setting it without a rate_limit is refused at start-up."
+        },
         "allow_remote_commands": {
           "type": "boolean",
           "description": "Enable the remote command channel. Off by default; enabling it requires remote_command_auth and at least one non-reserved remote_command_ports entry."

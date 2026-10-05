@@ -34,6 +34,7 @@ var (
 	ErrHTTPUser              = errors.New("server.http.auth.user is required for basic auth")
 	ErrHTTPTLS               = errors.New("invalid server.http.tls configuration")
 	ErrCooldown              = errors.New("invalid security.cooldown")
+	ErrRateLimit             = errors.New("invalid security.rate_limit")
 	ErrRemoteCommandID       = errors.New("invalid remote command id")
 	ErrRemoteCommandType     = errors.New("unsupported remote command type")
 	ErrRemoteCommandDef      = errors.New("invalid remote command definition")
@@ -289,7 +290,7 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		return nil, err
 	}
 
-	cooldown, actionCooldowns, err := buildCooldowns(f.Security, actions)
+	guards, err := buildGuards(f.Security, actions)
 	if err != nil {
 		return nil, err
 	}
@@ -306,6 +307,8 @@ func (f *fileConfig) toConfig() (*Config, error) {
 
 	return &Config{
 		Watch:                watch,
+		RateLimit:            guards.rateLimit,
+		RateBurst:            guards.rateBurst,
 		InterfaceNames:       names,
 		DryRun:               f.Security.DryRun,
 		AllowReservedActions: f.Security.AllowReservedPortActions,
@@ -313,8 +316,8 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		SecureOn:             secureOnBytes(f.Security.SecureOn),
 		ExecAllowlist:        f.Security.ExecAllowlist,
 		URLAllowlist:         f.Security.URLAllowlist,
-		Cooldown:             cooldown,
-		ActionCooldowns:      actionCooldowns,
+		Cooldown:             guards.cooldown,
+		ActionCooldowns:      guards.perAction,
 		Remote:               remote,
 		Actions:              actions,
 		Logging:              Logging{Level: f.Logging.Level, Format: f.Logging.Format},
@@ -769,6 +772,85 @@ func buildCooldowns(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (t
 	return global, perAction, nil
 }
 
+// guardsConfig is the resolved set of execution guardrails: the per-action cooldowns (§19.6)
+// and the global token bucket (§19.12).
+type guardsConfig struct {
+	cooldown  time.Duration
+	perAction map[wol.Action]time.Duration
+	rateLimit float64
+	rateBurst int
+}
+
+// buildGuards resolves every guardrail in one step, so the caller stays short.
+func buildGuards(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (guardsConfig, error) {
+	cooldown, perAction, err := buildCooldowns(cfg, actions)
+	if err != nil {
+		return guardsConfig{}, err
+	}
+
+	rateLimit, rateBurst, err := buildRateLimit(cfg)
+	if err != nil {
+		return guardsConfig{}, err
+	}
+
+	return guardsConfig{
+		cooldown:  cooldown,
+		perAction: perAction,
+		rateLimit: rateLimit,
+		rateBurst: rateBurst,
+	}, nil
+}
+
+// buildRateLimit resolves security.rate_limit and its bucket size. An empty or zero rate
+// disables the guard; a burst without a rate is a configuration mistake, not a no-op.
+func buildRateLimit(cfg securityConfig) (float64, int, error) {
+	value := strings.TrimSpace(cfg.RateLimit)
+	if value == "" || value == "0" {
+		if cfg.RateBurst != 0 {
+			return 0, 0, fmt.Errorf("%w: security.rate_burst is set without a security.rate_limit", ErrRateLimit)
+		}
+
+		return 0, 0, nil
+	}
+
+	rate, err := parseRate(value)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	if cfg.RateBurst < 0 {
+		return 0, 0, fmt.Errorf("%w: security.rate_burst: %d: must not be negative", ErrRateLimit, cfg.RateBurst)
+	}
+
+	return rate, cfg.RateBurst, nil
+}
+
+// parseRate reads a "<n>/s|m|h" rate, or a bare "<n>" meaning per second.
+func parseRate(value string) (float64, error) {
+	number, unit, hasUnit := strings.Cut(value, "/")
+
+	count, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
+	if err != nil || count <= 0 {
+		return 0, fmt.Errorf("%w: %q: want a positive number, e.g. 10/s, 600/m or 3600/h", ErrRateLimit, value)
+	}
+
+	if !hasUnit {
+		return count, nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(unit)) {
+	case "s", "sec", "second":
+		return count, nil
+	case "m", "min", "minute":
+		return count / time.Minute.Seconds(), nil
+	case "h", "hour":
+		return count / time.Hour.Seconds(), nil
+	default:
+		return 0, fmt.Errorf("%w: %q: unit must be s, m or h", ErrRateLimit, value)
+	}
+}
+
+// parseCooldown reads a security.cooldown value.
 func parseCooldown(value string, field string) (time.Duration, error) {
 	if value == "" {
 		return 0, nil

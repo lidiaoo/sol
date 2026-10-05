@@ -111,6 +111,8 @@ security:
   exec_allowlist: [/usr/bin]
   cooldown: 5s
   cooldowns: { power.shutdown: 30s }
+  rate_limit: 10/s            # global token bucket across every action and trigger
+  rate_burst: 20              # bucket size; 0 means one second of rate_limit
 
 actions:
   - name: lock
@@ -188,10 +190,25 @@ Endpoints: `GET /healthz`, `GET /v1/status`, `GET /v1/rules`, `GET /v1/interface
 ### Reloading
 
 Three paths, one implementation: `SIGHUP`, `POST /v1/reload`, and `server.watch` / `--watch`
-(polling the configuration file). Rules, actions, cooldowns, the remote command channel,
-`dry_run` and the log level are swapped atomically per packet. A configuration that fails to
-load leaves the running one untouched; a change to the **listening port set** needs a restart
-and is refused with HTTP 409 rather than half-applied.
+(polling the configuration file). Rules, actions, cooldowns, the rate limit, the remote command
+channel, `dry_run` and the log level are swapped atomically per packet. A configuration that
+fails to load leaves the running one untouched; a change to the **listening port set** needs a
+restart and is refused with HTTP 409 rather than half-applied. An unchanged cooldown or rate
+limit keeps its running state, so a reload cannot be used to refresh a guard by accident.
+
+### Guards
+
+Two independent limits protect the machine from a broadcast storm:
+
+- `security.cooldown` / `security.cooldowns.<action>` — per action: the minimum interval between
+  two executions of the *same* action.
+- `security.rate_limit` / `security.rate_burst` — global: a token bucket capping executions
+  across *every* action and every trigger (packets, `POST /v1/actions/{name}`, remote commands).
+
+A suppressed action is logged (`action suppressed by cooldown` / `by rate limit`) with the retry
+delay, counted in `/v1/status` (`suppressed`, `rate_limited`) and `/metrics`
+(`sol_suppressed_total`, `sol_rate_limited_total`), and answered with **429** on the control
+plane. `GET /v1/status` also reports the live `rate_limit` when one is configured.
 
 ## Ports and privileges
 

@@ -18,6 +18,9 @@ var (
 	errNilListener = errors.New("nil listener")
 	// ErrActionSuppressed reports that an action was rate-limited by its cooldown.
 	ErrActionSuppressed = errors.New("action suppressed by cooldown")
+
+	// ErrActionRateLimited reports that an action was dropped by the global rate limit.
+	ErrActionRateLimited = errors.New("action suppressed by rate limit")
 )
 
 const packetChannelSize = 2
@@ -56,22 +59,24 @@ type EventRecord struct {
 
 // Stats is a snapshot of the listener counters, used by the control plane.
 type Stats struct {
-	StartedAt  time.Time
-	Packets    uint64
-	Matched    uint64
-	Suppressed uint64
-	Actions    map[string]uint64
-	LastEvent  *EventRecord
+	StartedAt   time.Time
+	Packets     uint64
+	Matched     uint64
+	Suppressed  uint64
+	RateLimited uint64
+	Actions     map[string]uint64
+	LastEvent   *EventRecord
 }
 
 type ListenService struct {
 	factory PacketListenerFactory
 	ifaces  []wol.IfaceInfo
 
-	startedAt time.Time
-	packets   atomic.Uint64
-	matched   atomic.Uint64
-	blocked   atomic.Uint64
+	startedAt   time.Time
+	packets     atomic.Uint64
+	matched     atomic.Uint64
+	blocked     atomic.Uint64
+	rateLimited atomic.Uint64
 
 	mu       sync.Mutex
 	actions  map[string]uint64
@@ -84,6 +89,7 @@ type ListenService struct {
 	policy    *wol.RoutingPolicy
 	dryRun    bool
 	cooldowns *cooldowns
+	limiter   *rateLimiter
 	remote    *remoteRunner
 }
 
@@ -94,6 +100,7 @@ type routingSnapshot struct {
 	policy    *wol.RoutingPolicy
 	registry  *wol.Registry
 	cooldowns *cooldowns
+	limiter   *rateLimiter
 	remote    *remoteRunner
 	dryRun    bool
 }
@@ -114,6 +121,7 @@ func NewListenService(
 		startedAt: time.Now(),
 		actions:   make(map[string]uint64),
 		cooldowns: newCooldowns(0, nil),
+		limiter:   newRateLimiter(0, 0),
 	}
 }
 
@@ -123,6 +131,16 @@ func (s *ListenService) WithCooldowns(global time.Duration, perAction map[string
 	defer s.rtMu.Unlock()
 
 	s.cooldowns = newCooldowns(global, perAction)
+
+	return s
+}
+
+// WithRateLimit installs the global token bucket; a non-positive rate disables it.
+func (s *ListenService) WithRateLimit(rate float64, burst int) *ListenService {
+	s.rtMu.Lock()
+	defer s.rtMu.Unlock()
+
+	s.limiter = newRateLimiter(rate, burst)
 
 	return s
 }
@@ -160,13 +178,20 @@ func (s *ListenService) Stats() Stats {
 	maps.Copy(actions, s.actions)
 
 	return Stats{
-		StartedAt:  s.startedAt,
-		Packets:    s.packets.Load(),
-		Matched:    s.matched.Load(),
-		Suppressed: s.blocked.Load(),
-		Actions:    actions,
-		LastEvent:  s.lastSeen,
+		StartedAt:   s.startedAt,
+		Packets:     s.packets.Load(),
+		Matched:     s.matched.Load(),
+		Suppressed:  s.blocked.Load(),
+		RateLimited: s.rateLimited.Load(),
+		Actions:     actions,
+		LastEvent:   s.lastSeen,
 	}
+}
+
+// RateLimit returns the live global rate limit: actions per second and bucket size. A zero
+// rate means the guard is off.
+func (s *ListenService) RateLimit() (float64, int) {
+	return s.snapshot().limiter.config()
 }
 
 // Rules returns the loaded routing rules.
@@ -189,8 +214,8 @@ func (s *ListenService) Dispatch(ctx context.Context, action wol.Action, ev wol.
 		return nil
 	}
 
-	if !s.allowAction(rt, action) {
-		return fmt.Errorf("%w: %s", ErrActionSuppressed, action)
+	if err := s.allowAction(rt, action); err != nil {
+		return err
 	}
 
 	if err := rt.registry.Dispatch(ctx, action, ev); err != nil {
@@ -208,6 +233,7 @@ func (s *ListenService) Run(ctx context.Context) error {
 	s.logIfaces()
 	s.logRules(rt)
 	s.logCooldowns(rt)
+	s.logRateLimit(rt)
 
 	listeners, err := s.createListeners(rt)
 	if err != nil {
@@ -232,6 +258,7 @@ func (s *ListenService) snapshot() routingSnapshot {
 		policy:    s.policy,
 		registry:  s.registry,
 		cooldowns: s.cooldowns,
+		limiter:   s.limiter,
 		remote:    s.remote,
 		dryRun:    s.dryRun,
 	}
@@ -282,6 +309,16 @@ func (s *ListenService) logCooldowns(rt routingSnapshot) {
 	for action, window := range rt.cooldowns.perAction {
 		slog.Info("action cooldown", "action", action, "window", window.String())
 	}
+}
+
+// logRateLimit reports the global token bucket at startup.
+func (s *ListenService) logRateLimit(rt routingSnapshot) {
+	rate, burst := rt.limiter.config()
+	if rate <= 0 {
+		return
+	}
+
+	slog.Info("global rate limit", "actions_per_second", rate, "burst", burst)
 }
 
 func (s *ListenService) createListeners(rt routingSnapshot) ([]PacketListener, error) {
@@ -431,7 +468,8 @@ func (s *ListenService) runDecision(ctx context.Context, rt routingSnapshot, pkt
 		return
 	}
 
-	if !s.allowAction(rt, decision.Action) {
+	if err := s.allowAction(rt, decision.Action); err != nil {
+		// allowAction already counted and logged which guard stopped it.
 		return
 	}
 
@@ -503,19 +541,25 @@ func (s *ListenService) handleRemote(ctx context.Context, rt routingSnapshot, pk
 	return true
 }
 
-// allowAction applies the cooldown guard, counting and logging a suppressed run.
-func (s *ListenService) allowAction(rt routingSnapshot, action wol.Action) bool {
-	remaining, allowed := rt.cooldowns.allow(string(action))
-	if allowed {
-		return true
+// allowAction applies the guardrails: the per-action cooldown first, then the global rate
+// limit. Both count and log a suppressed run, and the returned error names the guard that
+// stopped it. A suppressed attempt still counts as an attempt for the cooldown window, which
+// is what the packet path has always done.
+func (s *ListenService) allowAction(rt routingSnapshot, action wol.Action) error {
+	if remaining, allowed := rt.cooldowns.allow(string(action)); !allowed {
+		s.blocked.Add(1)
+		slog.Warn("action suppressed by cooldown", "action", string(action), "retry_in", remaining.String())
+
+		return fmt.Errorf("%w: retry in %s", ErrActionSuppressed, remaining)
 	}
 
-	s.blocked.Add(1)
+	if retryIn, allowed := rt.limiter.allow(); !allowed {
+		s.blocked.Add(1)
+		s.rateLimited.Add(1)
+		slog.Warn("action suppressed by rate limit", "action", string(action), "retry_in", retryIn.String())
 
-	slog.Warn("action suppressed by cooldown",
-		"action", string(action),
-		"remaining", remaining.Truncate(time.Millisecond).String(),
-	)
+		return fmt.Errorf("%w: retry in %s", ErrActionRateLimited, retryIn)
+	}
 
-	return false
+	return nil
 }

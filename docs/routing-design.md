@@ -743,6 +743,8 @@ security.url_allowlist      可选，出站 http 动作的目标白名单（SSRF
 security.exec_allowlist     可选，限 exec 的绝对路径命令只能落在这些目录下（§19.4）
 security.cooldown           可选，同一动作两次执行的最小间隔（如 5s；空 = 关闭，§19.6）
 security.cooldowns.<动作名>  可选，按动作覆盖全局 cooldown
+security.rate_limit         可选，全局令牌桶：跨所有动作与触发源的执行速率上限（10/s、600/m、3600/h，裸数字 = 每秒；空或 0 = 关闭，§19.12）
+security.rate_burst         可选，桶容量（吸收瞬时突发；0 = 一秒的 rate_limit；只写 burst 不写 rate 启动即报错）
 commands[].id / type / command / args{type,enum,pattern,required} / timeout / workdir / env / user / group   远端白名单命令（§21 / §19.7），type 暂只支持 exec；user/group 复用 exec 的降权
 security.allow_remote_commands / remote_command_auth{type,key_env,key_file} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）
 server.http.{enabled,listen,auth,tls}        控制面（§18 / §19.5）：auth.type = bearer|basic|mtls（默认 bearer，无 none）
@@ -1440,6 +1442,23 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - 两条都验证过"有牙齿"：删掉 schema 里的 `watch` -> 前者失败；把 `exact` 加回 content kind -> 后者失败。
 - 这个 guard 立刻抓到一处真实错误：我手写的 schema 把 content kind 写成 `any|none|suffix|prefix|exact`，而 domain 只有 **any/none/suffix/prefix**（没有 `exact`）。已修正 schema + README + CHANGELOG，并顺手把设计文档 §19 路线图、TODO、README、CHANGELOG 四份文档交叉链接起来。
 - schema 的取值事实来自真机探针（`sol listen --config` 逐个试）：未知顶层/嵌套字段被拒、`version: 2` 被拒、rule 缺 `action` 被拒、action 缺 name/type 被拒、`kind: exact` 被拒、`kind: any` 合法、`level: warning` 与 `level: ""` 合法、`auth: {}` 等价 bearer（报错来自缺 token 而非类型）。
+
+### 19.12 全局速率限制（令牌桶）
+
+- 动机：cooldown 是**按动作**的（同一动作两次执行的最小间隔），挡不住"一个广播风暴同时命中多条规则"：5 条规则各执行一次，cooldown 都放行。整机的执行速率需要一个**跨动作**的上限。
+- 配置：`security.rate_limit`（`10/s`、`600/m`、`3600/h`、裸数字 = 每秒；空或 `0` = 关闭）+ `security.rate_burst`（桶容量；`0` 或省略 = 一秒的 `rate_limit`，且至少 1，所以 `0.5/s` 也允许"一次一个"）。解析失败 / 非正数 / 未知单位 -> `ErrRateLimit`；**只写 `rate_burst` 不写 `rate_limit` 报错**（配置笔误不该静默失效）。
+- 语义：标准令牌桶，`rate` 个/秒补充、上限 `burst`；每个**实际执行**消费一个令牌（dry-run 不消费，因为它不执行）。桶是**全局**的：包触发、`POST /v1/actions/{name}` 手动触发、`POST /v1/commands/{id}` 远端命令共用同一个桶。
+- 与 cooldown 的顺序：先 cooldown（按动作、便宜），再令牌桶。被 cooldown 抑制的包**不消费令牌**（否则一条长 cooldown 的规则会把桶吃干，饿死其他规则）；被限流抑制的动作照常进入 cooldown 窗口，即"抑制算一次尝试"——这与包路径既有语义一致，已在代码注释里写明。
+- 可观测：日志 `action suppressed by rate limit`（带 `retry_in`）+ 启动时 `global rate limit actions_per_second=.. burst=..`；`sol_suppressed_total` 与新增的 `sol_rate_limited_total` 同时 +1；`/v1/status` 回显 `rate_limited` 计数与 `rate_limit{per_second,burst}`（未开启时该字段省略）；手动触发返回 429 + `action suppressed by rate limit: <动作名>`。
+- reload：限额与桶容量都没变时**保留正在跑的桶**（与 cooldown 同样的理由：不能靠 reload 把已耗尽的令牌刷满）；只有限额真的变了才新建（新的限额是操作员的新意图，从满桶开始）。
+- 实现：`internal/app/ratelimit.go`（`rateLimiter`，时钟通过 `now` 字段注入 -> 单测不 sleep）；`allowAction` 从返回 bool 改为返回 error，好让调用方区分是 cooldown 还是限流（`ErrActionSuppressed` / `ErrActionRateLimited`），控制面把它映射成 429。
+- 冒烟（真机，`rate_limit: 2/s` + `rate_burst: 2`，端口 10111 -> noop，控制面 127.0.0.1:18093）：
+  - 连发 5 个魔法包：`actions.noop=2, rate_limited=3, suppressed=3`（桶满 2 个令牌，5 个包**恰好**放过 2 个）；日志 3 条 `action suppressed by rate limit`（`retry_in=499.98ms` = 1/rate，与单测推导一致）；启动日志 `msg="global rate limit" actions_per_second=2 burst=2`。
+  - 桶空时手动触发 `POST /v1/actions/noop` -> **429** + `{"error":"action suppressed by rate limit: noop"}`。
+  - 等 1.1s 后：令牌回补，包与手动触发都重新放行（202）；`/metrics` 出现 `sol_rate_limited_total 4`。
+  - 持续速率：再连发 40 个包（桶里只剩回补的 1 个令牌）-> **只执行 1 个**、39 个被抑制；总数自洽（48 个包 + 2 次手动 = 7 次执行、43 次抑制）。
+  - `rate_limit: fast` -> `invalid security.rate_limit: "fast": want a positive number, e.g. 10/s, 600/m or 3600/h`；只写 `rate_burst: 5` -> `invalid security.rate_limit: security.rate_burst is set without a security.rate_limit`（均 exit 1）。
+- 单测：`internal/app/ratelimit_internal_test.go`（注入时钟：突发、按 rate 回补、补满不超容量、`0.5/s` 的下限、`matches` 语义、8×50 并发下"冻结时钟只发出桶内令牌数"）+ `internal/config/ratelimit_internal_test.go`（8 种合法写法 + 7 种拒绝写法）。app 覆盖率 93.4%。
 
 ---
 

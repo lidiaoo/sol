@@ -49,6 +49,10 @@ type Config struct {
 	Cooldown time.Duration
 	// ActionCooldowns overrides Cooldown per action name.
 	ActionCooldowns map[wol.Action]time.Duration
+	// RateLimit is the global cap on action executions per second; zero disables it.
+	RateLimit float64
+	// RateBurst is the size of the rate-limit bucket; zero means one second of RateLimit.
+	RateBurst int
 	// Actions are the known named actions; empty means the built-in set.
 	Actions map[wol.Action]wol.ActionDef
 	// Logging holds the raw logging settings; empty values mean the defaults.

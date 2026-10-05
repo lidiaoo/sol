@@ -112,6 +112,8 @@ type securityConfig struct {
 	ExecAllowlist            []string          `yaml:"exec_allowlist"`
 	Cooldown                 string            `yaml:"cooldown"`
 	Cooldowns                map[string]string `yaml:"cooldowns"`
+	RateLimit                string            `yaml:"rate_limit"`
+	RateBurst                int               `yaml:"rate_burst"`
 	AllowRemoteCommands      bool              `yaml:"allow_remote_commands"`
 	RemoteCommandAuth        remoteAuthConfig  `yaml:"remote_command_auth"`
 	RemoteCommandPorts       []int             `yaml:"remote_command_ports"`

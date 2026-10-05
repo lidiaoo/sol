@@ -30,6 +30,9 @@ const (
 // ErrSuppressed reports that an action was rate-limited by its cooldown.
 var ErrSuppressed = errors.New("action suppressed by cooldown")
 
+// ErrRateLimited reports that an action was dropped by the global rate limit.
+var ErrRateLimited = errors.New("action suppressed by rate limit")
+
 // ErrRestartRequired reports a reload that cannot be applied to the running process
 // (for example a changed listening port set) and needs a restart instead.
 var ErrRestartRequired = errors.New("restart required")
@@ -45,6 +48,12 @@ type Event struct {
 	DryRun    bool      `json:"dry_run"`
 }
 
+// RateLimitView reports the live global token bucket.
+type RateLimitView struct {
+	PerSecond float64 `json:"per_second"`
+	Burst     int     `json:"burst"`
+}
+
 // Status is the /v1/status payload.
 type Status struct {
 	Uptime      string            `json:"uptime"`
@@ -52,6 +61,8 @@ type Status struct {
 	Packets     uint64            `json:"packets"`
 	Matched     uint64            `json:"matched"`
 	Suppressed  uint64            `json:"suppressed"`
+	RateLimited uint64            `json:"rate_limited"`
+	RateLimit   *RateLimitView    `json:"rate_limit,omitempty"`
 	Actions     map[string]uint64 `json:"actions"`
 	Rules       int               `json:"rules"`
 	Interfaces  []string          `json:"interfaces"`
@@ -250,6 +261,8 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		case errors.Is(err, ErrSuppressed):
 			status = http.StatusTooManyRequests
+		case errors.Is(err, ErrRateLimited):
+			status = http.StatusTooManyRequests
 		}
 
 		writeError(w, status, err.Error())
@@ -326,6 +339,8 @@ func commandStatus(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, ErrSuppressed):
 		return http.StatusTooManyRequests
+	case errors.Is(err, ErrRateLimited):
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}
@@ -370,6 +385,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "# TYPE sol_packets_total counter\nsol_packets_total %d\n", st.Packets)
 	fmt.Fprintf(w, "# TYPE sol_matched_total counter\nsol_matched_total %d\n", st.Matched)
 	fmt.Fprintf(w, "# TYPE sol_suppressed_total counter\nsol_suppressed_total %d\n", st.Suppressed)
+	fmt.Fprintf(w, "# TYPE sol_rate_limited_total counter\nsol_rate_limited_total %d\n", st.RateLimited)
 	fmt.Fprintf(w, "# TYPE sol_rules gauge\nsol_rules %d\n", st.Rules)
 	fmt.Fprintf(w, "# TYPE sol_uptime_seconds gauge\nsol_uptime_seconds %.3f\n", st.UptimeSecs)
 	fmt.Fprintf(w, "# TYPE sol_actions_total counter\n")

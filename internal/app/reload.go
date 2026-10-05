@@ -26,6 +26,8 @@ type ReloadOptions struct {
 	DryRun      bool
 	Cooldown    time.Duration
 	Cooldowns   map[string]time.Duration
+	RateLimit   float64
+	RateBurst   int
 	Commands    map[string]wol.RemoteCommand
 	RemotePorts []int
 	RemoteKey   []byte
@@ -51,6 +53,11 @@ func (s *ListenService) Reload(opts ReloadOptions) error {
 	// used to clear a cooldown by accident.
 	if !s.cooldowns.matches(opts.Cooldown, opts.Cooldowns) {
 		s.cooldowns = newCooldowns(opts.Cooldown, opts.Cooldowns)
+	}
+
+	// Same for the token bucket: an unchanged limit keeps its drained tokens.
+	if !s.limiter.matches(opts.RateLimit, opts.RateBurst) {
+		s.limiter = newRateLimiter(opts.RateLimit, opts.RateBurst)
 	}
 
 	s.policy = opts.Policy

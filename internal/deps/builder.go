@@ -148,6 +148,7 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 			ifaces,
 			b.cfg.DryRun,
 		).WithCooldowns(b.cfg.Cooldown, cooldownWindows(b.cfg.ActionCooldowns)).
+			WithRateLimit(b.cfg.RateLimit, b.cfg.RateBurst).
 			WithRemoteCommands(b.cfg.Remote.Commands, b.cfg.Remote.Ports, b.cfg.Remote.HMACKey)
 	})
 
@@ -176,6 +177,8 @@ func (b *Builder) ReloadOptions() (app.ReloadOptions, error) {
 		DryRun:      b.cfg.DryRun,
 		Cooldown:    b.cfg.Cooldown,
 		Cooldowns:   cooldownWindows(b.cfg.ActionCooldowns),
+		RateLimit:   b.cfg.RateLimit,
+		RateBurst:   b.cfg.RateBurst,
 		Commands:    b.cfg.Remote.Commands,
 		RemotePorts: b.cfg.Remote.Ports,
 		RemoteKey:   b.cfg.Remote.HMACKey,
@@ -231,6 +234,10 @@ func (b *Builder) BuildHTTPServer() (*httpapi.Server, error) {
 					err := listenSvc.Dispatch(ctx, action, wol.Event{})
 					if errors.Is(err, app.ErrActionSuppressed) {
 						return fmt.Errorf("%w: %s", httpapi.ErrSuppressed, action)
+					}
+
+					if errors.Is(err, app.ErrActionRateLimited) {
+						return fmt.Errorf("%w: %s", httpapi.ErrRateLimited, action)
 					}
 
 					return err
@@ -394,12 +401,17 @@ func (b *Builder) statusFunc(svc *app.ListenService) func() httpapi.Status {
 			Packets:     stats.Packets,
 			Matched:     stats.Matched,
 			Suppressed:  stats.Suppressed,
+			RateLimited: stats.RateLimited,
 			Actions:     stats.Actions,
 			Rules:       len(svc.Rules()),
 			Interfaces:  names,
 			DryRun:      b.cfg.DryRun,
 			AuthType:    b.cfg.HTTP.AuthType,
 			HTTPAddress: b.cfg.HTTP.Listen,
+		}
+
+		if rate, burst := svc.RateLimit(); rate > 0 {
+			status.RateLimit = &httpapi.RateLimitView{PerSecond: rate, Burst: burst}
 		}
 
 		if stats.LastEvent != nil {

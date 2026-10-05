@@ -66,9 +66,11 @@ tagged release.
 - **Hot reload**: `SIGHUP`, `POST /v1/reload` and `server.watch` / `--watch` (polling the
   configuration file) share one implementation, swapping the routing snapshot atomically per
   packet; a rejected reload leaves the running configuration untouched.
-- **Guards**: per-action cooldowns (`security.cooldown`, `security.cooldowns.<name>`),
+- **Guards**: per-action cooldowns (`security.cooldown`, `security.cooldowns.<name>`), a global
+  token bucket across every action and trigger (`security.rate_limit`, `security.rate_burst`),
   instance/interface/rule-level `dry_run`, structured audit logging with every decision, and
-  `sol ifaces [--json]` to inspect the interface selection.
+  `sol ifaces [--json]` to inspect the interface selection. A guarded action is logged, counted
+  (`suppressed`, plus `rate_limited` for the bucket) and refused with 429 on the control plane.
 - **Sleep action** (`power.sleep`) and the `--default-action` flag.
 
 ### Security
