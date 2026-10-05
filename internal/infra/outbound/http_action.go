@@ -50,12 +50,19 @@ const (
 
 // Executor performs outbound HTTP requests, optionally restricted to an allowlist.
 type Executor struct {
-	client    *http.Client
-	allowlist []string
+	client *http.Client
+	// allowlist holds the parsed entries of security.url_allowlist (§19.8), empty when
+	// the operator did not configure one.
+	allowlist []allowEntry
+	// allowlistErr keeps a malformed entry: Validate reports it at startup, so a typo
+	// cannot silently turn into a wider (or narrower) allowlist.
+	allowlistErr error
 }
 
 // NewExecutor builds the executor; an empty allowlist permits any http(s) host.
 func NewExecutor(allowlist []string) *Executor {
+	entries, err := parseAllowlist(allowlist)
+
 	return &Executor{
 		client: &http.Client{
 			// Redirects are not followed: a 3xx could point outside the allowlist.
@@ -63,7 +70,8 @@ func NewExecutor(allowlist []string) *Executor {
 				return http.ErrUseLastResponse
 			},
 		},
-		allowlist: allowlist,
+		allowlist:    entries,
+		allowlistErr: err,
 	}
 }
 
@@ -71,6 +79,10 @@ func NewExecutor(allowlist []string) *Executor {
 // scheme and host, a supported method, bounded timeout/retries, parseable templates
 // and, when configured, an allowlisted destination.
 func (e *Executor) Validate(def wol.ActionDef) error {
+	if e.allowlistErr != nil {
+		return e.allowlistErr
+	}
+
 	params := def.HTTP
 	if params == nil || strings.TrimSpace(params.URL) == "" {
 		return ErrEmptyURL
@@ -93,13 +105,7 @@ func (e *Executor) Validate(def wol.ActionDef) error {
 		return err
 	}
 
-	// The scheme and host must be literal so they can be checked against the allowlist.
-	prefix, err := staticURLPrefix(params.URL)
-	if err != nil {
-		return err
-	}
-
-	return e.checkAllowlist(prefix)
+	return e.validateDestination(params.URL)
 }
 
 // Execute performs the request, interpolating the whitelisted event values, retrying
@@ -295,8 +301,24 @@ func checkURL(raw string) (string, error) {
 	return raw, nil
 }
 
-// checkAllowlist enforces security.url_allowlist against a concrete URL.
+// validateDestination checks the literal part of the destination against the allowlist:
+// the scheme and host must be spelled out, so they can be compared before the request.
+func (e *Executor) validateDestination(raw string) error {
+	prefix, err := staticURLPrefix(raw)
+	if err != nil {
+		return err
+	}
+
+	return e.checkAllowlist(prefix)
+}
+
+// checkAllowlist enforces security.url_allowlist against a concrete URL: at startup the
+// URL is still a literal prefix (templates unresolved), per attempt it is the final URL.
 func (e *Executor) checkAllowlist(raw string) error {
+	if e.allowlistErr != nil {
+		return e.allowlistErr
+	}
+
 	if len(e.allowlist) == 0 {
 		return nil
 	}
@@ -306,8 +328,13 @@ func (e *Executor) checkAllowlist(raw string) error {
 		return err
 	}
 
+	target, err := url.Parse(full)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidURL, err)
+	}
+
 	for _, allowed := range e.allowlist {
-		if strings.HasPrefix(full, allowed) {
+		if allowed.match(full, target) {
 			return nil
 		}
 	}

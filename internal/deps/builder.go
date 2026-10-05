@@ -344,8 +344,14 @@ func (b *Builder) reloadFunc() func(ctx context.Context) error {
 	}
 }
 
-// validateActions statically checks every configured exec/http action at startup.
+// validateActions statically checks every configured exec/http action at startup, and
+// the outbound allowlist itself so a malformed entry fails the start-up even when no http
+// action is configured yet.
 func (b *Builder) validateActions(registry *wol.Registry) error {
+	if err := outbound.ValidateAllowlist(b.cfg.URLAllowlist); err != nil {
+		return err
+	}
+
 	executor := b.ExecExecutor()
 	outboundExecutor := b.HTTPExecutor()
 	sequencer := b.SequenceExecutor()

@@ -95,7 +95,7 @@
 - [x] mTLS 端到端冒烟（配置已支持 + 启动加载证书；带证书 200、无证书/异 CA 证书握手被拒、明文 HTTP 400；注意 mTLS 下 `/healthz` 也需客户端证书）——见设计 §19.5
 - [x] HTTP 出站动作（webhook、`url_allowlist`、超时 / 重试、不跟随重定向、headers 不落日志）——见设计 §19.8
 - [x] `sequence`（一个动作串多个动作：按序执行、失败不中断后续、`errors.Join` 汇总、不许嵌套 / 自引用；护栏按组合名算）——见设计 §19.10
-- [ ] 出站 allowlist 的精确 / 正则匹配（当前前缀匹配）
+- [x] 出站 allowlist 的精确 / 正则匹配（裸串前缀改为 host+path 边界匹配、`=` 精确、`~` 正则；条目非法启动即报；实测 lookalike host `https://hooks.example.com.evil.net` 被拒）
 - [x] 远端命令通道（`commands[].id` 白名单 + HMAC + 参数校验 + UDP/HTTP 双传输；`remote:<id>` 注册为普通动作，复用 cooldown / dry-run / 审计）——见设计 §19.7
 - [x] 远端命令的 `user`/`group` 降权（复用 §19.4 的 credential 代码：`commands[].user/group` 透传进 `ExecParams`，启动期校验与 setgroups 零改动继承；实测 `output=65534 run_as=nobody`、非 root 启动报 `ErrNotRoot`、未知用户报 `ErrUnknownUser`）
 - [ ] 覆盖整包的包级 HMAC（当前只认证命令段）
