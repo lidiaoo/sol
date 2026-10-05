@@ -35,7 +35,7 @@ var (
 	ErrActionParams          = errors.New("action parameters do not match its type")
 	ErrHTTPListen            = errors.New("invalid server.http.listen address")
 	ErrHTTPAuthType          = errors.New("unknown server.http.auth.type")
-	ErrHTTPSecret            = errors.New("cannot resolve the http auth secret")
+	ErrSecret                = errors.New("cannot resolve a configured secret")
 	ErrHTTPUser              = errors.New("server.http.auth.user is required for basic auth")
 	ErrHTTPTLS               = errors.New("invalid server.http.tls configuration")
 	ErrCooldown              = errors.New("invalid security.cooldown")
@@ -1452,39 +1452,39 @@ func resolveHTTPAuth(out *HTTP, cfg authConfig) error {
 func resolveSecret(envName string, fileName string, label string) (string, error) {
 	switch {
 	case envName != "" && fileName != "":
-		return "", fmt.Errorf("%w: %s: set the env variable or the file, not both", ErrHTTPSecret, label)
+		return "", fmt.Errorf("%w: %s: set the env variable or the file, not both", ErrSecret, label)
 	case envName != "":
 		value := os.Getenv(envName)
 		if value == "" {
-			return "", fmt.Errorf("%w: %s: environment variable %s is empty", ErrHTTPSecret, label, envName)
+			return "", fmt.Errorf("%w: %s: environment variable %s is empty", ErrSecret, label, envName)
 		}
 
 		return value, nil
 	case fileName != "":
 		return readSecretFile(fileName, label)
 	default:
-		return "", fmt.Errorf("%w: %s: no environment variable or file configured", ErrHTTPSecret, label)
+		return "", fmt.Errorf("%w: %s: no environment variable or file configured", ErrSecret, label)
 	}
 }
 
 func readSecretFile(name string, label string) (string, error) {
 	info, err := os.Stat(name)
 	if err != nil {
-		return "", fmt.Errorf("%w: %s: %w", ErrHTTPSecret, label, err)
+		return "", fmt.Errorf("%w: %s: %w", ErrSecret, label, err)
 	}
 
 	if info.Mode().Perm()&0o077 != 0 {
-		return "", fmt.Errorf("%w: %s: %s must not be group/other readable (chmod 600)", ErrHTTPSecret, label, name)
+		return "", fmt.Errorf("%w: %s: %s must not be group/other readable (chmod 600)", ErrSecret, label, name)
 	}
 
 	data, err := os.ReadFile(name)
 	if err != nil {
-		return "", fmt.Errorf("%w: %s: %w", ErrHTTPSecret, label, err)
+		return "", fmt.Errorf("%w: %s: %w", ErrSecret, label, err)
 	}
 
 	value := strings.TrimSpace(string(data))
 	if value == "" {
-		return "", fmt.Errorf("%w: %s: %s is empty", ErrHTTPSecret, label, name)
+		return "", fmt.Errorf("%w: %s: %s is empty", ErrSecret, label, name)
 	}
 
 	return value, nil

@@ -103,6 +103,10 @@ tagged release.
   bump and not the prefix length. To cover a subnet and leave the rest alone, leave out the
   catch-all rule: an unmatched packet runs nothing. Configs that relied on the old silence are
   rejected at startup with `overlapping rule scopes with matching conditions`.
+- Fixed: a missing packet key, remote command key or raw shell key was reported as "cannot
+  resolve the http auth secret" - the resolver is shared by every secret, so the message now says
+  "cannot resolve a configured secret" and keeps naming the field that failed
+  (`packet_auth.key`, `remote_command_auth.key`, `raw_shell_auth.key`).
 - Fixed: a remote command refused by a cooldown or the rate limit answered 500 on
   `POST /v1/commands/{id}` instead of 429, and a raw shell command refused by a guardrail answered
   202 on `POST /v1/exec` without running anything.

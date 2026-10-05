@@ -468,7 +468,7 @@ rules:
 	require.Equal(t, "pw", cfg.HTTP.Password)
 }
 
-func TestLoadHTTPSecretFilePermissions(t *testing.T) {
+func TestLoadSecretErrorsFilePermissions(t *testing.T) {
 	t.Setenv("SOL_TEST_TOKEN", "")
 
 	path := filepath.Join(t.TempDir(), "token")
@@ -491,7 +491,23 @@ rules:
 	require.NoError(t, os.Chmod(path, 0o644))
 
 	_, err = Load(writeConfig(t, fmt.Sprintf(body, path)))
-	require.ErrorIs(t, err, ErrHTTPSecret)
+	require.ErrorIs(t, err, ErrSecret)
+}
+
+// The secret resolver is shared by the HTTP token, the packet key, the remote command key and the
+// raw shell key, so its message must not claim to be about HTTP: it used to read "cannot resolve
+// the http auth secret" for all of them, which looks like a bug in sol when the key that is
+// missing belongs to a packet.
+func TestLoadSecretMessageNamesTheField(t *testing.T) {
+	// No t.Parallel: t.Setenv forbids it.
+	t.Setenv("SOL_TEST_UNSET_PACKET_KEY", "")
+
+	_, err := Load(writeConfig(t, "version: 1\nsecurity:\n  packet_auth: { type: hmac, key_env: SOL_TEST_PACKET_KEY }\n"))
+	require.ErrorIs(t, err, ErrPacketAuth)
+	require.ErrorIs(t, err, ErrSecret)
+	require.Contains(t, err.Error(), "packet_auth.key")
+	require.NotContains(t, err.Error(), "http auth secret")
+	require.Contains(t, err.Error(), "SOL_TEST_PACKET_KEY")
 }
 
 func TestLoadHTTPErrors(t *testing.T) {
@@ -510,15 +526,15 @@ func TestLoadHTTPErrors(t *testing.T) {
 		},
 		"bearer without secret": {
 			block: "    enabled: true\n    auth: { type: bearer }\n",
-			match: ErrHTTPSecret,
+			match: ErrSecret,
 		},
 		"env variable empty": {
 			block: "    enabled: true\n    auth: { type: bearer, token_env: SOL_DEFINITELY_UNSET }\n",
-			match: ErrHTTPSecret,
+			match: ErrSecret,
 		},
 		"env and file together": {
 			block: "    enabled: true\n    auth: { type: bearer, token_env: SOL_X, token_file: /tmp/x }\n",
-			match: ErrHTTPSecret,
+			match: ErrSecret,
 		},
 		"basic without user": {
 			block: "    enabled: true\n    auth: { type: basic, password_env: SOL_X }\n",
