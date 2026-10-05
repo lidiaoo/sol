@@ -236,6 +236,15 @@ func TestSchemaEnumsMatchTheDomain(t *testing.T) {
 			values:  []string{authTypeHMAC},
 		},
 		{
+			pointer: "/properties/security/properties/packet_auth/properties/type",
+			values:  []string{authTypeHMAC},
+		},
+		{
+			pointer: "/$defs/match/properties/auth",
+			// Empty means "no authentication required".
+			values: []string{"", string(wol.AuthHMAC)},
+		},
+		{
 			pointer: "/properties/logging/properties/level",
 			// The logging package keeps these as strings inside ParseLevel, so the list is
 			// spelled out and cross-checked against the binary: "warning" and "" are accepted

@@ -461,6 +461,7 @@ func (s *ListenService) runDecision(ctx context.Context, rt routingSnapshot, pkt
 		"interface", decision.Interface,
 		"target_mac", decision.TargetMAC.String(),
 		"action", string(decision.Action),
+		"authenticated", decision.Authenticated,
 		"trigger", trigger,
 	)
 

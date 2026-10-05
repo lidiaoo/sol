@@ -30,6 +30,8 @@ var (
 	ErrSendSocket = errors.New("wol.send socket")
 	// ErrSendConnType reports a socket that is not a UDP connection.
 	ErrSendConnType = errors.New("wol.send expects a UDP connection")
+	// ErrSendSign reports `sign: true` without a configured packet key.
+	ErrSendSign = errors.New("wol.send sign requires security.packet_auth")
 )
 
 // maxPort bounds a destination port.
@@ -44,11 +46,28 @@ type Executor struct {
 	// dial is the socket factory, injectable so a test can observe the datagrams without
 	// binding a real broadcast address.
 	dial func(ctx context.Context, target string) (*net.UDPConn, error)
+	// packetKey, when set, lets an action with `sign: true` authenticate its packets
+	// (§19.14) so a target rule with `auth: hmac` accepts them.
+	packetKey []byte
+}
+
+// Option tunes the executor at construction time.
+type Option func(*Executor)
+
+// WithPacketKey enables signed packets: `sign: true` appends the truncated HMAC tag the
+// target expects. Without a key, a `sign: true` action is refused at start-up.
+func WithPacketKey(key []byte) Option {
+	return func(e *Executor) { e.packetKey = key }
 }
 
 // NewExecutor returns an executor sending over real UDP sockets.
-func NewExecutor() *Executor {
-	return &Executor{dial: dialBroadcast}
+func NewExecutor(opts ...Option) *Executor {
+	executor := &Executor{dial: dialBroadcast}
+	for _, opt := range opts {
+		opt(executor)
+	}
+
+	return executor
 }
 
 // Validate checks a wol.send definition at start-up.
@@ -62,7 +81,15 @@ func (e *Executor) Validate(def wol.ActionDef) error {
 		return err
 	}
 
-	return validateDelivery(def.Name, params)
+	if err := validateDelivery(def.Name, params); err != nil {
+		return err
+	}
+
+	if params.Sign && len(e.packetKey) == 0 {
+		return fmt.Errorf("%w: %s", ErrSendSign, def.Name)
+	}
+
+	return nil
 }
 
 // validateTarget checks whom the packet is addressed to.
@@ -111,6 +138,8 @@ func (e *Executor) Execute(ctx context.Context, def wol.ActionDef, _ wol.Event) 
 		return fmt.Errorf("action %s: %w", def.Name, err)
 	}
 
+	packet = e.sign(params, packet)
+
 	target := net.JoinHostPort(params.Broadcast, strconv.Itoa(params.Port))
 
 	conn, err := e.dial(ctx, target)
@@ -138,11 +167,21 @@ func (e *Executor) Execute(ctx context.Context, def wol.ActionDef, _ wol.Event) 
 		"broadcast", params.Broadcast,
 		"port", params.Port,
 		"secure_on", len(params.SecureOn) > 0,
+		"signed", params.Sign,
 		"copies", params.Repeat,
 		"bytes", len(packet),
 	)
 
 	return nil
+}
+
+// sign appends the authentication tag of §19.14 when the action asks for it.
+func (e *Executor) sign(params *wol.SendParams, packet []byte) []byte {
+	if !params.Sign {
+		return packet
+	}
+
+	return append(packet, wol.SignPacket(e.packetKey, packet)...)
 }
 
 // wait pauses between two copies, giving up as soon as the context ends so a shutdown does not

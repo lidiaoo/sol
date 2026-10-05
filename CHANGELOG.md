@@ -57,6 +57,14 @@ tagged release.
   triggering packet, and the action goes through the same cooldown / rate limit / dry-run /
   audit path as every other one. Sending to a broadcast address needs `SO_BROADCAST`, which the
   executor sets explicitly (a plain socket is refused with `EACCES`).
+- **Packet authentication (`security.packet_auth`, off by default)**: a rule with
+  `match.auth: hmac` only fires on a packet that ends with a valid truncated HMAC-SHA256 tag
+  (8 bytes) over every preceding byte, `secure_on` included. The key comes from an environment
+  variable or a 0600 file, never from the YAML; `wol.send` can append the tag with
+  `sign: true`, so one sol can wake another that requires authentication. A rule requiring
+  authentication without a key, a reserved port requiring it, and `sign: true` without a key are
+  refused at start-up. The audit log records `authenticated=true|false` per match. Replay of a
+  captured packet is not prevented (cooldowns and the rate limit bound it).
 - **`exec` privilege drop**: `user`/`group` (name or id) run the command as that account with
   that account's groups; requires root, and the drop is validated at start-up rather than
   silently skipped.

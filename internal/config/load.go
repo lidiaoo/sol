@@ -46,6 +46,7 @@ var (
 	ErrRemoteCommandDef      = errors.New("invalid remote command definition")
 	ErrRemoteArgSpec         = errors.New("invalid remote command argument spec")
 	ErrRemoteAuth            = errors.New("remote command authorization is required")
+	ErrPacketAuth            = errors.New("packet authorization is invalid")
 	ErrRemotePorts           = errors.New("invalid security.remote_command_ports")
 	ErrRemotePort            = errors.New("remote command port must not be a reserved port")
 	ErrSequenceStepsRequired = errors.New("sequence action requires steps")
@@ -418,6 +419,7 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		URLAllowlist:         f.Security.URLAllowlist,
 		Cooldown:             guards.cooldown,
 		ActionCooldowns:      guards.perAction,
+		PacketKey:            guards.packetKey,
 		Remote:               remote,
 		Actions:              actions,
 		Logging:              Logging{Level: f.Logging.Level, Format: f.Logging.Format},
@@ -611,6 +613,7 @@ func buildSendDef(entry actionConfig, def wol.ActionDef) (wol.ActionDef, error) 
 		SecureOn:  secureOnBytes(entry.SecureOn),
 		Repeat:    repeat,
 		Interval:  interval,
+		Sign:      entry.Sign,
 	}
 
 	return def, nil
@@ -786,6 +789,29 @@ func parseTimeout(value string) (time.Duration, error) {
 	}
 
 	return timeout, nil
+}
+
+// buildPacketAuth resolves security.packet_auth (§19.14). An empty block means "off": no
+// packet is authenticated. A configured block must be hmac and must name a key source.
+func buildPacketAuth(cfg packetAuthConfig) ([]byte, error) {
+	if cfg.Type == "" && cfg.KeyEnv == "" && cfg.KeyFile == "" {
+		return nil, nil
+	}
+
+	if cfg.Type != authTypeHMAC {
+		return nil, fmt.Errorf("%w: packet_auth.type must be %q", ErrPacketAuth, authTypeHMAC)
+	}
+
+	key, err := resolveSecret(cfg.KeyEnv, cfg.KeyFile, "packet_auth.key")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrPacketAuth, err)
+	}
+
+	if key == "" {
+		return nil, fmt.Errorf("%w: packet_auth.key is empty", ErrPacketAuth)
+	}
+
+	return []byte(key), nil
 }
 
 // buildRemoteCommands resolves the §21 remote command channel: the whitelisted
@@ -1017,6 +1043,7 @@ type guardsConfig struct {
 	perAction map[wol.Action]time.Duration
 	rateLimit float64
 	rateBurst int
+	packetKey []byte
 }
 
 // buildGuards resolves every guardrail in one step, so the caller stays short.
@@ -1031,11 +1058,17 @@ func buildGuards(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (guar
 		return guardsConfig{}, err
 	}
 
+	packetKey, err := buildPacketAuth(cfg.PacketAuth)
+	if err != nil {
+		return guardsConfig{}, err
+	}
+
 	return guardsConfig{
 		cooldown:  cooldown,
 		perAction: perAction,
 		rateLimit: rateLimit,
 		rateBurst: rateBurst,
+		packetKey: packetKey,
 	}, nil
 }
 
@@ -1300,6 +1333,10 @@ func buildRule(entry ruleConfig, scope *wol.MACSelector, dryRun bool, actions ma
 		return wol.Rule{}, err
 	}
 
+	if err := checkMatchAuth(entry.Match.Auth); err != nil {
+		return wol.Rule{}, err
+	}
+
 	mac, err := buildMAC(entry.Match, scope)
 	if err != nil {
 		return wol.Rule{}, err
@@ -1316,10 +1353,22 @@ func buildRule(entry ruleConfig, scope *wol.MACSelector, dryRun bool, actions ma
 			MAC:      mac,
 			Content:  buildContent(entry.Match.Content),
 			SrcCIDRs: entry.Match.SrcCIDRs,
+			Auth:     wol.AuthKind(entry.Match.Auth),
 		},
 		Action: action,
 		DryRun: ruleDryRun,
 	}, nil
+}
+
+// checkMatchAuth rejects an unknown match.auth value while the file is being read; the policy
+// would catch it too, but a configuration mistake should fail at load time.
+func checkMatchAuth(value string) error {
+	switch wol.AuthKind(value) {
+	case "", wol.AuthHMAC:
+		return nil
+	}
+
+	return fmt.Errorf("%w: %s", wol.ErrUnknownAuthKind, value)
 }
 
 func resolveAction(name string, actions map[wol.Action]wol.ActionDef) (wol.Action, error) {

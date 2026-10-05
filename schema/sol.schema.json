@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/bavix/sol/master/schema/sol.schema.json",
   "title": "SoL configuration",
-  "description": "Configuration file of the sol listener (version 1). Unknown keys are rejected at start-up, so every object here sets additionalProperties to false. Field reference: docs/routing-design.md (字段速查).",
+  "description": "Configuration file of the sol listener (version 1). Unknown keys are rejected at start-up, so every object here sets additionalProperties to false. Field reference: docs/routing-design.md (\u5b57\u6bb5\u901f\u67e5).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -72,7 +72,12 @@
               "additionalProperties": false,
               "properties": {
                 "type": {
-                  "enum": ["", "bearer", "basic", "mtls"],
+                  "enum": [
+                    "",
+                    "bearer",
+                    "basic",
+                    "mtls"
+                  ],
                   "description": "Authentication scheme; empty means bearer. There is no unauthenticated mode."
                 },
                 "token_env": {
@@ -96,7 +101,9 @@
                   "description": "0600 file holding the password (basic only; alternative to password_env)."
                 }
               },
-              "required": ["type"]
+              "required": [
+                "type"
+              ]
             },
             "tls": {
               "type": "object",
@@ -126,11 +133,22 @@
       "additionalProperties": false,
       "properties": {
         "level": {
-          "enum": ["", "debug", "info", "warn", "warning", "error"],
+          "enum": [
+            "",
+            "debug",
+            "info",
+            "warn",
+            "warning",
+            "error"
+          ],
           "description": "Log level; empty and \"warning\" are accepted as info and warn respectively. Defaults to info."
         },
         "format": {
-          "enum": ["", "text", "json"],
+          "enum": [
+            "",
+            "text",
+            "json"
+          ],
           "description": "Log format; empty defaults to text."
         }
       }
@@ -216,7 +234,9 @@
               "description": "0600 file holding the shared key (alternative to key_env)."
             }
           },
-          "required": ["type"]
+          "required": [
+            "type"
+          ]
         },
         "remote_command_ports": {
           "type": "array",
@@ -230,6 +250,25 @@
           "description": "Destinations outbound HTTP actions may reach. A plain entry is a prefix matched on scheme+host with a path boundary, '=' makes it an exact whole-URL match and '~' makes it a regular expression. A malformed entry fails the start-up.",
           "items": {
             "type": "string"
+          }
+        },
+        "packet_auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Shared key authenticating whole packets (optional). Without it no packet is authenticated and a rule with auth: hmac is refused at start-up.",
+          "properties": {
+            "type": {
+              "const": "hmac",
+              "description": "Only hmac is supported."
+            },
+            "key_env": {
+              "type": "string",
+              "description": "Environment variable holding the key."
+            },
+            "key_file": {
+              "type": "string",
+              "description": "0600 file holding the key."
+            }
           }
         }
       }
@@ -265,7 +304,7 @@
     },
     "duration": {
       "type": "string",
-      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+$",
       "description": "Go duration, e.g. 5s, 200ms, 1m30s."
     },
     "interfaceBlock": {
@@ -293,7 +332,9 @@
           }
         }
       },
-      "required": ["name"]
+      "required": [
+        "name"
+      ]
     },
     "rule": {
       "type": "object",
@@ -311,7 +352,9 @@
           "description": "Log the match instead of executing the action."
         }
       },
-      "required": ["action"]
+      "required": [
+        "action"
+      ]
     },
     "match": {
       "type": "object",
@@ -353,6 +396,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "auth": {
+          "enum": [
+            "",
+            "hmac"
+          ],
+          "description": "hmac: only match packets carrying a valid tag (requires security.packet_auth)."
         }
       }
     },
@@ -361,7 +411,12 @@
       "additionalProperties": false,
       "properties": {
         "kind": {
-          "enum": ["self", "any", "interface", "explicit"],
+          "enum": [
+            "self",
+            "any",
+            "interface",
+            "explicit"
+          ],
           "description": "Selector kind."
         },
         "address": {
@@ -376,7 +431,9 @@
           }
         }
       },
-      "required": ["kind"]
+      "required": [
+        "kind"
+      ]
     },
     "content": {
       "type": "object",
@@ -384,7 +441,12 @@
       "description": "Payload matching after the magic packet (and SecureOn, when configured). value and value_hex are mutually exclusive; kind any and none take no value at all, and offset only applies to prefix.",
       "properties": {
         "kind": {
-          "enum": ["any", "none", "suffix", "prefix"],
+          "enum": [
+            "any",
+            "none",
+            "suffix",
+            "prefix"
+          ],
           "description": "How the payload is compared: any accepts any payload, none requires an empty one, suffix/prefix match the token at the end or the start of the payload area."
         },
         "value": {
@@ -401,7 +463,9 @@
           "description": "Offset inside the payload area for prefix matching."
         }
       },
-      "required": ["kind"]
+      "required": [
+        "kind"
+      ]
     },
     "action": {
       "type": "object",
@@ -413,7 +477,16 @@
           "description": "Unique action name."
         },
         "type": {
-          "enum": ["noop", "power.sleep", "power.shutdown", "power.reboot", "exec", "http", "sequence", "wol.send"],
+          "enum": [
+            "noop",
+            "power.sleep",
+            "power.shutdown",
+            "power.reboot",
+            "exec",
+            "http",
+            "sequence",
+            "wol.send"
+          ],
           "description": "Action type."
         },
         "command": {
@@ -458,7 +531,14 @@
           "description": "Run the command through /bin/sh -c (exec only). An escape hatch; argv is the default."
         },
         "method": {
-          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD"
+          ],
           "description": "HTTP method of an http action; defaults to POST."
         },
         "url": {
@@ -518,9 +598,16 @@
         "interval": {
           "type": "string",
           "description": "Gap between two wol.send copies, e.g. 100ms; absent means 100ms and the maximum is 10s."
+        },
+        "sign": {
+          "type": "boolean",
+          "description": "Append the packet authentication tag; needs security.packet_auth."
         }
       },
-      "required": ["name", "type"],
+      "required": [
+        "name",
+        "type"
+      ],
       "allOf": [
         {
           "if": {
@@ -531,7 +618,9 @@
             }
           },
           "then": {
-            "required": ["command"]
+            "required": [
+              "command"
+            ]
           }
         },
         {
@@ -543,7 +632,9 @@
             }
           },
           "then": {
-            "required": ["url"]
+            "required": [
+              "url"
+            ]
           }
         },
         {
@@ -555,7 +646,9 @@
             }
           },
           "then": {
-            "required": ["steps"]
+            "required": [
+              "steps"
+            ]
           }
         },
         {
@@ -567,7 +660,9 @@
             }
           },
           "then": {
-            "required": ["mac"]
+            "required": [
+              "mac"
+            ]
           }
         }
       ]
@@ -631,14 +726,22 @@
           "description": "Run as this group (name or id); requires root."
         }
       },
-      "required": ["id", "type", "command"]
+      "required": [
+        "id",
+        "type",
+        "command"
+      ]
     },
     "arg": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "type": {
-          "enum": ["string", "int", "bool"],
+          "enum": [
+            "string",
+            "int",
+            "bool"
+          ],
           "description": "Argument type; defaults to string."
         },
         "enum": {

@@ -2,6 +2,7 @@ package wol
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"net"
 	"slices"
 )
@@ -10,6 +11,37 @@ import (
 type ParsedPacket struct {
 	MAC     net.HardwareAddr
 	Content []byte
+	// Authenticated reports that a valid trailing tag was stripped from the payload
+	// (§19.14); it stays false for every packet when no packet key is configured.
+	Authenticated bool
+}
+
+// PacketSignatureLen is the truncated HMAC-SHA256 tag length of an authenticated packet; the
+// remote command channel uses the same truncation so one sender-side helper serves both.
+const PacketSignatureLen = RemoteSignatureLen
+
+// SignPacket returns the trailing authentication tag of a payload: a truncated HMAC-SHA256
+// over every byte that precedes the tag.
+func SignPacket(key []byte, payload []byte) []byte {
+	return signatureTag(key, payload)
+}
+
+// SplitPacketSignature strips the trailing tag from payload and reports whether it verifies
+// against key. A payload that is too short, or carries no valid tag, is returned unchanged so
+// the caller can treat it as unauthenticated.
+func SplitPacketSignature(key []byte, payload []byte) ([]byte, bool) {
+	if len(key) == 0 || len(payload) <= PacketSignatureLen {
+		return payload, false
+	}
+
+	data := payload[:len(payload)-PacketSignatureLen]
+	tag := payload[len(payload)-PacketSignatureLen:]
+
+	if !hmac.Equal(signatureTag(key, data), tag) {
+		return payload, false
+	}
+
+	return data, true
 }
 
 // ParsePacket parses payload as a magic packet starting at offset 0.

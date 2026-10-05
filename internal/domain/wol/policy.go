@@ -23,6 +23,7 @@ const (
 	maxPort = 65535
 
 	scoreContent = 100
+	scoreAuth    = 50
 	scoreSrc     = 10
 	scoreMAC     = 10
 	scorePort    = 1
@@ -74,6 +75,10 @@ type PolicyOptions struct {
 	// ExtraPorts are bound but not routed; used by the remote command channel (§21),
 	// whose packets are consumed before rule matching.
 	ExtraPorts []int
+	// PacketKey, when set, authenticates whole packets (§19.14): a payload that ends with a
+	// valid tag is matched on the bytes before the tag and can satisfy a rule with
+	// `auth: hmac`. Without it, no packet is ever authenticated.
+	PacketKey []byte
 }
 
 type compiledRule struct {
@@ -81,6 +86,7 @@ type compiledRule struct {
 	ports   []int
 	mac     compiledMAC
 	content ContentMatcher
+	auth    AuthKind
 	srcNets []*net.IPNet
 	score   int
 }
@@ -91,6 +97,7 @@ type RoutingPolicy struct {
 	actions       map[Action]ActionDef
 	ifaceByMAC    map[string]string
 	secureOn      []byte
+	packetKey     []byte
 	reservedPorts map[int]bool
 	extraPorts    []int
 	allowReserved bool
@@ -111,6 +118,7 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 		actions:       actionsOrDefault(opts.Actions),
 		ifaceByMAC:    macIndex(ifaces),
 		secureOn:      opts.SecureOn,
+		packetKey:     opts.PacketKey,
 		reservedPorts: reservedSet(opts.ReservedPorts),
 		extraPorts:    opts.ExtraPorts,
 		allowReserved: opts.AllowReserved,
@@ -144,6 +152,8 @@ type Decision struct {
 	Interface string
 	// TargetMAC is the MAC carried by the magic packet.
 	TargetMAC net.HardwareAddr
+	// Authenticated reports that the packet carried a valid tag (§19.14).
+	Authenticated bool
 }
 
 // Resolve returns the decision for a received packet.
@@ -153,13 +163,18 @@ func (p *RoutingPolicy) Resolve(ev Event) (Decision, bool) {
 		return Decision{}, false
 	}
 
+	if len(p.packetKey) > 0 {
+		parsed = p.authenticate(ev.Payload, parsed)
+	}
+
 	for i := range p.rules {
 		if p.rules[i].matches(ev, parsed) {
 			return Decision{
-				Action:    p.rules[i].rule.Action,
-				DryRun:    p.rules[i].rule.DryRun,
-				Interface: p.ifaceByMAC[parsed.MAC.String()],
-				TargetMAC: parsed.MAC,
+				Action:        p.rules[i].rule.Action,
+				DryRun:        p.rules[i].rule.DryRun,
+				Interface:     p.ifaceByMAC[parsed.MAC.String()],
+				TargetMAC:     parsed.MAC,
+				Authenticated: parsed.Authenticated,
 			}, true
 		}
 	}
@@ -230,7 +245,7 @@ func (p *RoutingPolicy) compileRule(rule Rule, ifaceMACs map[string]net.Hardware
 		return compiledRule{}, ErrMACConflict
 	}
 
-	content, err := rule.Match.Content.Compile()
+	content, auth, err := p.compileMatch(rule)
 	if err != nil {
 		return compiledRule{}, err
 	}
@@ -245,7 +260,7 @@ func (p *RoutingPolicy) compileRule(rule Rule, ifaceMACs map[string]net.Hardware
 		return compiledRule{}, err
 	}
 
-	if err := p.checkReserved(rule.Match.Ports, def, content); err != nil {
+	if err := p.checkReserved(rule.Match.Ports, def, content, auth); err != nil {
 		return compiledRule{}, err
 	}
 
@@ -254,17 +269,60 @@ func (p *RoutingPolicy) compileRule(rule Rule, ifaceMACs map[string]net.Hardware
 		ports:   rule.Match.Ports,
 		mac:     mac,
 		content: content,
+		auth:    auth,
 		srcNets: srcNets,
-		score:   scoreRule(rule.Match.Ports, content, srcNets, mac),
+		score:   scoreRule(rule.Match.Ports, content, srcNets, mac, auth),
 	}
 
 	return compiled, nil
 }
 
-func (p *RoutingPolicy) checkReserved(ports []int, def ActionDef, content ContentMatcher) error {
+// authenticate strips a valid trailing tag and marks the packet. A payload without a valid tag
+// is returned as parsed, so a rule that requires authentication cannot match it.
+func (p *RoutingPolicy) authenticate(payload []byte, parsed ParsedPacket) ParsedPacket {
+	data, ok := SplitPacketSignature(p.packetKey, payload)
+	if !ok {
+		return parsed
+	}
+
+	stripped, ok := ParsePacket(data, p.secureOn)
+	if !ok {
+		return parsed
+	}
+
+	stripped.Authenticated = true
+
+	return stripped
+}
+
+// compileMatch compiles the payload-side conditions of a rule and refuses an authenticated rule
+// while no packet key is configured: it could never match, which is a configuration mistake.
+func (p *RoutingPolicy) compileMatch(rule Rule) (ContentMatcher, AuthKind, error) {
+	content, err := rule.Match.Content.Compile()
+	if err != nil {
+		return ContentMatcher{}, "", err
+	}
+
+	auth, err := rule.Match.Auth.Compile()
+	if err != nil {
+		return ContentMatcher{}, "", err
+	}
+
+	if auth == AuthHMAC && len(p.packetKey) == 0 {
+		return ContentMatcher{}, "", fmt.Errorf("%w: %s", ErrAuthWithoutKey, rule.Action)
+	}
+
+	return content, auth, nil
+}
+
+func (p *RoutingPolicy) checkReserved(ports []int, def ActionDef, content ContentMatcher, auth AuthKind) error {
 	for _, port := range ports {
 		if !p.reservedPorts[port] {
 			continue
+		}
+
+		if auth == AuthHMAC {
+			return fmt.Errorf("%w: port %d cannot require an authenticated packet", ErrReservedPortAction, port)
 		}
 
 		if content.kind() != ContentNone {
@@ -292,6 +350,10 @@ func (p *RoutingPolicy) checkConflicts() error {
 }
 
 func (r *compiledRule) matches(ev Event, parsed ParsedPacket) bool {
+	if r.auth == AuthHMAC && !parsed.Authenticated {
+		return false
+	}
+
 	if !portMatches(r.ports, ev.DstPort) {
 		return false
 	}
@@ -337,7 +399,7 @@ func sameScopeConflict(a compiledRule, b compiledRule) error {
 // every other condition matches: the overlap has to be made explicit instead of being
 // resolved silently by preferring the more specific rule (§8, §17.9).
 func crossScopeConflict(a compiledRule, b compiledRule) error {
-	if a.mac.scopeKey() == b.mac.scopeKey() || !macsOverlap(a.mac, b.mac) {
+	if a.mac.scopeKey() == b.mac.scopeKey() || !macsOverlap(a.mac, b.mac) || a.auth != b.auth {
 		return nil
 	}
 
@@ -349,7 +411,7 @@ func crossScopeConflict(a compiledRule, b compiledRule) error {
 		ErrRuleConflict, a.ports, a.mac.scopeKey(), b.mac.scopeKey())
 }
 
-func scoreRule(ports []int, content ContentMatcher, srcNets []*net.IPNet, mac compiledMAC) int {
+func scoreRule(ports []int, content ContentMatcher, srcNets []*net.IPNet, mac compiledMAC, auth AuthKind) int {
 	score := 0
 
 	if content.kind() == ContentSuffix || content.kind() == ContentPrefix {
@@ -362,6 +424,10 @@ func scoreRule(ports []int, content ContentMatcher, srcNets []*net.IPNet, mac co
 
 	if mac.kind == MACInterface || mac.kind == MACExplicit {
 		score += scoreMAC
+	}
+
+	if auth == AuthHMAC {
+		score += scoreAuth
 	}
 
 	if len(ports) > 0 {

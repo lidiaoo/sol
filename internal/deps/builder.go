@@ -314,7 +314,7 @@ func (b *Builder) SequenceExecutor() *sequence.Executor {
 // stateless, so one instance serves every wol.send action.
 func (b *Builder) Sender() *wolsend.Executor {
 	b.senderOnce.Do(func() {
-		b.sender = wolsend.NewExecutor()
+		b.sender = wolsend.NewExecutor(wolsend.WithPacketKey(b.cfg.PacketKey))
 	})
 
 	return b.sender
@@ -340,6 +340,7 @@ func (b *Builder) buildRuntime() (*wol.Registry, *wol.RoutingPolicy, []wol.Iface
 		SecureOn:      b.cfg.SecureOn,
 		Actions:       registry.Actions(),
 		ExtraPorts:    b.cfg.Remote.Ports,
+		PacketKey:     b.cfg.PacketKey,
 	})
 	if err != nil {
 		return nil, nil, nil, err

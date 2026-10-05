@@ -59,6 +59,9 @@ type Config struct {
 	Logging Logging
 	// URLAllowlist, when set, restricts outbound HTTP actions (§18.2).
 	URLAllowlist []string
+	// PacketKey, when set, authenticates whole packets (§19.14); rules with `auth: hmac`
+	// only match packets carrying a valid tag.
+	PacketKey []byte
 	// Remote holds the resolved remote command channel (§21).
 	Remote RemoteCommands
 	// HTTP holds the resolved control-plane settings.

@@ -98,6 +98,9 @@ type SendParams struct {
 	Repeat int
 	// Interval is the gap between two copies.
 	Interval time.Duration
+	// Sign appends the packet authentication tag of §19.14, so a target whose rule
+	// requires `auth: hmac` accepts the packet. It needs a configured packet key.
+	Sign bool
 }
 
 // ActionDef is a named action together with its type and parameters.

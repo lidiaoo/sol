@@ -116,6 +116,7 @@ type securityConfig struct {
 	RateBurst                int               `yaml:"rate_burst"`
 	AllowRemoteCommands      bool              `yaml:"allow_remote_commands"`
 	RemoteCommandAuth        remoteAuthConfig  `yaml:"remote_command_auth"`
+	PacketAuth               packetAuthConfig  `yaml:"packet_auth"`
 	RemoteCommandPorts       []int             `yaml:"remote_command_ports"`
 	URLAllowlist             []string          `yaml:"url_allowlist"`
 }
@@ -123,6 +124,14 @@ type securityConfig struct {
 // remoteAuthConfig is security.remote_command_auth: the shared key authenticating UDP
 // remote command segments (§21.3). The key never lives in YAML.
 type remoteAuthConfig struct {
+	Type    string `yaml:"type"`
+	KeyEnv  string `yaml:"key_env"`
+	KeyFile string `yaml:"key_file"`
+}
+
+// packetAuthConfig is security.packet_auth: the shared key that authenticates whole packets
+// (§19.14). The key never lives in YAML, exactly like the remote command key.
+type packetAuthConfig struct {
 	Type    string `yaml:"type"`
 	KeyEnv  string `yaml:"key_env"`
 	KeyFile string `yaml:"key_file"`
@@ -171,6 +180,7 @@ type actionConfig struct {
 	SecureOn  string            `yaml:"secure_on"`
 	Repeat    int               `yaml:"repeat"`
 	Interval  string            `yaml:"interval"`
+	Sign      bool              `yaml:"sign"`
 }
 
 type ruleConfig struct {
@@ -185,6 +195,7 @@ type matchConfig struct {
 	MAC        macConfig     `yaml:"mac"`
 	Content    contentConfig `yaml:"content"`
 	SrcCIDRs   []string      `yaml:"src_cidrs"`
+	Auth       string        `yaml:"auth"`
 }
 
 type macConfig struct {

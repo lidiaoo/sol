@@ -748,6 +748,9 @@ security.rate_limit         可选，全局令牌桶：跨所有动作与触发�
 security.rate_burst         可选，桶容量（吸收瞬时突发；0 = 一秒的 rate_limit；只写 burst 不写 rate 启动即报错）
 commands[].id / type / command / args{type,enum,pattern,required} / timeout / workdir / env / user / group   远端白名单命令（§21 / §19.7），type 暂只支持 exec；user/group 复用 exec 的降权
 security.allow_remote_commands / remote_command_auth{type,key_env,key_file} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）
+security.packet_auth{type:hmac,key_env,key_file}   整包认证（默认关闭，§19.14）：配了它，`match.auth: hmac` 的规则才只接受带 tag（截断 HMAC-SHA256，8 字节）的包；密钥不入 YAML
+match.auth                  可选，`hmac` = 只匹配认证过的包（§19.14）；保留端口不能要求认证；配了它却没配 packet_auth 启动即报错
+actions[].sign              可选（wol.send 用，§19.14）：把认证 tag 附在包尾，用来唤醒要求认证的目标；没配 packet_auth 却写 sign 启动即报错
 （`${VAR}` / `$VAR` 插值只在**数据**上生效：注释里写 `${VAR}` 不会变成必填变量，块标量正文照常插值）
 server.http.{enabled,listen,auth,tls}        控制面（§18 / §19.5）：auth.type = bearer|basic|mtls（默认 bearer，无 none）
 server.watch                可选，配置文件的轮询间隔（如 5s；空/0 = 关闭，最小 1s）；变了就自动 reload（§19.9），CLI `--watch` 优先
@@ -875,7 +878,7 @@ s.sendto(payload, ("192.168.1.255", 8))    # 只改端口即可切换动作
 注意事项：
 - 目标地址用子网广播（`192.168.1.255`）或 `255.255.255.255`；监听端绑 0.0.0.0 均可收到。
 - 内容区上限受读缓冲约束（`BufferSize=2048` 减去魔法包部分），足够常规 token 使用。
-- 内容 token 本期是明文、无认证。破坏性动作（关机/重启）建议**同时**配 `src_cidrs` 白名单；更强的包级认证（HMAC）列为后续项。
+- 内容 token 本期是明文、无认证。破坏性动作（关机/重启）建议**同时**配 `src_cidrs` 白名单；更强的整包认证已落地：`security.packet_auth` + `match.auth: hmac` 给包尾加 8 字节 HMAC 标签（§19.14，需要发送侧也支持），但它不防重放。
 - 路由器固件 / 手机 WOL App 一般只能发 102 字节纯包，因此它们只能命中 `content: { kind: none }` 的默认规则。
 - 不想写脚本也有个现成选项：让**另一台 sol** 去发（`type: wol.send`，§19.13）——它支持子网广播 / 单播、`repeat`、SecureOn，并且能把"发唤醒包"串进 `sequence` 或远端命令；上面的 Python 脚本等价于它在做的事。
 
@@ -1500,6 +1503,28 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - 默认目标：`broadcast=255.255.255.255 port=9`、102 字节，发送成功且无 `action failed`（即 `SO_BROADCAST` 生效）。
   - `mac: "not-a-mac"` → `invalid wol.send mac: "not-a-mac"`；`repeat: 20` → `invalid wol.send repeat: 20 (1..10)`（均 exit 1）。
 
+### 19.14 包级 HMAC（整包认证，可选）
+
+- 问题：内容 token 是明文的。谁能把包发到端口，谁就能触发那条规则（`src_cidrs` 只是把来源收窄，局域网上可伪造）。§21 的 HMAC 只认证**命令段**，不认证普通规则命中的包。
+- 配置：`security.packet_auth: { type: hmac, key_env: SOL_PACKET_KEY }`（或 `key_file`，600 权限；密钥不入 YAML，与其它凭据一致）。空块 = 关闭。规则用 `match.auth: hmac` **逐条选择**是否要求认证——不是全局开关，否则所有老规则会一起失效。
+- 线格式：`<魔法包><内容><tag>`，tag = **截断 HMAC-SHA256，8 字节**（`PacketSignatureLen = RemoteSignatureLen`，与远端命令通道同一个截断，发送侧一个 helper 服务两处）。tag 覆盖 tag 之前的**全部字节**，所以 `secure_on` 密码也在认证范围内；内容匹配看到的是剥掉 tag 的字节，`content: { kind: suffix/prefix }` 照常可用。
+- 语义（都被真机验证过，见下）：
+  - `auth: hmac` 的规则**只**接受 tag 校验通过的包；无 tag、错 key、被改一个字节、把 A 的 tag 贴到 B 上，一律不命中。
+  - 认证是**包的属性**：`Decision.Authenticated` 进审计日志（`authenticated=true|false`），所以同一端口上即使命中的是普通规则，也能从日志看出这个包是不是认证过的。
+  - 打分 `auth` 记 **+50**（内容 100 / src 10 / mac 10 / port 1）：同一端口上有 auth 规则和普通规则时，签名包走 auth 规则，普通包走普通规则。
+  - 普通规则**不会**因为配了 `packet_auth` 而变强：它照旧接受任何载荷（包括带 tag 的）。要安全边界就写 `auth: hmac`；这一点写在文档里，免得有人以为"配了 key 就全好了"。
+  - 保留端口 **不能**要求认证：带 tag 的包不可能同时是 102 字节纯包，这种组合永远不可能命中 → 启动即报 `ErrReservedPortAction`。
+  - 配了 `auth: hmac` 却没配 key → 启动报 `ErrAuthWithoutKey`；`wol.send` 写 `sign: true` 却没配 key → 启动报 `ErrSendSign`（都是 fail fast，不是静默降级）。
+- 发送侧：`wol.send` 加 `sign: true` 就会把 tag 附在包尾，于是 **sol 能唤醒一个要求认证的 sol**（闭环）；其它发送方按上面的线格式自己算 tag 即可（`hmac.new(key, packet, sha256).digest()[:8]`）。
+- 仍未覆盖：**重放**。HMAC 证明"这个包来自持有 key 的人"，不证明"这是第一次发"；抓到合法包的人可以再发一次。缓解手段是 cooldown / 全局限流（§19.6 / §19.12）与 `src_cidrs`，彻底解决要加序号或时间戳（列为后续项，见 TODO）。
+- 实现：`internal/domain/wol/{packet.go,remote.go}`（`SignPacket`/`SplitPacketSignature`/共享 `signatureTag`/`PacketSignatureLen`）、`match.go`（`AuthKind` + `Match.Auth` + `ErrUnknownAuthKind`/`ErrAuthWithoutKey`）、`policy.go`（`PolicyOptions.PacketKey`、`authenticate`、`compileMatch`、`compiledRule.matches` 的 auth 门、`checkReserved` 拒绝、`scoreAuth`、`Decision.Authenticated`）、`internal/config/{schema.go,load.go,config.go}`（`packet_auth` 解析复用 `resolveSecret`、`match.auth` 加载期校验、`Config.PacketKey`）、`internal/infra/wolsend/executor.go`（`WithPacketKey` + `sign`）、`internal/app/listen_service.go`（审计行加 `authenticated=`）。
+- 单测：域层（签名往返、错 key、篡改一个字节、过短、无 key；SecureOn 一并被覆盖、tag 换包不通过）、策略层（auth 规则拒绝未签名/错 key/A/B 换 tag；内容匹配仍在剥掉 tag 后生效；同端口 auth 规则压过普通规则；`AuthWithoutKey`/`UnknownAuthKind`/保留端口三种启动错误）、配置层（env / 关闭 / 四类错误 / 未知 auth 值 / `sign`）、执行器（真实 UDP 收到的包能被共享 key 校验、`sign` 无 key 报错）。schema 防漂移测试同步新增 `packet_auth`、`match.auth`、`actions[].sign`。
+- 冒烟（真机，s19，key 走环境变量）：目标 `security.packet_auth` + `ports: [10151], auth: hmac`；唤醒端 `wol.send` + `sign: true`。
+  - 端到端：触发（10152）→ 唤醒端日志 `msg="wol packet sent" action=wake-target ... signed=true copies=2 bytes=110`（102 + 8）；目标命中 **2** 次，审计行 `authenticated=true`，`/v1/status` 显示 `actions={noop: 2} matched=2`。
+  - 伪造：直接发 102 字节无 tag 包 → **不命中**；用错 key 签的 110 字节包 → **不命中**（目标记 2 条 non-matching，命中数仍是 2）。
+  - 正确签名：手工按线格式签的 110 字节包 → 命中数 3，`authenticated=true`。
+  - 配置错误 5 例全部 exit 1：`sign` 无 key、保留端口要求 auth、`packet_auth.type: shared`、key 环境变量为空、`auth: hmac` 无 key。
+
 ---
 
 ## 20. 安全模型总览（汇总）
@@ -1516,7 +1541,7 @@ noop/记日志  <  wol.send 唤醒别处  <  power.sleep/lock  <  power.shutdown
 
 - 保留端口 {7, 9} 只允许纯包 + `noop`（安全边界，防止误发/恶意唤醒包关机）。
 - 端口号不是密钥：靠"换端口"路由不带任何密钥，谁扫到端口都能触发。
-- 内容 token 本期是明文、无认证；破坏性动作建议同时配 `src_cidrs`；包级 HMAC 认证列为后续项。
+- 内容 token 本期是明文、无认证；破坏性动作建议同时配 `src_cidrs`；**整包认证已落地**：`security.packet_auth` + `match.auth: hmac`（§19.14），它证明"这个包来自持有 key 的人"，但不防重放。
 - HTTP 控制面：默认本地 + 强制认证 + 可选 TLS + 审计；触发接口视为敏感。
 - HTTP 出站动作：注意 SSRF，可选 `url_allowlist`；不记录密钥。
 - 自定义命令：默认 argv 非 shell + 启动期静态校验 + 降权 + cooldown + 审计。

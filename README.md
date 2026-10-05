@@ -193,6 +193,37 @@ commands:
 Every command becomes an ordinary action named `remote:<id>`, so cooldowns, dry-run, audit
 logging and `POST /v1/actions/remote:<id>` all apply to it.
 
+### Authenticating packets (off by default)
+
+A content token is plaintext: anyone who can reach the port can trigger the rule. With
+`security.packet_auth` a rule can require an HMAC tag (truncated SHA-256, 8 bytes) over the
+whole packet, and `wol.send` can produce it:
+
+```yaml
+version: 1
+
+security:
+  packet_auth: { type: hmac, key_env: SOL_PACKET_KEY }   # the key never lives in this file
+
+actions:
+  - name: wake-nas
+    type: wol.send
+    mac: "58:11:22:BC:78:66"
+    sign: true                      # append the tag the target expects
+
+rules:
+  - match: { ports: [10012], auth: hmac }   # only a packet with a valid tag may fire here
+    action: wake-nas
+```
+
+`match.auth: hmac` is per rule, so existing rules keep working. The tag covers every byte before
+it (including a `secure_on` password), the content matcher sees the payload without the tag, and
+the audit log records `authenticated=true|false` for every match. A rule that requires
+authentication while no key is configured, a reserved port that requires it, and `sign: true`
+without a key are all refused at start-up instead of failing silently. It proves the packet came
+from someone holding the key; it does not stop a replay of a captured packet (cooldowns and the
+rate limit bound that).
+
 ### Control plane
 
 `server.http.enabled: true` starts an HTTP control plane on `127.0.0.1:8080` by default with
@@ -374,6 +405,8 @@ valid magic packet. SoL therefore
 - never exceeds `noop` on the reserved ports unless you explicitly ask for it,
 - matches strictly by default (a rule only fires on the payload content it names),
 - offers `src_cidrs` to restrict which networks may trigger a rule,
+- can require an HMAC tag over the whole packet (`security.packet_auth` + `match.auth: hmac`),
+  which proves the sender holds the key (it does not stop a replay),
 - requires HMAC authentication, a strict command whitelist and per-argument validation for
   remote commands, and keeps that channel off by default,
 - keeps the control plane on localhost with mandatory authentication,

@@ -98,7 +98,8 @@
 - [x] 出站 allowlist 的精确 / 正则匹配（裸串前缀改为 host+path 边界匹配、`=` 精确、`~` 正则；条目非法启动即报；实测 lookalike host `https://hooks.example.com.evil.net` 被拒）
 - [x] 远端命令通道（`commands[].id` 白名单 + HMAC + 参数校验 + UDP/HTTP 双传输；`remote:<id>` 注册为普通动作，复用 cooldown / dry-run / 审计）——见设计 §19.7
 - [x] 远端命令的 `user`/`group` 降权（复用 §19.4 的 credential 代码：`commands[].user/group` 透传进 `ExecParams`，启动期校验与 setgroups 零改动继承；实测 `output=65534 run_as=nobody`、非 root 启动报 `ErrNotRoot`、未知用户报 `ErrUnknownUser`）
-- [ ] 覆盖整包的包级 HMAC（当前只认证命令段）
+- [x] 覆盖整包的包级 HMAC（`security.packet_auth` + `match.auth: hmac`；tag = 截断 HMAC-SHA256 8 字节，覆盖 tag 之前的全部字节含 SecureOn；认证是包的属性并进审计日志 `authenticated=`；`auth` 规则只接受校验通过的包，同端口压过普通规则；保留端口 / 无 key / `sign` 无 key 三种组合启动即报错；`wol.send` 的 `sign: true` 让 sol 能唤醒要求认证的 sol）——见设计 §19.14
+- [ ] 认证包的重放防护（HMAC 只证明"来自持有 key 的人"，抓到合法包可以重发；彻底解决要序号或时间戳，当前靠 cooldown / 限流 / `src_cidrs` 缓解）
 - [ ] 远端原始命令（`allow_raw_shell` 默认关 + `/bin/sh -c` + 认证 / 端口 / allowlist + 启动告警）
 - [x] `wol.send`（唤醒别的机器：`mac`（必填，只来自配置）+ `broadcast` / `port` / `secure_on` / `repeat` / `interval`（默认广播 255.255.255.255、端口 9、1 份、100ms）；加载期填默认值；与 `ParsePacket` 互为逆的 `EncodeMagicPacket`；广播发送补 `SO_BROADCAST`（否则 `EACCES`）；复用 cooldown / 限流 / dry-run / 审计。顺手修掉 sequence 上 `timeout` 被静默忽略的既有漏洞）——见设计 §19.13
 - [x] 按动作 cooldown（`security.cooldown` + `security.cooldowns.<动作名>`；包触发与手动触发共用，抑制计入 `sol_suppressed_total`，手动触发返回 429）——见设计 §19.6
@@ -117,7 +118,7 @@
 
 - [ ] 是否需要"多个 server 块"（当前设计为单 server）
 - [ ] 块级可覆盖字段范围：`dry_run`/`secure_on` 之外是否还要 `reserved_ports`、块级 `actions`？
-- [ ] 内容 token 的包级 HMAC 认证（本期为明文，建议后续）
+- [x] 内容 token 的整包 HMAC 认证（`security.packet_auth` + `match.auth: hmac`，§19.14；此前为明文）
 - [ ] 远端原始命令的默认 allowlist 策略（即便 raw 模式也建议限制，见 §21.6）
 - [ ] 内容前缀 `ContentPrefix` 的 offset 是否需要支持超出内容区的绝对偏移
 - [ ] 审计日志落地形式（stdout / 文件 / syslog）

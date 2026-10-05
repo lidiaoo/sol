@@ -167,9 +167,17 @@ func (s ArgSpec) checkType(value string) error {
 
 // RemoteSignature returns the truncated HMAC-SHA256 tag over prefix||segment.
 func RemoteSignature(key []byte, prefix []byte, segment []byte) []byte {
+	return signatureTag(key, prefix, segment)
+}
+
+// signatureTag is the truncated HMAC-SHA256 tag over the concatenation of parts. The remote
+// command channel and authenticated packets share it, so the truncation cannot drift between
+// the two.
+func signatureTag(key []byte, parts ...[]byte) []byte {
 	mac := hmac.New(sha256.New, key)
-	mac.Write(prefix)
-	mac.Write(segment)
+	for _, part := range parts {
+		mac.Write(part)
+	}
 
 	return mac.Sum(nil)[:RemoteSignatureLen]
 }

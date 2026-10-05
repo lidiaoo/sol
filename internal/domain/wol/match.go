@@ -18,6 +18,8 @@ var (
 	ErrInterfaceScopeConflict = errors.New("rule scope does not match its interface block")
 	ErrUnknownInterface       = errors.New("unknown interface")
 	ErrInvalidCIDR            = errors.New("invalid src_cidr")
+	ErrUnknownAuthKind        = errors.New("unknown match.auth kind")
+	ErrAuthWithoutKey         = errors.New("match.auth requires security.packet_auth")
 )
 
 // MaxContentLen caps the decoded content token size.
@@ -254,12 +256,34 @@ func (c compiledMAC) scopeKey() string {
 	return strings.Join(parts, "|")
 }
 
+// AuthKind selects whether a rule only matches packets carrying a valid authentication tag
+// (§19.14). The zero value means the rule accepts any packet.
+type AuthKind string
+
+const (
+	// AuthHMAC requires the packet to end with a valid truncated HMAC-SHA256 tag over the
+	// bytes before it.
+	AuthHMAC AuthKind = "hmac"
+)
+
+// Compile validates the selector.
+func (a AuthKind) Compile() (AuthKind, error) {
+	switch a {
+	case "", AuthHMAC:
+		return a, nil
+	}
+
+	return "", fmt.Errorf("%w: %s", ErrUnknownAuthKind, a)
+}
+
 // Match describes the conditions under which a rule fires.
 type Match struct {
 	Ports    []int
 	MAC      MACSelector
 	Content  ContentMatcher
 	SrcCIDRs []string
+	// Auth, when set to AuthHMAC, restricts the rule to authenticated packets.
+	Auth AuthKind
 }
 
 // Rule binds a Match to an Action.

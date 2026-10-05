@@ -337,3 +337,36 @@ func TestExecuteReportsAnUnreachableSocket(t *testing.T) {
 
 	require.ErrorIs(t, executor.Execute(context.Background(), testDef(), wol.Event{}), ErrSendSocket)
 }
+
+func TestExecuteSignsPackets(t *testing.T) {
+	t.Parallel()
+
+	key := []byte("shared-key")
+	col := newCollector(t)
+
+	def := testDef()
+	def.Send.Broadcast = loopback
+	def.Send.Port = col.port(t)
+	def.Send.Sign = true
+
+	require.NoError(t, NewExecutor(WithPacketKey(key)).Execute(context.Background(), def, wol.Event{}))
+
+	received := col.receive(t)
+	data, ok := wol.SplitPacketSignature(key, received)
+	require.True(t, ok, "the tag must verify with the shared key")
+	require.Len(t, received, len(data)+wol.PacketSignatureLen)
+
+	parsed, ok := wol.ParsePacket(data, nil)
+	require.True(t, ok)
+	require.Equal(t, targetMAC(), parsed.MAC)
+}
+
+func TestValidateRefusesSignWithoutAKey(t *testing.T) {
+	t.Parallel()
+
+	def := testDef()
+	def.Send.Sign = true
+
+	require.ErrorIs(t, NewExecutor().Validate(def), ErrSendSign)
+	require.NoError(t, NewExecutor(WithPacketKey([]byte("k"))).Validate(def))
+}
