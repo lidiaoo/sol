@@ -757,6 +757,10 @@ rules[].match.interfaces    网卡名列表；限定只对某些网卡生效（�
 rules[].match.mac           self(默认) | { addr: "AA:BB:.." } | any
 rules[].match.src_cidrs     CIDR 列表，空 = 不限来源
 rules[].action              引用 actions[].name 或内置名
+
+编辑器补全 / 校验：schema/sol.schema.json（JSON Schema 2020-12；未知字段一律拒绝，与加载器的严格解码一致）。
+防漂移：internal/config/schema_internal_test.go 把字段集合与 Go 结构体的 yaml tag 双向比对、把 enum 与 domain 常量比对，
+所以加字段或改取值必须同步 schema，否则测试失败。
 ```
 
 ---
@@ -1424,6 +1428,18 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 语义细节：step 的 `{{.Action}}` 插值看到的是 **step 自己的动作名**（不是组合名）——实测 webhook 收到 `/seq/notify` 与 `{"action":"notify"}`。
 - 冒烟（真机，端口 10071 -> `seq-all`、10072 -> `seq-fail`，webhook 探针 `127.0.0.1:18091`）：① `seq-all = [mark-a, notify, mark-b]` 三个 step 按序执行，两个 marker 都生成、webhook 收到请求，日志三条 `sequence step finished ... failed=false`；② 30s 冷却内的第二个包被抑制（`action suppressed by cooldown action=seq-all`，说明冷却按组合名生效）；③ `seq-fail = [mark-fail, mark-a]`（第一步 `/usr/bin/false` 必失败）——第一步失败后第二步**照样执行**（生成 `sol-seq-a.marker`），日志 `failed=true` + `ERROR action failed ... step mark-fail: action mark-fail: exit status 1`；④ 启动期拒绝：`steps: [noop, mark-typo]` -> exit 1 `sequence action combo: unknown sequence step: mark-typo`；`steps: [inner, noop]`（inner 也是 sequence）-> exit 1 `sequence action outer: sequence steps may not be sequences: inner`。
 - 未做：嵌套 / 条件 / 并行 step、per-step 的 `continue_on_error` 开关（当前统一"不中断"）、step 级别的 dry-run 覆盖。
+
+### 19.11 文档与编辑器工具（README / CHANGELOG / JSON Schema）
+
+- README 重写（v0.0.2 版还写着 `--port 9` = 关机、`--iface` 必填、没有配置文件）：动作表、配置文件示例、远端命令、控制面、三条 reload 路径、端口与权限（保留端口 / <1024 / systemd `AmbientCapabilities` / exec 降权需 root）、`sol ifaces`、迁移说明。示例配置经**真机跑通**（加载无误、`/healthz` 200、自动选网卡、`/v1/rules` 回显、带 `lock` 后缀的包命中并 exit 0）——这次校验抓出两处笔误：`exec_allowlist` 没覆盖示例命令路径、示例写了本机不存在的 `eth0`。
+- CHANGELOG.md 新建：breaking（`--port 9` -> noop、`--iface` 不再必填、裸 `--port` 走 `--default-action`、默认严格内容匹配）+ 全部新增能力 + 安全决策。
+- `schema/sol.schema.json`（JSON Schema 2020-12）：编辑器补全与校验，语义与加载器对齐——**每个对象都 `additionalProperties: false`**（对应 `KnownFields(true)`），enum/required 与实现一致。
+- 防漂移测试 `internal/config/schema_internal_test.go`：
+  - `TestSchemaMirrorsTheConfigStructs` 把每个 schema 节点的属性集合与对应 Go 结构体的 yaml tag **双向**比对，并断言 required 与启动期实际要求一致；
+  - `TestSchemaEnumsMatchTheDomain` 把 enum 与 domain 常量（`wol.ActionType*`、`wol.Content*`、`wol.MAC*`、`config.AuthType*`、`authTypeHMAC`、`logging.Format*`）比对。
+  - 两条都验证过"有牙齿"：删掉 schema 里的 `watch` -> 前者失败；把 `exact` 加回 content kind -> 后者失败。
+- 这个 guard 立刻抓到一处真实错误：我手写的 schema 把 content kind 写成 `any|none|suffix|prefix|exact`，而 domain 只有 **any/none/suffix/prefix**（没有 `exact`）。已修正 schema + README + CHANGELOG，并顺手把设计文档 §19 路线图、TODO、README、CHANGELOG 四份文档交叉链接起来。
+- schema 的取值事实来自真机探针（`sol listen --config` 逐个试）：未知顶层/嵌套字段被拒、`version: 2` 被拒、rule 缺 `action` 被拒、action 缺 name/type 被拒、`kind: exact` 被拒、`kind: any` 合法、`level: warning` 与 `level: ""` 合法、`auth: {}` 等价 bearer（报错来自缺 token 而非类型）。
 
 ---
 

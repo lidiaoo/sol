@@ -1,0 +1,611 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/bavix/sol/master/schema/sol.schema.json",
+  "title": "SoL configuration",
+  "description": "Configuration file of the sol listener (version 1). Unknown keys are rejected at start-up, so every object here sets additionalProperties to false. Field reference: docs/routing-design.md (字段速查).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Schema version; the only accepted value is 1."
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Interfaces, per-interface blocks, rules and the control plane.",
+      "properties": {
+        "interfaces": {
+          "type": "array",
+          "description": "Interfaces to match on. Omit or leave empty to auto-select every eligible interface (up, non-loopback, has a MAC, not virtual). An entry is either a bare name or a block with per-interface overrides.",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Interface name, e.g. eth0."
+              },
+              {
+                "$ref": "#/$defs/interfaceBlock"
+              }
+            ]
+          }
+        },
+        "rules": {
+          "type": "array",
+          "description": "Rules applied to every interface of this instance. Top-level rules are an equivalent shorthand; setting both is an error.",
+          "items": {
+            "$ref": "#/$defs/rule"
+          }
+        },
+        "watch": {
+          "description": "Poll the configuration file and reload it when it changes. Empty or \"0\" disables watching; the minimum interval is 1s.",
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "const": "0"
+            },
+            {
+              "const": "0s"
+            },
+            {
+              "$ref": "#/$defs/duration"
+            }
+          ]
+        },
+        "http": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "HTTP control plane. Disabled unless enabled is true; it binds 127.0.0.1:8080 by default and always requires authentication.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Start the control plane."
+            },
+            "listen": {
+              "type": "string",
+              "description": "host:port to bind, e.g. 127.0.0.1:8080. Prefer a loopback address unless TLS and mTLS are configured."
+            },
+            "auth": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": ["", "bearer", "basic", "mtls"],
+                  "description": "Authentication scheme; empty means bearer. There is no unauthenticated mode."
+                },
+                "token_env": {
+                  "type": "string",
+                  "description": "Environment variable holding the bearer token (bearer only)."
+                },
+                "token_file": {
+                  "type": "string",
+                  "description": "0600 file holding the bearer token (bearer only; alternative to token_env)."
+                },
+                "user": {
+                  "type": "string",
+                  "description": "Username (basic only)."
+                },
+                "password_env": {
+                  "type": "string",
+                  "description": "Environment variable holding the password (basic only)."
+                },
+                "password_file": {
+                  "type": "string",
+                  "description": "0600 file holding the password (basic only; alternative to password_env)."
+                }
+              },
+              "required": ["type"]
+            },
+            "tls": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "TLS material. Required for mtls (client_ca_file) and implied by cert_file/key_file.",
+              "properties": {
+                "cert_file": {
+                  "type": "string",
+                  "description": "Server certificate (PEM)."
+                },
+                "key_file": {
+                  "type": "string",
+                  "description": "Server private key (PEM)."
+                },
+                "client_ca_file": {
+                  "type": "string",
+                  "description": "CA bundle verifying client certificates (mtls only)."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "enum": ["", "debug", "info", "warn", "warning", "error"],
+          "description": "Log level; empty and \"warning\" are accepted as info and warn respectively. Defaults to info."
+        },
+        "format": {
+          "enum": ["", "text", "json"],
+          "description": "Log format; empty defaults to text."
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Guards: dry-run, reserved ports, cooldowns, allow-lists and the remote command channel.",
+      "properties": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "Log matching packets instead of executing their action."
+        },
+        "reserved_ports": {
+          "type": "array",
+          "description": "Ports reserved for plain Wake-on-LAN; defaults to [7, 9]. They accept only a payload-free magic packet and can only run noop.",
+          "items": {
+            "$ref": "#/$defs/port"
+          }
+        },
+        "allow_reserved_port_actions": {
+          "type": "boolean",
+          "description": "Allow non-noop actions on the reserved ports (the pre-rule-model behaviour). Defaults to false."
+        },
+        "secure_on": {
+          "type": "string",
+          "description": "SecureOn password expected after the magic packet: 6 bytes, either 12 hex characters (aabbccddeeff) or 6 ASCII characters."
+        },
+        "exec_allowlist": {
+          "type": "array",
+          "description": "Directories that absolute exec command paths must live under; empty allows any absolute path.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cooldown": {
+          "description": "Minimum interval between two executions of the same action; empty disables it.",
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/$defs/duration"
+            }
+          ]
+        },
+        "cooldowns": {
+          "type": "object",
+          "description": "Per-action cooldown overrides, keyed by action name (built-in names, configured names, or remote:<id>).",
+          "additionalProperties": {
+            "$ref": "#/$defs/duration"
+          }
+        },
+        "allow_remote_commands": {
+          "type": "boolean",
+          "description": "Enable the remote command channel. Off by default; enabling it requires remote_command_auth and at least one non-reserved remote_command_ports entry."
+        },
+        "remote_command_auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Shared HMAC key authenticating remote command segments. The key never lives in this file.",
+          "properties": {
+            "type": {
+              "const": "hmac",
+              "description": "Only hmac is supported."
+            },
+            "key_env": {
+              "type": "string",
+              "description": "Environment variable holding the shared key."
+            },
+            "key_file": {
+              "type": "string",
+              "description": "0600 file holding the shared key (alternative to key_env)."
+            }
+          },
+          "required": ["type"]
+        },
+        "remote_command_ports": {
+          "type": "array",
+          "description": "UDP ports that accept remote command segments. They are bound but never matched against rules; reserved ports are refused.",
+          "items": {
+            "$ref": "#/$defs/port"
+          }
+        },
+        "url_allowlist": {
+          "type": "array",
+          "description": "Destinations outbound HTTP actions may reach. A plain entry is a prefix matched on scheme+host with a path boundary, '=' makes it an exact whole-URL match and '~' makes it a regular expression. A malformed entry fails the start-up.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "description": "Named actions referenced by rules and by POST /v1/actions/{name}.",
+      "items": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "commands": {
+      "type": "array",
+      "description": "Whitelisted remote commands; each one is registered as the action remote:<id>.",
+      "items": {
+        "$ref": "#/$defs/command"
+      }
+    },
+    "rules": {
+      "type": "array",
+      "description": "Shorthand for server.rules. Setting both is an error.",
+      "items": {
+        "$ref": "#/$defs/rule"
+      }
+    }
+  },
+  "$defs": {
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "UDP port number."
+    },
+    "duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Go duration, e.g. 5s, 200ms, 1m30s."
+    },
+    "interfaceBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-interface overrides: dry_run applies to this interface, secure_on is not implemented yet, and rules are scoped to it.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Interface name; a block requires it."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Log matches on this interface instead of executing them; requires block-level rules."
+        },
+        "secure_on": {
+          "type": "string",
+          "description": "Per-interface SecureOn password; not implemented yet, setting it is an error."
+        },
+        "rules": {
+          "type": "array",
+          "description": "Rules scoped to this interface; they implicitly match this interface only.",
+          "items": {
+            "$ref": "#/$defs/rule"
+          }
+        }
+      },
+      "required": ["name"]
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "match": {
+          "$ref": "#/$defs/match"
+        },
+        "action": {
+          "type": "string",
+          "description": "Action to run: a built-in name, a configured actions[].name or remote:<id>."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Log the match instead of executing the action."
+        }
+      },
+      "required": ["action"]
+    },
+    "match": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Conditions a packet must satisfy. An empty match is accepted.",
+      "properties": {
+        "ports": {
+          "type": "array",
+          "description": "Destination UDP ports this rule listens on.",
+          "items": {
+            "$ref": "#/$defs/port"
+          }
+        },
+        "interfaces": {
+          "type": "array",
+          "description": "Interface names this rule applies to.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mac": {
+          "description": "Target MAC selector: the literal strings \"self\" or \"any\", a MAC address, or a block.",
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "\"self\" (this host's MACs), \"any\", or an explicit MAC address such as 58:11:22:bc:78:66."
+            },
+            {
+              "$ref": "#/$defs/macBlock"
+            }
+          ]
+        },
+        "content": {
+          "$ref": "#/$defs/content"
+        },
+        "src_cidrs": {
+          "type": "array",
+          "description": "Source networks allowed to trigger this rule, e.g. 192.168.0.0/24 or 10.0.0.1/32.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "macBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["self", "any", "interface", "explicit"],
+          "description": "Selector kind."
+        },
+        "address": {
+          "type": "string",
+          "description": "MAC address for kind: explicit."
+        },
+        "interfaces": {
+          "type": "array",
+          "description": "Interface names whose MACs match, for kind: interface.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["kind"]
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Payload matching after the magic packet (and SecureOn, when configured). value and value_hex are mutually exclusive; kind any and none take no value at all, and offset only applies to prefix.",
+      "properties": {
+        "kind": {
+          "enum": ["any", "none", "suffix", "prefix"],
+          "description": "How the payload is compared: any accepts any payload, none requires an empty one, suffix/prefix match the token at the end or the start of the payload area."
+        },
+        "value": {
+          "type": "string",
+          "description": "Literal payload token."
+        },
+        "value_hex": {
+          "type": "string",
+          "description": "Payload token as hex (e.g. 00ff10); mutually exclusive with value."
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Offset inside the payload area for prefix matching."
+        }
+      },
+      "required": ["kind"]
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A named action. The parameters must match the type: exec takes command/timeout/workdir/env/shell/user/group, http takes method/url/headers/body/timeout/retries, sequence takes steps.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique action name."
+        },
+        "type": {
+          "enum": ["noop", "power.sleep", "power.shutdown", "power.reboot", "exec", "http", "sequence"],
+          "description": "Action type."
+        },
+        "command": {
+          "type": "array",
+          "description": "argv of an exec action; not a shell string unless shell is true.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Command/request timeout (exec, http).",
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/$defs/duration"
+            }
+          ]
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Working directory of an exec action."
+        },
+        "env": {
+          "type": "array",
+          "description": "Extra environment entries (KEY=VALUE) for an exec action; values may interpolate {{.Arg.x}}.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "user": {
+          "type": "string",
+          "description": "Run as this user (name or id); requires root and is validated at start-up. exec and remote commands only."
+        },
+        "group": {
+          "type": "string",
+          "description": "Run as this group (name or id); requires root. exec and remote commands only."
+        },
+        "shell": {
+          "type": "boolean",
+          "description": "Run the command through /bin/sh -c (exec only). An escape hatch; argv is the default."
+        },
+        "method": {
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
+          "description": "HTTP method of an http action; defaults to POST."
+        },
+        "url": {
+          "type": "string",
+          "description": "Destination of an http action; supports {{.Action}}/{{.SrcIP}}/{{.DstPort}}/{{.Arg.x}} interpolation in the query and path, while scheme and host stay literal."
+        },
+        "headers": {
+          "type": "object",
+          "description": "Request headers of an http action; values may interpolate, and they are never logged.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "body": {
+          "type": "string",
+          "description": "Request body of an http action; may interpolate."
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Retry count of an http action (transport failures, 429 and 5xx only)."
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Ordered action names of a sequence; every step runs even when an earlier one fails. Nesting a sequence inside a sequence is refused.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["name", "type"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "exec"
+              }
+            }
+          },
+          "then": {
+            "required": ["command"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "http"
+              }
+            }
+          },
+          "then": {
+            "required": ["url"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "sequence"
+              }
+            }
+          },
+          "then": {
+            "required": ["steps"]
+          }
+        }
+      ]
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One whitelisted remote command. It becomes the action remote:<id> and keeps the exec parameters.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,32}$",
+          "description": "Command id (1-32 characters of A-Za-z0-9_.-); the action name is remote:<id>."
+        },
+        "type": {
+          "const": "exec",
+          "description": "Only exec is supported."
+        },
+        "command": {
+          "type": "array",
+          "description": "argv of the command; {{.Arg.<name>}} interpolates validated arguments, never a shell string.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "args": {
+          "type": "object",
+          "description": "Argument specs, keyed by argument name.",
+          "additionalProperties": {
+            "$ref": "#/$defs/arg"
+          }
+        },
+        "timeout": {
+          "description": "Command timeout.",
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/$defs/duration"
+            }
+          ]
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Working directory."
+        },
+        "env": {
+          "type": "array",
+          "description": "Extra environment entries (KEY=VALUE).",
+          "items": {
+            "type": "string"
+          }
+        },
+        "user": {
+          "type": "string",
+          "description": "Run as this user (name or id); requires root and is validated at start-up."
+        },
+        "group": {
+          "type": "string",
+          "description": "Run as this group (name or id); requires root."
+        }
+      },
+      "required": ["id", "type", "command"]
+    },
+    "arg": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": ["string", "int", "bool"],
+          "description": "Argument type; defaults to string."
+        },
+        "enum": {
+          "type": "array",
+          "description": "Allowed values.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Regular expression the value must match."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether the sender must supply the argument; defaults to true."
+        }
+      }
+    }
+  }
+}

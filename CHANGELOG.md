@@ -33,7 +33,7 @@ tagged release.
 ### Added
 
 - **Routing model**: rules match on `ports`, `mac` (`self`, `interface`, explicit set),
-  `content` (suffix/prefix/exact, `value` or `value_hex`), `src_cidrs` and the interface;
+  `content` (kind any/none/suffix/prefix, with `value` or `value_hex`), `src_cidrs` and the interface;
   rules are scored so the most specific one wins and ambiguous overlaps are refused at
   start-up.
 - **Configuration file** (`version: 1`): `server` (interfaces, per-interface blocks, rules,
@@ -41,6 +41,10 @@ tagged release.
   shorthand for `server.rules`. Discovery order: `--config`, `$SOL_CONFIG`,
   `/etc/sol/sol.yaml`, `~/.config/sol/sol.yaml`. Invalid documents fail at start-up with a
   named error.
+- **JSON Schema** (`schema/sol.schema.json`): editor completion and validation for the
+  configuration file, mirroring the loader (unknown keys refused, enums and required keys
+  declared). A test compares it against the configuration structs and the domain constants, so
+  a new field or a renamed value fails the build until the schema follows.
 - **Actions**: `noop`, `power.sleep`, `power.shutdown`, `power.reboot`, `exec` (argv, optional
   `shell`, `timeout`, `workdir`, `env`, `security.exec_allowlist`) and `sequence` (ordered
   steps, one action to the guards).

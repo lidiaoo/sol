@@ -42,7 +42,7 @@ configured, a 6-byte password follows (108 bytes).
   no payload and can only run `noop` — anything else fails at start-up. `--allow-reserved-actions`
   or `security.allow_reserved_port_actions: true` restores the old behaviour, on request.
 - On every other port, a rule may additionally match the packet payload (`content`: suffix,
-  prefix or exact), the source CIDR and the source MAC.
+  prefix or any), the source CIDR and the source MAC.
 
 ### Supported actions
 
@@ -140,6 +140,16 @@ rules:
 Configuration discovery order: `--config`, then `$SOL_CONFIG`, then `/etc/sol/sol.yaml`,
 then `~/.config/sol/sol.yaml`. Field-by-field reference: the "字段速查" section in
 [docs/routing-design.md](docs/routing-design.md).
+
+Editors with YAML support can complete and validate the file against the published JSON
+Schema. Either point the editor at the local `schema/sol.schema.json`, or start the file with:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/bavix/sol/master/schema/sol.schema.json
+```
+
+The schema mirrors the loader exactly — unknown keys, wrong types and the allowed enum values
+are all rejected, and a test fails whenever a configuration field and the schema disagree.
 
 ### Remote commands (off by default)
 

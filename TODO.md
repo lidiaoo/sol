@@ -77,7 +77,7 @@
 - [ ] 每网卡 `secure_on`：需要支持 per-rule secureOn 的包解析（现状是整 policy 一个）
 - [x] 冲突检测 `ErrRuleConflict` / `ErrInterfaceScopeConflict`：跨作用域（全局 vs 块）冲突的显式报错
 - [x] 热重载（`SIGHUP` + `POST /v1/reload` + `server.watch`/`--watch` 自动 reload；见 §19.9）
-- [ ] 附 JSON Schema（编辑器补全）
+- [x] 附 JSON Schema（编辑器补全）：`schema/sol.schema.json`（2020-12，未知字段一律拒绝、enum/required 与加载器一致）+ 防漂移测试 `internal/config/schema_internal_test.go`（字段集合与 Go 结构体 yaml tag 双向比对；action/content/mac/auth/logging 的 enum 与 domain 常量比对——这条抓到了我手写 schema 时把 content kind 误写成 `exact`，实际是 any|none|suffix|prefix）
 
 ## P4 自定义命令 + HTTP + 远端命令（§4.3、§18、§21）进行中
 
