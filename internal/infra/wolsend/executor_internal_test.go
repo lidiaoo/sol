@@ -361,6 +361,32 @@ func TestExecuteSignsPackets(t *testing.T) {
 	require.Equal(t, targetMAC(), parsed.MAC)
 }
 
+func TestExecuteSignsTimestampedPackets(t *testing.T) {
+	t.Parallel()
+
+	// With a window configured the tag is preceded by a stamp, so the receiver can also refuse
+	// a replay (§19.16).
+	key := []byte("shared-key")
+	col := newCollector(t)
+
+	def := testDef()
+	def.Send.Broadcast = loopback
+	def.Send.Port = col.port(t)
+	def.Send.Sign = true
+
+	executor := NewExecutor(WithPacketKey(key), WithPacketWindow(time.Minute))
+	require.NoError(t, executor.Execute(context.Background(), def, wol.Event{}))
+
+	received := col.receive(t)
+	data, stamp, _, ok := wol.SplitTimestampedSignature(key, received)
+	require.True(t, ok, "the stamp and tag must verify with the shared key")
+	require.InDelta(t, time.Now().Unix(), stamp, 5)
+
+	parsed, ok := wol.ParsePacket(data, nil)
+	require.True(t, ok)
+	require.Equal(t, targetMAC(), parsed.MAC)
+}
+
 func TestValidateRefusesSignWithoutAKey(t *testing.T) {
 	t.Parallel()
 

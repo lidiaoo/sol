@@ -324,6 +324,10 @@
             "key_file": {
               "type": "string",
               "description": "0600 file holding the key."
+            },
+            "window": {
+              "type": "string",
+              "description": "Replay protection window, e.g. 60s (off when unset): packets must carry a fresh stamp and each tag is accepted only once inside the window."
             }
           }
         }

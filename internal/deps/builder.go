@@ -359,7 +359,10 @@ func (b *Builder) SequenceExecutor() *sequence.Executor {
 // stateless, so one instance serves every wol.send action.
 func (b *Builder) Sender() *wolsend.Executor {
 	b.senderOnce.Do(func() {
-		b.sender = wolsend.NewExecutor(wolsend.WithPacketKey(b.cfg.PacketKey))
+		b.sender = wolsend.NewExecutor(
+			wolsend.WithPacketKey(b.cfg.PacketKey),
+			wolsend.WithPacketWindow(b.cfg.PacketWindow),
+		)
 	})
 
 	return b.sender
@@ -386,6 +389,10 @@ func (b *Builder) buildRuntime() (*wol.Registry, *wol.RoutingPolicy, []wol.Iface
 		Actions:       registry.Actions(),
 		ExtraPorts:    append(slices.Clone(b.cfg.Remote.Ports), b.cfg.Remote.RawShell.Ports...),
 		PacketKey:     b.cfg.PacketKey,
+		PacketWindow:  b.cfg.PacketWindow,
+		OnAuthRejected: func(reason string) {
+			slog.Warn("authenticated packet refused", "reason", reason)
+		},
 	})
 	if err != nil {
 		return nil, nil, nil, err

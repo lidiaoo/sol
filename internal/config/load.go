@@ -424,6 +424,7 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		Cooldown:             guards.cooldown,
 		ActionCooldowns:      guards.perAction,
 		PacketKey:            guards.packetKey,
+		PacketWindow:         guards.packetWindow,
 		Remote:               remote,
 		Actions:              actions,
 		Logging:              Logging{Level: f.Logging.Level, Format: f.Logging.Format},
@@ -798,7 +799,7 @@ func parseTimeout(value string) (time.Duration, error) {
 // buildPacketAuth resolves security.packet_auth (§19.14). An empty block means "off": no
 // packet is authenticated. A configured block must be hmac and must name a key source.
 func buildPacketAuth(cfg packetAuthConfig) ([]byte, error) {
-	if cfg.Type == "" && cfg.KeyEnv == "" && cfg.KeyFile == "" {
+	if cfg.Type == "" && cfg.KeyEnv == "" && cfg.KeyFile == "" && cfg.Window == "" {
 		return nil, nil
 	}
 
@@ -816,6 +817,29 @@ func buildPacketAuth(cfg packetAuthConfig) ([]byte, error) {
 	}
 
 	return []byte(key), nil
+}
+
+// buildPacketWindow reads packet_auth.window (§19.16). A window needs the key it belongs to, and
+// a zero or negative one is refused: it would read like protection while accepting every stamp.
+func buildPacketWindow(cfg packetAuthConfig, key []byte) (time.Duration, error) {
+	if cfg.Window == "" {
+		return 0, nil
+	}
+
+	if len(key) == 0 {
+		return 0, fmt.Errorf("%w: packet_auth.window requires a key", ErrPacketAuth)
+	}
+
+	window, err := time.ParseDuration(cfg.Window)
+	if err != nil {
+		return 0, fmt.Errorf("%w: packet_auth.window: %q: %w", ErrPacketAuth, cfg.Window, err)
+	}
+
+	if window <= 0 {
+		return 0, fmt.Errorf("%w: packet_auth.window must be positive, got %s", ErrPacketAuth, cfg.Window)
+	}
+
+	return window, nil
 }
 
 // requireCommands refuses an enabled channel that would accept nothing. A raw shell-only
@@ -1201,11 +1225,12 @@ func buildCooldowns(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (t
 // guardsConfig is the resolved set of execution guardrails: the per-action cooldowns (§19.6)
 // and the global token bucket (§19.12).
 type guardsConfig struct {
-	cooldown  time.Duration
-	perAction map[wol.Action]time.Duration
-	rateLimit float64
-	rateBurst int
-	packetKey []byte
+	cooldown     time.Duration
+	perAction    map[wol.Action]time.Duration
+	rateLimit    float64
+	rateBurst    int
+	packetKey    []byte
+	packetWindow time.Duration
 }
 
 // buildGuards resolves every guardrail in one step, so the caller stays short.
@@ -1225,12 +1250,18 @@ func buildGuards(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (guar
 		return guardsConfig{}, err
 	}
 
+	packetWindow, err := buildPacketWindow(cfg.PacketAuth, packetKey)
+	if err != nil {
+		return guardsConfig{}, err
+	}
+
 	return guardsConfig{
-		cooldown:  cooldown,
-		perAction: perAction,
-		rateLimit: rateLimit,
-		rateBurst: rateBurst,
-		packetKey: packetKey,
+		cooldown:     cooldown,
+		perAction:    perAction,
+		rateLimit:    rateLimit,
+		rateBurst:    rateBurst,
+		packetKey:    packetKey,
+		packetWindow: packetWindow,
 	}, nil
 }
 

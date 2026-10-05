@@ -143,6 +143,9 @@ type packetAuthConfig struct {
 	Type    string `yaml:"type"`
 	KeyEnv  string `yaml:"key_env"`
 	KeyFile string `yaml:"key_file"`
+	// Window, when set, turns on replay protection (§19.16): packets must carry a stamp the
+	// receiver accepts, and each tag is used once.
+	Window string `yaml:"window"`
 }
 
 // commandConfig is one whitelisted remote command of the commands[] section (§21.3).

@@ -748,6 +748,7 @@ security.rate_limit         可选，全局令牌桶：跨所有动作与触发�
 security.rate_burst         可选，桶容量（吸收瞬时突发；0 = 一秒的 rate_limit；只写 burst 不写 rate 启动即报错）
 commands[].id / type / command / args{type,enum,pattern,required} / timeout / workdir / env / user / group   远端白名单命令（§21 / §19.7），type 暂只支持 exec；user/group 复用 exec 的降权
 security.allow_remote_commands / remote_command_auth{type,key_env,key_file} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）
+security.packet_auth{type,key_env,key_file,window}   整包认证（默认关闭，§19.14）+ 重放防护窗口（§19.16）：配上 window（如 60s）后包尾变成 [stamp 8B][tag 8B]，stamp 也在 tag 覆盖内；接收方只收窗口内的 stamp，且同一个 tag 只接受一次（缓存 4096 条，满了拒绝而非淘汰）；两端要么都配 window、要么都不配，混用不支持
 security.packet_auth{type:hmac,key_env,key_file}   整包认证（默认关闭，§19.14）：配了它，`match.auth: hmac` 的规则才只接受带 tag（截断 HMAC-SHA256，8 字节）的包；密钥不入 YAML
 match.auth                  可选，`hmac` = 只匹配认证过的包（§19.14）；保留端口不能要求认证；配了它却没配 packet_auth 启动即报错
 security.allow_raw_shell    可选，默认 false；裸 shell 通道的开关（§21.6 / §19.15）。它是远端命令通道的子开关：开启要求 security.allow_remote_commands
@@ -1557,6 +1558,35 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - 配置错误 6 例全部 exit 1 且报错文本点名 `raw shell`。
   - README 片段当断言跑（`s20/readme_wire.sh`）：从 README 里抽出那段 YAML 与那段 `python3 -c` 发送片段，真跑一遍。**抓到真错**：文档里的发送片段少写了「MAC 重复 16 次」（`bytes.fromhex(...)*16`），于是发出的是 6+6=12 字节的「魔法包」，被目标记成 `non-matching packet length=68`；补上后 README 示例端到端跑通（文件真的被写出、命令进审计日志）。这正是"发布的示例是对实现的断言"那条规矩的价值。
 
+### 19.16 认证包的重放防护（`packet_auth.window`，默认关闭）
+
+- 问题（§19.14 自己留下的口子）：HMAC 只证明"这个包来自持有 key 的人"，不证明"这是第一次发"。抓到合法包的人可以原样重发——在本机就是再关一次机。当时的缓解只有 cooldown / 限流 / `src_cidrs`。
+- 开关：`security.packet_auth.window: 60s`（未设 = 关闭 = §19.14 的原布局）。它和密钥同属 `packet_auth`，所以"配了 key 就有认证、配了 window 才有一次性"两件事分开。
+- 线格式（只有一个字差别）：
+
+```
+关：  [magic 102B] [secureon 6B?] [content] [tag 8B]
+开：  [magic 102B] [secureon 6B?] [content] [stamp 8B] [tag 8B]
+```
+
+`stamp` = 大端 unix 秒（8 字节），**在 tag 的覆盖范围内**（`tag = HMAC-SHA256(key, tag 之前的全部字节)[:8]`），所以改 stamp 就会让 tag 失效——时间戳不能伪造。`secure_on` 与内容同样在覆盖范围内。
+- 接收侧两条判定，都在 `authenticate` 里：
+  1. **新鲜度**：`|now - stamp| <= window`。过去太久 = `stale`，**未来太远也拒绝**（时钟跑快的发送方不能因此换来更长的一次性寿命）。两侧边界算窗口内。
+  2. **一次性**：tag 在窗口内只接受一次，第二次起 `replay`。缓存按 tag 索引，条目的生命周期跟着它自己的 stamp（`stamp + window` 过期），最多每秒清理一次。
+- 拒绝都进日志：`authenticated packet refused reason=stale|replay|replay cache full`。要排查"是不是有人在重放"，看这一行就够了；包本身仍然记 `non-matching packet`（它没认证过，规则自然不命中），所以线上表现是"包来了但什么也没发生"。
+- 缓存上限 4096 条。**满了就拒绝新包，而不是淘汰旧条目**——淘汰等于把刚关上的重放窗口重新打开；宁可拒绝，也不静默降级。
+- **两端必须都配 window**：配了 window 的接收方会拒绝只有 tag 的旧布局（fail closed：`SplitTimestampedSignature` 直接不通过，连"reason"都不会有，就是一个 non-matching 包）。反过来，没配 window 的接收方"能"验过带 stamp 的包，但那时 stamp 会被算进 content 区——对 `suffix` / `prefix` 规则会改变匹配语义。所以**不支持混用**，文档里要写明。
+- 发送侧：`wol.send` 的 `sign: true` 在**自己配了 window** 时输出 `stamp+tag`（只带 key + window 就够，不需要规则）；没配 window 就还是旧布局。
+- reload 会新建缓存：reload 之前见过的 tag，在窗口内理论上还能被重放一次。这是"reload 只原子换整组"的代价，写进文档而不是偷偷保留（跨 reload 保状态需要引入共享存储，不值当）。
+- 仍未覆盖：能**阻断**包的人可以在原包到达前抢先重放同窗口内的包（没有顺序语义）。要彻底解决得引入序号/挑战响应，窗口本身就是这个取舍的上界。
+- 实现：`internal/domain/wol/packet.go`（`TimestampLen`/`TimestampBytes`/`SignTimestampedPacket`/`SplitTimestampedSignature`）、`internal/domain/wol/replay.go`（`replayGuard`：新鲜度 + 一次性 + 清理 + 上限，理由常量 `ReplayStale`/`ReplaySeen`/`ReplayFull`）、`policy.go`（`PolicyOptions.{PacketWindow,Now,OnAuthRejected}`、`unwrapSignature`、`clock`）、`internal/config/{schema.go,config.go,load.go}`（`packet_auth.window` → `Config.PacketWindow`，`buildPacketWindow`）、`internal/infra/wolsend/executor.go`（`WithPacketWindow`）、`internal/deps/builder.go`（接进 policy 与发送器，`OnAuthRejected` 打日志）。
+- 单测：域层（stamp/tag 往返、错 key、翻一位、截断；同秒同包第二次 = `replay`；-61s / +61s = `stale` 且边界 -60s/+60s 有效；带 window 时旧布局被拒、不带 window 时旧布局照旧；4096 条后 `replay cache full`）、配置层（解析、关闭默认、5 类错误）、发送器（发出的 stamp+tag 能被验签且 stamp≈现在）。
+- 冒烟（真机 s21，wakee 10172 / waker 10171，控制面 18099，window 60s）：12/12 通过。
+  - 同一份抓到的包（同一 stamp，逐字节相同）发两次：命中 **1**，第二次被拒且日志 `reason=replay`。
+  - stamp = now-600 → 拒（`reason=stale`）；stamp = now+600 → 拒。
+  - 旧布局（只有 tag，110 字节）→ 拒，日志 `non-matching packet`（连 reason 都没有，因为根本没通过格式校验）。
+  - 端到端：waker 用自己的 window 签名并唤醒 wakee → 命中变 **2**，waker 日志 `signed=true bytes=118`（102+8+8）。
+
 ---
 
 ## 20. 安全模型总览（汇总）
@@ -1573,7 +1603,7 @@ noop/记日志  <  wol.send 唤醒别处  <  power.sleep/lock  <  power.shutdown
 
 - 保留端口 {7, 9} 只允许纯包 + `noop`（安全边界，防止误发/恶意唤醒包关机）。
 - 端口号不是密钥：靠"换端口"路由不带任何密钥，谁扫到端口都能触发。
-- 内容 token 本期是明文、无认证；破坏性动作建议同时配 `src_cidrs`；**整包认证已落地**：`security.packet_auth` + `match.auth: hmac`（§19.14），它证明"这个包来自持有 key 的人"，但不防重放。
+- 内容 token 本期是明文、无认证；破坏性动作建议同时配 `src_cidrs`；**整包认证已落地**：`security.packet_auth` + `match.auth: hmac`（§19.14），它证明"这个包来自持有 key 的人"；**重放防护也已落地但默认关闭**：`packet_auth.window: 60s`（§19.16）用 stamp + 一次性 tag 缓存把"重发同一个包"变成无效操作。
 - HTTP 控制面：默认本地 + 强制认证 + 可选 TLS + 审计；触发接口视为敏感。
 - HTTP 出站动作：注意 SSRF，可选 `url_allowlist`；不记录密钥。
 - 自定义命令：默认 argv 非 shell + 启动期静态校验 + 降权 + cooldown + 审计。

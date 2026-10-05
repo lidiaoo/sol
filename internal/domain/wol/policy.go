@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"time"
 )
 
 var (
@@ -79,6 +80,15 @@ type PolicyOptions struct {
 	// valid tag is matched on the bytes before the tag and can satisfy a rule with
 	// `auth: hmac`. Without it, no packet is ever authenticated.
 	PacketKey []byte
+	// PacketWindow, when positive, enables replay protection (§19.16): authenticated packets
+	// must carry a [stamp][tag] pair, the stamp has to be within the window and each tag is
+	// accepted only once inside it.
+	PacketWindow time.Duration
+	// Now, when set, is the clock the replay guard reads; tests use it to travel in time.
+	Now func() time.Time
+	// OnAuthRejected, when set, reports a packet that carried a valid tag but was refused as
+	// stale or as a replay. It is how an operator sees that the protection is doing work.
+	OnAuthRejected func(reason string)
 }
 
 type compiledRule struct {
@@ -98,6 +108,8 @@ type RoutingPolicy struct {
 	ifaceByMAC    map[string]string
 	secureOn      []byte
 	packetKey     []byte
+	replay        *replayGuard
+	now           func() time.Time
 	reservedPorts map[int]bool
 	extraPorts    []int
 	allowReserved bool
@@ -119,6 +131,8 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 		ifaceByMAC:    macIndex(ifaces),
 		secureOn:      opts.SecureOn,
 		packetKey:     opts.PacketKey,
+		now:           opts.Now,
+		replay:        newReplayGuard(opts.PacketWindow, opts.OnAuthRejected),
 		reservedPorts: reservedSet(opts.ReservedPorts),
 		extraPorts:    opts.ExtraPorts,
 		allowReserved: opts.AllowReserved,
@@ -278,9 +292,11 @@ func (p *RoutingPolicy) compileRule(rule Rule, ifaceMACs map[string]net.Hardware
 }
 
 // authenticate strips a valid trailing tag and marks the packet. A payload without a valid tag
-// is returned as parsed, so a rule that requires authentication cannot match it.
+// is returned as parsed, so a rule that requires authentication cannot match it. With a window
+// configured (§19.16) the payload carries a stamp in front of the tag, and the packet is refused
+// when the stamp is stale or its tag was already accepted.
 func (p *RoutingPolicy) authenticate(payload []byte, parsed ParsedPacket) ParsedPacket {
-	data, ok := SplitPacketSignature(p.packetKey, payload)
+	data, ok := p.unwrapSignature(payload)
 	if !ok {
 		return parsed
 	}
@@ -293,6 +309,33 @@ func (p *RoutingPolicy) authenticate(payload []byte, parsed ParsedPacket) Parsed
 	stripped.Authenticated = true
 
 	return stripped
+}
+
+// unwrapSignature verifies the payload's tag and, when replay protection is on, its stamp too.
+func (p *RoutingPolicy) unwrapSignature(payload []byte) ([]byte, bool) {
+	if p.replay == nil {
+		return SplitPacketSignature(p.packetKey, payload)
+	}
+
+	data, stamp, tag, ok := SplitTimestampedSignature(p.packetKey, payload)
+	if !ok {
+		return nil, false
+	}
+
+	if !p.replay.accept(tag, stamp, p.clock()) {
+		return nil, false
+	}
+
+	return data, true
+}
+
+// clock reads the configured time source, defaulting to the wall clock.
+func (p *RoutingPolicy) clock() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+
+	return time.Now()
 }
 
 // compileMatch compiles the payload-side conditions of a rule and refuses an authenticated rule

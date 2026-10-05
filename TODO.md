@@ -9,7 +9,7 @@
 - 本次目标：从"单端口 × 单网卡 × 单动作"扩成"多端口 × 多网卡 × 包内容匹配 × 具名动作"，并用**保留端口 {7,9}** 把标准 WOL 端口变成安全边界；HTTP、自定义命令、远端命令列为后续阶段。
 - 现状：**设计定稿**（docs/routing-design.md，21 节 + 背景）；**P1（domain 模型与匹配）、P2（动作模型与 CLI）、P3（配置文件）全部落地**；**P4 主体落地**：exec / HTTP 控制面 / cooldown / 远端命令通道 / HTTP 出站 / mTLS / exec 降权 / 热重载 / `sequence` / 配置文件自动 reload。剩余项见下方未勾选条目。
 - 怎么读：设计文档讲"为什么这么做 / 具体怎么做"；本文件讲"做到哪了 / 下一步"；README 面向使用者（安装 / CLI / 配置 / 安全），CHANGELOG 面向升级者（breaking 变更）。
-- 阶段：P1 模型 ✅ -> P2 动作与 CLI ✅ -> P3 配置文件 ✅ -> P4 自定义命令 + HTTP + 远端命令（**主体 ✅**，剩 cooldown singleflight、热重载重绑端口/网卡、认证包重放防护等）；`wol.send` 唤醒别的机器 ✅（§19.13）；包级 HMAC ✅（§19.14）；远端原始命令（默认关）✅（§21.6 / §19.15）。
+- 阶段：P1 模型 ✅ -> P2 动作与 CLI ✅ -> P3 配置文件 ✅ -> P4 自定义命令 + HTTP + 远端命令（**主体 ✅**，剩 cooldown singleflight、热重载重绑端口/网卡、命令段重放防护等）；`wol.send` 唤醒别的机器 ✅（§19.13）；包级 HMAC ✅（§19.14）；远端原始命令（默认关）✅（§21.6 / §19.15）。
 
 ---
 
@@ -99,7 +99,9 @@
 - [x] 远端命令通道（`commands[].id` 白名单 + HMAC + 参数校验 + UDP/HTTP 双传输；`remote:<id>` 注册为普通动作，复用 cooldown / dry-run / 审计）——见设计 §19.7
 - [x] 远端命令的 `user`/`group` 降权（复用 §19.4 的 credential 代码：`commands[].user/group` 透传进 `ExecParams`，启动期校验与 setgroups 零改动继承；实测 `output=65534 run_as=nobody`、非 root 启动报 `ErrNotRoot`、未知用户报 `ErrUnknownUser`）
 - [x] 覆盖整包的包级 HMAC（`security.packet_auth` + `match.auth: hmac`；tag = 截断 HMAC-SHA256 8 字节，覆盖 tag 之前的全部字节含 SecureOn；认证是包的属性并进审计日志 `authenticated=`；`auth` 规则只接受校验通过的包，同端口压过普通规则；保留端口 / 无 key / `sign` 无 key 三种组合启动即报错；`wol.send` 的 `sign: true` 让 sol 能唤醒要求认证的 sol）——见设计 §19.14
-- [ ] 认证包的重放防护（HMAC 只证明"来自持有 key 的人"，抓到合法包可以重发；彻底解决要序号或时间戳，当前靠 cooldown / 限流 / `src_cidrs` 缓解）
+- [x] 认证包的重放防护（`security.packet_auth.window`，默认关；包尾变成 `[stamp 8B][tag 8B]`，stamp 在 tag 覆盖内；接收方只收 ±window 内的 stamp 且同一 tag 只接受一次；缓存 4096 条、满了拒绝不淘汰；两端须同配，reload 会清空缓存）——见设计 §19.16；冒烟 s21 12/12（同包重发被拒 `reason=replay`、-600s/+600s 被拒 `reason=stale`、旧布局被拒、windowed `wol.send` 端到端仍通）
+- [ ] §21 远端命令段的同类重放防护（命令段目前只有 HMAC，没有 stamp；sol 自己的 `sign` 也一样）
+- [ ] 重放的计数与指标（现在只有日志 `authenticated packet refused reason=...`，没有 `sol_replayed_total` / `/v1/status` 字段）
 - [x] 远端原始命令（`allow_raw_shell` 默认关 + `/bin/sh -c` + 认证 / 专用端口 / allowlist / `src_cidrs` + 启动告警 + HTTP `POST /v1/exec`）——见设计 §21.6 / §19.15；冒烟 s20 27/27（含\"默认关\"的实证：去掉开关后同一个包什么都不做、落回该端口规则）
 - [x] `wol.send`（唤醒别的机器：`mac`（必填，只来自配置）+ `broadcast` / `port` / `secure_on` / `repeat` / `interval`（默认广播 255.255.255.255、端口 9、1 份、100ms）；加载期填默认值；与 `ParsePacket` 互为逆的 `EncodeMagicPacket`；广播发送补 `SO_BROADCAST`（否则 `EACCES`）；复用 cooldown / 限流 / dry-run / 审计。顺手修掉 sequence 上 `timeout` 被静默忽略的既有漏洞）——见设计 §19.13
 - [x] 按动作 cooldown（`security.cooldown` + `security.cooldowns.<动作名>`；包触发与手动触发共用，抑制计入 `sol_suppressed_total`，手动触发返回 429）——见设计 §19.6

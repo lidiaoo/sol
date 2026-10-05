@@ -64,6 +64,9 @@ type Config struct {
 	// PacketKey, when set, authenticates whole packets (§19.14); rules with `auth: hmac`
 	// only match packets carrying a valid tag.
 	PacketKey []byte
+	// PacketWindow, when positive, makes those packets carry a stamp the receiver accepts only
+	// once, so a captured packet cannot be replayed (§19.16).
+	PacketWindow time.Duration
 	// Remote holds the resolved remote command channel (§21).
 	Remote RemoteCommands
 	// HTTP holds the resolved control-plane settings.

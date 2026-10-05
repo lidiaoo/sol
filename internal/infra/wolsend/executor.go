@@ -48,11 +48,19 @@ type Executor struct {
 	dial func(ctx context.Context, target string) (*net.UDPConn, error)
 	// packetKey, when set, lets an action with `sign: true` authenticate its packets
 	// (§19.14) so a target rule with `auth: hmac` accepts them.
-	packetKey []byte
+	packetKey    []byte
+	packetWindow time.Duration
 }
 
 // Option tunes the executor at construction time.
 type Option func(*Executor)
+
+// WithPacketWindow turns on replay-protected signing (§19.16): with a positive window the
+// packets carry a stamp in front of the tag, so the receiver can bound how long a copy stays
+// usable.
+func WithPacketWindow(window time.Duration) Option {
+	return func(e *Executor) { e.packetWindow = window }
+}
 
 // WithPacketKey enables signed packets: `sign: true` appends the truncated HMAC tag the
 // target expects. Without a key, a `sign: true` action is refused at start-up.
@@ -175,10 +183,15 @@ func (e *Executor) Execute(ctx context.Context, def wol.ActionDef, _ wol.Event) 
 	return nil
 }
 
-// sign appends the authentication tag of §19.14 when the action asks for it.
+// sign appends the authentication tag of §19.14 when the action asks for it: with a window
+// configured (§19.16) the tag is preceded by a stamp, so the receiver can also bound replays.
 func (e *Executor) sign(params *wol.SendParams, packet []byte) []byte {
 	if !params.Sign {
 		return packet
+	}
+
+	if e.packetWindow > 0 {
+		return append(packet, wol.SignTimestampedPacket(e.packetKey, packet, time.Now())...)
 	}
 
 	return append(packet, wol.SignPacket(e.packetKey, packet)...)

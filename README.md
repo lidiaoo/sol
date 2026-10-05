@@ -203,7 +203,7 @@ whole packet, and `wol.send` can produce it:
 version: 1
 
 security:
-  packet_auth: { type: hmac, key_env: SOL_PACKET_KEY }   # the key never lives in this file
+  packet_auth: { type: hmac, key_env: SOL_PACKET_KEY, window: 60s }   # key + replay window; the key never lives in this file
 
 actions:
   - name: wake-nas
@@ -215,6 +215,19 @@ rules:
   - match: { ports: [10012], auth: hmac }   # only a packet with a valid tag may fire here
     action: wake-nas
 ```
+
+`window` bounds replays: the packet then ends with an 8-byte unix-second stamp in front of the
+tag, and the stamp is inside the tag's coverage, so it cannot be edited.
+
+The receiver accepts a stamp no older (and no newer) than the window, and accepts each tag only
+once inside it — a captured packet sent a second time is refused as a replay, and one kept for
+longer than the window is refused as stale. Both refusals are logged with their reason
+(`authenticated packet refused reason=replay|stale`), and the seen-tag cache is bounded: when it
+is full, new packets are refused rather than evicting an entry that could still be replayed. Both
+ends must agree: a receiver with a window refuses the plain tag-only layout, and `wol.send` emits
+the stamp when its own instance sets `window` too (it needs the key and the window, not a rule).
+A reload starts with an empty cache, so a packet seen just before a reload could be replayed once
+inside the window; the window is the bound in every other case.
 
 `match.auth: hmac` is per rule, so existing rules keep working. The tag covers every byte before
 it (including a `secure_on` password), the content matcher sees the payload without the tag, and

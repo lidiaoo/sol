@@ -3,8 +3,11 @@ package wol
 import (
 	"bytes"
 	"crypto/hmac"
+	"encoding/binary"
+	"math"
 	"net"
 	"slices"
+	"time"
 )
 
 // ParsedPacket is the result of parsing a UDP payload as a Wake-on-LAN magic packet.
@@ -42,6 +45,58 @@ func SplitPacketSignature(key []byte, payload []byte) ([]byte, bool) {
 	}
 
 	return data, true
+}
+
+// TimestampLen is the big-endian unix-seconds stamp a replay-protected packet carries in front
+// of its tag (§19.16).
+const TimestampLen = 8
+
+// SignTimestampedPacket returns the trailing [stamp][tag] of a replay-protected payload: the
+// stamp covers the packet's second, and the tag is a truncated HMAC-SHA256 over every byte that
+// precedes the tag, stamp included. A receiver with a window accepts only a fresh stamp and only
+// once per tag, so a captured packet cannot be replayed.
+func SignTimestampedPacket(key []byte, payload []byte, at time.Time) []byte {
+	stamp := TimestampBytes(at)
+
+	return append(stamp, signatureTag(key, payload, stamp)...)
+}
+
+// SplitTimestampedSignature strips the trailing stamp and tag from a replay-protected payload.
+// It reports the bytes before the stamp, the stamp itself and whether the tag verifies; a
+// payload that is too short, or whose tag does not verify, comes back as ok=false.
+func SplitTimestampedSignature(key []byte, payload []byte) ([]byte, int64, []byte, bool) {
+	if len(key) == 0 || len(payload) <= TimestampLen+PacketSignatureLen {
+		return payload, 0, nil, false
+	}
+
+	data := payload[:len(payload)-TimestampLen-PacketSignatureLen]
+	raw := payload[len(payload)-TimestampLen-PacketSignatureLen : len(payload)-PacketSignatureLen]
+	tag := payload[len(payload)-PacketSignatureLen:]
+
+	if !hmac.Equal(signatureTag(key, data, raw), tag) {
+		return payload, 0, nil, false
+	}
+
+	// A stamp that does not fit a signed second is nonsense; it comes back as zero, which no
+	// window accepts.
+	var stamp int64
+	if value := binary.BigEndian.Uint64(raw); value <= math.MaxInt64 {
+		stamp = int64(value)
+	}
+
+	return data, stamp, tag, true
+}
+
+// TimestampBytes renders a time as the 8 big-endian bytes of its unix second. A time before 1970
+// cannot be represented and stays zero, which no window accepts.
+func TimestampBytes(at time.Time) []byte {
+	stamp := make([]byte, TimestampLen)
+
+	if unix := at.Unix(); unix > 0 {
+		binary.BigEndian.PutUint64(stamp, uint64(unix))
+	}
+
+	return stamp
 }
 
 // ParsePacket parses payload as a magic packet starting at offset 0.

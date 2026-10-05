@@ -63,8 +63,16 @@ tagged release.
   variable or a 0600 file, never from the YAML; `wol.send` can append the tag with
   `sign: true`, so one sol can wake another that requires authentication. A rule requiring
   authentication without a key, a reserved port requiring it, and `sign: true` without a key are
-  refused at start-up. The audit log records `authenticated=true|false` per match. Replay of a
-  captured packet is not prevented (cooldowns and the rate limit bound it).
+  refused at start-up. The audit log records `authenticated=true|false` per match.
+- **Replay protection (`security.packet_auth.window`, off by default)**: with a window set, an
+  authenticated packet ends with an 8-byte unix-second stamp in front of the tag, the stamp is
+  covered by the tag, and the receiver refuses a stamp outside `±window` and accepts each tag only
+  once inside it. A capture sent again is a replay (`reason=replay`), one kept too long is stale
+  (`reason=stale`), and both are logged. The seen-tag cache is bounded (4096) and expires entries
+  with their stamp; when it is full new packets are refused instead of evicting one that could
+  still be replayed. Both ends have to agree: a windowed receiver refuses the tag-only layout, and
+  `wol.send` emits the stamp once its own instance sets the window. A reload starts with an empty
+  cache.
 - **Raw shell channel (`security.allow_raw_shell`, off by default)**: an opt-in that lets a remote
   sender run an arbitrary shell command through `/bin/sh -c`, over UDP
   (`[magic packet][secure_on?][command][HMAC tag]`) or `POST /v1/exec` on the control plane. It
@@ -122,6 +130,9 @@ tagged release.
   HMAC key and a dedicated non-reserved port, honours `raw_shell_src_cidrs` and
   `raw_shell_allowlist` (anchored at both ends), logs every command it runs, and warns at
   start-up. Whoever holds that key can run anything the service user can.
+- `packet_auth.window` bounds how long a captured authenticated packet stays usable, and the
+  seen-tag cache makes a second copy of it a no-op. Without a window the tag alone is proof of the
+  key, not of freshness.
 - `exec` drops supplementary groups, so a command dropped to `nobody` cannot keep sol's own
   group memberships (a real leak found by the smoke test).
 
