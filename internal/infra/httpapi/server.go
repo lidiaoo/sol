@@ -30,6 +30,10 @@ const (
 // ErrSuppressed reports that an action was rate-limited by its cooldown.
 var ErrSuppressed = errors.New("action suppressed by cooldown")
 
+// ErrRestartRequired reports a reload that cannot be applied to the running process
+// (for example a changed listening port set) and needs a restart instead.
+var ErrRestartRequired = errors.New("restart required")
+
 // Event is the most recent matched packet, as exposed by /v1/status.
 type Event struct {
 	Time      time.Time `json:"time"`
@@ -67,6 +71,10 @@ type Deps struct {
 	// RunCommand invokes a whitelisted remote command (§21); it must report
 	// ErrCommandNotFound, ErrCommandArgs or ErrCommandForbidden for the usual failures.
 	RunCommand func(ctx context.Context, id string, args map[string]string) error
+	// Reload rebuilds the configuration from disk and applies it to the running
+	// listener; it must report ErrRestartRequired when the change cannot be applied
+	// without restarting. A nil callback keeps POST /v1/reload answering 501.
+	Reload func(ctx context.Context) error
 }
 
 var (
@@ -325,8 +333,33 @@ func commandStatus(err error) int {
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	//nolint:gosec // slog escapes control characters; remote is a socket address
-	slog.Warn("http reload requested but hot reload is not implemented", "remote", r.RemoteAddr)
-	writeError(w, http.StatusNotImplemented, "hot reload is not implemented yet")
+	slog.Info("http reload requested", "remote", r.RemoteAddr)
+
+	if s.deps.Reload == nil {
+		writeError(w, http.StatusNotImplemented, "hot reload is not available in this build")
+
+		return
+	}
+
+	if err := s.deps.Reload(r.Context()); err != nil {
+		slog.Error("reload failed", "error", err)
+
+		writeError(w, reloadStatus(err), err.Error())
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"reloaded": true})
+}
+
+// reloadStatus maps a reload failure onto a status code: a change that needs a restart
+// is a conflict, anything else (unreadable or invalid configuration) is a bad request.
+func reloadStatus(err error) int {
+	if errors.Is(err, ErrRestartRequired) {
+		return http.StatusConflict
+	}
+
+	return http.StatusBadRequest
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {

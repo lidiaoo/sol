@@ -1,0 +1,99 @@
+package app
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/bavix/sol/internal/domain/wol"
+)
+
+func reloadFixture(t *testing.T, ports ...int) (*ListenService, []wol.IfaceInfo) {
+	t.Helper()
+
+	ifaces := testIfaces()
+
+	rules := make([]wol.Rule, 0, len(ports))
+	for _, port := range ports {
+		rules = append(rules, ruleFor(port, wol.ActionNoop))
+	}
+
+	service := NewListenService(
+		&factoryMock{},
+		testRegistry(&executorMock{}),
+		mustPolicy(t, ifaces, rules),
+		ifaces,
+		false,
+	)
+
+	return service, ifaces
+}
+
+func TestReloadSwapsTheRoutingState(t *testing.T) {
+	t.Parallel()
+
+	service, ifaces := reloadFixture(t, 10041)
+
+	swapped := mustPolicy(t, ifaces, []wol.Rule{ruleFor(10041, wol.ActionShutdown)})
+
+	require.NoError(t, service.Reload(ReloadOptions{
+		Policy:   swapped,
+		Registry: testRegistry(&executorMock{}),
+	}))
+
+	require.Equal(t, wol.ActionShutdown, service.Rules()[0].Action)
+}
+
+func TestReloadRejectsAChangedPortSet(t *testing.T) {
+	t.Parallel()
+
+	service, ifaces := reloadFixture(t, 10041)
+
+	// the sockets are bound from the startup port set, so a reload that moves them
+	// must be refused as a whole rather than silently half-applied
+	grown := mustPolicy(t, ifaces, []wol.Rule{ruleFor(10041, wol.ActionNoop), ruleFor(10042, wol.ActionNoop)})
+
+	err := service.Reload(ReloadOptions{Policy: grown, Registry: testRegistry(&executorMock{})})
+	require.ErrorIs(t, err, ErrReloadRestartRequired)
+	require.Len(t, service.Rules(), 1, "the old rule set keeps running")
+}
+
+func TestReloadRequiresPolicyAndRegistry(t *testing.T) {
+	t.Parallel()
+
+	service, ifaces := reloadFixture(t, 10041)
+
+	require.ErrorIs(t, service.Reload(ReloadOptions{}), ErrReloadIncomplete)
+	require.ErrorIs(t, service.Reload(ReloadOptions{
+		Policy: mustPolicy(t, ifaces, []wol.Rule{ruleFor(10041, wol.ActionNoop)}),
+	}), ErrReloadIncomplete)
+}
+
+func TestReloadKeepsTheRunningCooldownGuard(t *testing.T) {
+	t.Parallel()
+
+	service, ifaces := reloadFixture(t, 10041)
+	service.WithCooldowns(time.Minute, nil)
+
+	require.True(t, service.allowAction(service.snapshot(), wol.ActionNoop))
+
+	next := mustPolicy(t, ifaces, []wol.Rule{ruleFor(10041, wol.ActionNoop)})
+
+	// unchanged windows: the window started above still applies, so a reload cannot be
+	// used to refresh the guard
+	require.NoError(t, service.Reload(ReloadOptions{
+		Policy:   next,
+		Registry: testRegistry(&executorMock{}),
+		Cooldown: time.Minute,
+	}))
+	require.False(t, service.allowAction(service.snapshot(), wol.ActionNoop))
+
+	// changed windows: a new guard starts
+	require.NoError(t, service.Reload(ReloadOptions{
+		Policy:   next,
+		Registry: testRegistry(&executorMock{}),
+		Cooldown: 2 * time.Minute,
+	}))
+	require.True(t, service.allowAction(service.snapshot(), wol.ActionNoop))
+}

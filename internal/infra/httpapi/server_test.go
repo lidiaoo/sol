@@ -246,3 +246,84 @@ func TestBasicAuth(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, badRec.Code)
 	require.Equal(t, `Basic realm="sol"`, badRec.Header().Get("WWW-Authenticate"))
 }
+
+func reloadServer(t *testing.T, reload func(context.Context) error) *httpapi.Server {
+	t.Helper()
+
+	deps := testDeps()
+	deps.Reload = reload
+
+	return httpapi.New(
+		httpapi.Config{Listen: "127.0.0.1:0", Auth: httpapi.BearerAuth(testToken)},
+		deps,
+	)
+}
+
+func TestReloadEndpointAppliesTheConfiguration(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+
+	srv := reloadServer(t, func(context.Context) error {
+		calls++
+
+		return nil
+	})
+
+	rec := do(t, srv, http.MethodPost, "/v1/reload", testToken)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"reloaded":true`)
+	require.Equal(t, 1, calls)
+}
+
+func TestReloadEndpointMapsFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		reload  func(context.Context) error
+		want    int
+		wantMsg string
+	}{
+		{
+			name:    "invalid configuration",
+			reload:  func(context.Context) error { return fmt.Errorf("rule 1: %w", wol.ErrUnknownActionRef) },
+			want:    http.StatusBadRequest,
+			wantMsg: "unknown action reference",
+		},
+		{
+			name: "port set changed",
+			reload: func(context.Context) error {
+				return fmt.Errorf("%w: ports", httpapi.ErrRestartRequired)
+			},
+			want:    http.StatusConflict,
+			wantMsg: "restart required",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := do(t, reloadServer(t, tc.reload), http.MethodPost, "/v1/reload", testToken)
+
+			require.Equal(t, tc.want, rec.Code)
+			require.Contains(t, rec.Body.String(), tc.wantMsg)
+		})
+	}
+}
+
+func TestReloadEndpointWithoutCallback(t *testing.T) {
+	t.Parallel()
+
+	rec := do(t, newServer(t), http.MethodPost, "/v1/reload", testToken)
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
+func TestReloadEndpointRequiresAuth(t *testing.T) {
+	t.Parallel()
+
+	rec := do(t, reloadServer(t, func(context.Context) error { return nil }), http.MethodPost, "/v1/reload", "")
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}

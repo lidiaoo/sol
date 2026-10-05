@@ -89,7 +89,9 @@
 - [x] `exec` 的 `user`/`group` 降权（仅 unix；启动期解析用户/组 + 要求 root，运行时 `SysProcAttr.Credential` + `initgroups` 语义，sol 自己的附加组不泄漏）——见设计 §19.4
 - [ ] 降权只支持 root（`CAP_SETUID`/`CAP_SETGID` 单权限）；非 unix 平台直接报 `ErrUserUnsupported`
 - [x] HTTP 控制面（bearer/basic/mTLS、默认 127.0.0.1、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`/v1/actions/{name}`、`/metrics`、`/healthz`、审计）——实现对照见设计 §19.5
-- [ ] `/v1/reload` 热重载（当前显式 501）
+- [x] `/v1/reload` 热重载 + `SIGHUP`（原子换入 policy/registry/cooldown/remote；端口集合变化 -> 409 要求重启；配置非法 -> 400 且旧配置继续跑；`-race` 下 60 次 reload 无 data race）——见设计 §19.9
+- [ ] 热重载重绑端口 / 网卡集合（当前必须重启）
+- [ ] 配置文件变更自动 reload（fsnotify / watch 模式）
 - [x] mTLS 端到端冒烟（配置已支持 + 启动加载证书；带证书 200、无证书/异 CA 证书握手被拒、明文 HTTP 400；注意 mTLS 下 `/healthz` 也需客户端证书）——见设计 §19.5
 - [x] HTTP 出站动作（webhook、`url_allowlist`、超时 / 重试、不跟随重定向、headers 不落日志）——见设计 §19.8
 - [ ] `sequence`（一个动作串多个动作）

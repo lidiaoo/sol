@@ -1,14 +1,18 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
 	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/bavix/sol/internal/app"
 	"github.com/bavix/sol/internal/config"
 	"github.com/bavix/sol/internal/deps"
 	"github.com/bavix/sol/internal/domain/wol"
@@ -39,12 +43,15 @@ var listenCmd = &cobra.Command{
 			return buildErr
 		}
 
+		ctx := command.Context()
+
+		reload := reloadFunc(command, application)
+		builder.WithReloader(reload)
+
 		server, httpErr := builder.BuildHTTPServer()
 		if httpErr != nil {
 			return httpErr
 		}
-
-		ctx := command.Context()
 
 		if server != nil {
 			go func() {
@@ -54,8 +61,67 @@ var listenCmd = &cobra.Command{
 			}()
 		}
 
+		watchReloadSignals(ctx, reload)
+
 		return application.Run(ctx)
 	},
+}
+
+// reloadFunc rebuilds the configuration from the file (plus the CLI flags, which keep
+// precedence) and applies it to the running listener.
+func reloadFunc(command *cobra.Command, service *app.ListenService) func(context.Context) error {
+	return func(context.Context) error {
+		fresh, err := buildConfig(command)
+		if err != nil {
+			return err
+		}
+
+		opts, err := deps.NewBuilder(fresh).ReloadOptions()
+		if err != nil {
+			return err
+		}
+
+		if err = service.Reload(opts); err != nil {
+			return err
+		}
+
+		slog.Info("configuration reloaded",
+			"rules", len(fresh.Rules),
+			"actions", len(fresh.Actions),
+			"dry_run", fresh.DryRun,
+		)
+
+		return nil
+	}
+}
+
+// watchReloadSignals applies a reload whenever SIGHUP arrives. Platforms without
+// SIGHUP keep the HTTP endpoint as their only reload path.
+func watchReloadSignals(ctx context.Context, reload func(context.Context) error) {
+	signals := reloadSignals()
+	if len(signals) == 0 {
+		return
+	}
+
+	signalsCh := make(chan os.Signal, 1)
+	signal.Notify(signalsCh, signals...)
+
+	go func() {
+		defer signal.Stop(signalsCh)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-signalsCh:
+				slog.Info("reload signal received")
+
+				if err := reload(ctx); err != nil {
+					slog.Error("reload failed", "error", err)
+				}
+			}
+		}
+	}()
 }
 
 var (

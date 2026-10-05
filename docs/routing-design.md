@@ -1095,7 +1095,7 @@ server:
 - A. 控制面（入站，sol 当服务端）：起一个 HTTP server，对外提供状态查询、手动触发动作、热重载。对应 SR-G/sleep-on-lan 那套 REST API。
 - B. 出站动作（sol 当客户端）：规则命中后，动作类型 `http` 向某个 URL 发请求（webhook 通知/联动）。
 
-阶段：A（控制面）已在 P4 部分落地（见 §19.5）：`/healthz`、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`POST /v1/actions/{name}`、`/metrics` 已实现，`POST /v1/reload` 返回 501（热重载未做）；`/v1/commands/{id}`、`/v1/exec` 随远端命令通道留到后续。B（出站动作）仍未做。
+阶段：A（控制面）已在 P4 部分落地（见 §19.5）：`/healthz`、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`POST /v1/actions/{name}`、`POST /v1/reload`、`/metrics` 已实现；`/v1/commands/{id}` 随远端命令通道落地（见 §19.7）；`/v1/exec` 仍未做。B（出站动作）已落地 `type: http`（见 §19.8）。
 
 ### 18.1 A. 控制面（入站 REST API）
 
@@ -1305,7 +1305,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 
 - `security.allow_remote_commands` / `allow_raw_shell` / `remote_command_ports` / `raw_shell_ports`、`commands` 段：留到 P4 后续（HTTP 控制面本体见 §19.5）。
 - 每网卡 `secure_on`：解析到就报错（`ErrPerInterfaceSecureOn`），因为包解析目前是"整个 policy 一个 secure_on"。
-- 热重载、JSON Schema：未做。
+- JSON Schema：未做（热重载已落地，见 §19.9）。
 - `--default-action` 只作用于 `--port` 生成的规则；文件里的规则必须显式写 `action`（缺 `action` -> `ErrActionRequired`）。
 
 ---
@@ -1332,13 +1332,13 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 ### 19.5 P4 部分落地（HTTP 控制面）
 
 - 包 `internal/infra/httpapi`：纯 `net/http`（Go 1.22+ 方法模式路由），无框架依赖；配置段 `server.http.{enabled,listen,auth,tls}`，默认 `listen: 127.0.0.1:8080`、默认 `auth.type: bearer`。
-- 已实现端点：`GET /healthz`（免认证，只回 `{"status":"ok"}`）、`GET /v1/status`（uptime、计数器、最近命中事件、网卡、规则数、dry_run、auth 类型）、`GET /v1/rules`（脱敏视图：ports / mac / content / src_cidrs / action / dry_run）、`GET /v1/interfaces`、`POST /v1/actions/{name}`（手动触发 -> 202，未知动作 -> 404）、`GET /metrics`（`sol_packets_total` / `sol_matched_total` / `sol_actions_total{action=...}` / `sol_rules` / `sol_uptime_seconds`）；`POST /v1/reload` 显式 501（热重载未做）。
+- 已实现端点：`GET /healthz`（免认证，只回 `{"status":"ok"}`）、`GET /v1/status`（uptime、计数器、最近命中事件、网卡、规则数、dry_run、auth 类型）、`GET /v1/rules`（脱敏视图：ports / mac / content / src_cidrs / action / dry_run）、`GET /v1/interfaces`、`POST /v1/actions/{name}`（手动触发 -> 202，未知动作 -> 404）、`GET /metrics`（`sol_packets_total` / `sol_matched_total` / `sol_actions_total{action=...}` / `sol_rules` / `sol_uptime_seconds`）；`POST /v1/reload`（重建配置并原子换入；200 `{"reloaded":true}`、配置非法 400、改动监听端口 409、没装 reloader 时 501，见 §19.9）。
 - 认证三选一，**没有 `none`**：`bearer`（`crypto/subtle` 常量时间比较）、`basic`（用户名在 YAML，口令走环境变量或 600 文件）、`mtls`（TLS 层 `RequireAndVerifyClientCert` + `client_ca_file`）；所有 `/v1/*` 与 `/metrics` 强制认证，401 带 `WWW-Authenticate`。
 - 密钥不落 YAML：只从 `*_env` 或 `*_file` 读；文件带 group/other 权限位直接启动报错（`ErrHTTPSecret`）。TLS 证书与客户端 CA 启动时加载，失败即失败。
 - 审计：认证拒绝、手动触发、触发失败、reload 请求都进 slog（带来源地址与动作名）。
 - 手动触发走 `ListenService.Dispatch`：实例处于 dry-run 时只记日志不执行；成功后计入 `sol_actions_total`。
 - 冒烟（真机，`127.0.0.1:18080`，token 来自环境变量）：`/healthz` 免认证 200；无 token / 错 token 401；带 token 的 `/v1/status` 显示 `packets=1 matched=1 last_event={port:10040, interface:enp6s0, action:noop}`；`/v1/rules` 回 `{ports:[10040], mac:self, content:none, action:noop}`；`POST /v1/actions/noop` -> 202，未知动作 -> 404，`/v1/reload` -> 501。
-- 未做（留后续）：热重载、`/v1/commands/{id}` 与 `/v1/exec`（随远端命令通道）、出站 `type: http` 动作、`/v1/status` 的版本号（需构建期注入）、mTLS 端到端冒烟。
+- 未做（留后续）：`/v1/exec`、`/v1/status` 的版本号（需构建期注入）。热重载见 §19.9，mTLS 端到端冒烟见本节末尾。
 
 ---
 
@@ -1387,6 +1387,20 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - dry-run / cooldown / 手动触发复用：http 动作就是普通动作，规则命中走同一条 `runDecision` 路径，`POST /v1/actions/<name>` 也能手动触发。
 - 冒烟（真机，本地 webhook 探针 `127.0.0.1:18090`，端口 10041 -> `notify-ok`、10042 -> `notify-fail`）：探针收到 `POST /hook/notify-ok`，`Authorization: Bearer ***`（来自 `${HOOK_TOKEN}`），body `{"action":"notify-ok","src":"127.0.0.1","port":10041,"mac":"58:11:22:bc:78:66"}`；`/fail` 收到 **2** 次请求（1 次 + 1 次重试），sol 日志有 `http action retrying` 与最终 `status=500` + `action failed`；把 url 换成 allowlist 之外的 `https://evil.example/oops` 时启动直接 `exit 1`（`url is not in security.url_allowlist`）。
 - 未做：allowlist 的精确/正则匹配（当前前缀匹配）、`sequence`（一串动作）、请求级代理配置、响应体内容过滤。
+
+### 19.9 P4 部分落地（热重载 / `/v1/reload` + `SIGHUP`）
+
+- 两条触发路径共用一个回调：`POST /v1/reload`（走控制面认证）与 `SIGHUP`（`cmd/sighup_unix.go`；非 unix 平台没有 SIGHUP，只剩 HTTP）。回调做的事：重新读配置文件（路径与 CLI flag 的优先级和启动时一致）-> `deps.Builder.ReloadOptions()` 重建 policy / registry / cooldowns / remote -> `app.ListenService.Reload(opts)`。
+- **原子性**：`ListenService` 把"路由状态"（policy / registry / cooldowns / remote / dry_run）收进 `rtMu sync.RWMutex` + `routingSnapshot`，**每个包只取一次快照**再走匹配与下发——一次 reload 不会出现"用旧规则匹配、用新 registry 下发"的错配。计数器仍是 atomic 且在锁外，reload 不会等正在执行的动作。
+- 语义边界（刻意写死，避免"看起来生效了其实没有"）：
+  - 可热换：规则、动作表、cooldown 窗口、远端命令通道、dry_run，以及日志级别（`logging.Setup` 用 `slog.SetDefault` 重新安装，不会重复挂 handler）。
+  - **监听端口集合不能变**：socket 在启动时创建，reload 先比 `policy.Ports()`，不一致就**整体拒绝** -> `app.ErrReloadRestartRequired` -> HTTP 409，日志写明 `[10061] -> [10061 10062]`，老规则继续跑。不做"半应用"——那会让监听端口与配置文件长期不一致。
+  - cooldown 窗口没变时**沿用正在跑的护栏对象**，防止用 reload 变相清冷却。
+  - 网卡解析结果随 policy 一起换（socket 绑 0.0.0.0，换网卡不需要重绑）。
+- 失败处理：配置读不了 / 校验不过 -> 400，并把原始错误原样返回（例：`rule 1: unknown action reference: mark-typo`），运行中的配置**完全不受影响**。
+- 冒烟（真机，规则端口 10061，控制面 `127.0.0.1:18084`，bearer）：① reload 前 10061 -> `mark-a`，生成 marker；② 文件改成 `mark-b`（端口集合不变）-> `POST /v1/reload` 200 `{"reloaded":true}` -> 10061 改为生成 `mark-b` marker；③ `kill -HUP` -> 日志 `reload signal received` + `configuration reloaded`，行为不变；④ 换成多一个端口的配置 -> 409 `restart required: ... [10061] -> [10061 10062]`，10061 仍按新规则触发、10062 没有被监听（无 marker）；⑤ 换成引用不存在动作的文件 -> 400 `unknown action reference: mark-typo`，老规则照旧；启动期只有 1 条 `listening`（端口集合始终是启动时那一套）。
+- 并发冒烟（`-race` 构建的二进制）：一边 60 次 reload（40 次成功 + 20 次因端口变更被拒），一边持续灌魔法包（期间 5813 条命中/执行日志），race detector **0 data race**。
+- 未做：端口 / 网卡集合变化后自动重绑（现在要求重启）、配置文件变更自动 reload（fsnotify/watch）、旧 policy 的平滑过渡（当前是换指针，旧对象等 GC）。
 
 ---
 

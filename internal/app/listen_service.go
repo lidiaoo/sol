@@ -65,11 +65,8 @@ type Stats struct {
 }
 
 type ListenService struct {
-	factory  PacketListenerFactory
-	registry *wol.Registry
-	policy   *wol.RoutingPolicy
-	ifaces   []wol.IfaceInfo
-	dryRun   bool
+	factory PacketListenerFactory
+	ifaces  []wol.IfaceInfo
 
 	startedAt time.Time
 	packets   atomic.Uint64
@@ -80,8 +77,25 @@ type ListenService struct {
 	actions  map[string]uint64
 	lastSeen *EventRecord
 
+	// rtMu guards the routing state that Reload swaps in. The counters above stay
+	// outside it so a reload never waits for an in-flight action.
+	rtMu      sync.RWMutex
+	registry  *wol.Registry
+	policy    *wol.RoutingPolicy
+	dryRun    bool
 	cooldowns *cooldowns
 	remote    *remoteRunner
+}
+
+// routingSnapshot is the state a single packet is routed with. It is taken once per
+// packet so that a concurrent reload cannot split one decision across two rule sets
+// (matching the old rules, dispatching through the new registry).
+type routingSnapshot struct {
+	policy    *wol.RoutingPolicy
+	registry  *wol.Registry
+	cooldowns *cooldowns
+	remote    *remoteRunner
+	dryRun    bool
 }
 
 func NewListenService(
@@ -105,6 +119,9 @@ func NewListenService(
 
 // WithCooldowns installs the per-action execution windows; zero disables the guard.
 func (s *ListenService) WithCooldowns(global time.Duration, perAction map[string]time.Duration) *ListenService {
+	s.rtMu.Lock()
+	defer s.rtMu.Unlock()
+
 	s.cooldowns = newCooldowns(global, perAction)
 
 	return s
@@ -113,6 +130,9 @@ func (s *ListenService) WithCooldowns(global time.Duration, perAction map[string
 // WithRemoteCommands enables the whitelisted remote command channel (§21). Without
 // ports the channel stays disabled.
 func (s *ListenService) WithRemoteCommands(commands map[string]wol.RemoteCommand, ports []int, key []byte) *ListenService {
+	s.rtMu.Lock()
+	defer s.rtMu.Unlock()
+
 	s.remote = newRemoteRunner(commands, ports, key)
 
 	return s
@@ -121,7 +141,9 @@ func (s *ListenService) WithRemoteCommands(commands map[string]wol.RemoteCommand
 // RunRemoteCommand invokes a whitelisted remote command (authenticated HTTP transport).
 // It reuses the manual-trigger path, so dry-run, cooldowns and audit logging apply.
 func (s *ListenService) RunRemoteCommand(ctx context.Context, id string, args map[string]string) error {
-	cmd, err := s.remote.manual(id, args)
+	rt := s.snapshot()
+
+	cmd, err := rt.remote.manual(id, args)
 	if err != nil {
 		return err
 	}
@@ -149,7 +171,7 @@ func (s *ListenService) Stats() Stats {
 
 // Rules returns the loaded routing rules.
 func (s *ListenService) Rules() []wol.Rule {
-	return s.policy.Rules()
+	return s.snapshot().policy.Rules()
 }
 
 // Interfaces returns the interfaces this instance listens for.
@@ -159,17 +181,19 @@ func (s *ListenService) Interfaces() []wol.IfaceInfo {
 
 // Dispatch triggers a named action outside the packet path (control plane).
 func (s *ListenService) Dispatch(ctx context.Context, action wol.Action, ev wol.Event) error {
-	if s.dryRun {
+	rt := s.snapshot()
+
+	if rt.dryRun {
 		slog.Warn("dry run: manual action not executed", "action", string(action))
 
 		return nil
 	}
 
-	if !s.allowAction(action) {
+	if !s.allowAction(rt, action) {
 		return fmt.Errorf("%w: %s", ErrActionSuppressed, action)
 	}
 
-	if err := s.registry.Dispatch(ctx, action, ev); err != nil {
+	if err := rt.registry.Dispatch(ctx, action, ev); err != nil {
 		return err
 	}
 
@@ -179,21 +203,38 @@ func (s *ListenService) Dispatch(ctx context.Context, action wol.Action, ev wol.
 }
 
 func (s *ListenService) Run(ctx context.Context) error {
-	s.logIfaces()
-	s.logRules()
-	s.logCooldowns()
+	rt := s.snapshot()
 
-	listeners, err := s.createListeners()
+	s.logIfaces()
+	s.logRules(rt)
+	s.logCooldowns(rt)
+
+	listeners, err := s.createListeners(rt)
 	if err != nil {
 		return err
 	}
 	defer s.closeListeners(listeners)
 
-	pktCh, errCh := s.startListenerGoroutines(ctx, listeners)
+	pktCh, errCh := s.startListenerGoroutines(ctx, listeners, rt.policy.Ports())
 
 	s.eventLoop(ctx, pktCh, errCh)
 
 	return nil
+}
+
+// snapshot reads the current routing state. It sits here, after the exported
+// methods, so that a reload only ever swaps the whole set at once.
+func (s *ListenService) snapshot() routingSnapshot {
+	s.rtMu.RLock()
+	defer s.rtMu.RUnlock()
+
+	return routingSnapshot{
+		policy:    s.policy,
+		registry:  s.registry,
+		cooldowns: s.cooldowns,
+		remote:    s.remote,
+		dryRun:    s.dryRun,
+	}
 }
 
 func (s *ListenService) recordAction(name string) {
@@ -220,8 +261,8 @@ func (s *ListenService) logIfaces() {
 	}
 }
 
-func (s *ListenService) logRules() {
-	rules := s.policy.Rules()
+func (s *ListenService) logRules(rt routingSnapshot) {
+	rules := rt.policy.Rules()
 	for i, rule := range rules {
 		slog.Info("rule",
 			"index", i+1,
@@ -233,18 +274,18 @@ func (s *ListenService) logRules() {
 }
 
 // logCooldowns reports the configured execution windows at startup.
-func (s *ListenService) logCooldowns() {
-	if s.cooldowns.global > 0 {
-		slog.Info("action cooldown", "scope", "default", "window", s.cooldowns.global.String())
+func (s *ListenService) logCooldowns(rt routingSnapshot) {
+	if rt.cooldowns.global > 0 {
+		slog.Info("action cooldown", "scope", "default", "window", rt.cooldowns.global.String())
 	}
 
-	for action, window := range s.cooldowns.perAction {
+	for action, window := range rt.cooldowns.perAction {
 		slog.Info("action cooldown", "action", action, "window", window.String())
 	}
 }
 
-func (s *ListenService) createListeners() ([]PacketListener, error) {
-	ports := s.policy.Ports()
+func (s *ListenService) createListeners(rt routingSnapshot) ([]PacketListener, error) {
+	ports := rt.policy.Ports()
 	listeners := make([]PacketListener, 0, len(ports))
 
 	for _, p := range ports {
@@ -273,8 +314,7 @@ func (s *ListenService) closeListeners(listeners []PacketListener) {
 	}
 }
 
-func (s *ListenService) startListenerGoroutines(ctx context.Context, listeners []PacketListener) (chan packet, chan error) {
-	ports := s.policy.Ports()
+func (s *ListenService) startListenerGoroutines(ctx context.Context, listeners []PacketListener, ports []int) (chan packet, chan error) {
 	pktCh := make(chan packet, packetChannelSize)
 	errCh := make(chan error, len(listeners))
 
@@ -336,17 +376,19 @@ func (s *ListenService) eventLoop(ctx context.Context, pktCh chan packet, errCh 
 func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 	s.packets.Add(1)
 
+	rt := s.snapshot()
+
 	ev := wol.Event{Payload: pkt.payload, DstPort: pkt.port}
 	if pkt.src != nil {
 		ev.SrcIP = pkt.src.IP
 		ev.SrcPort = pkt.src.Port
 	}
 
-	if s.remote.accepts(pkt.port) && s.handleRemote(ctx, pkt, ev) {
+	if rt.remote.accepts(pkt.port) && s.handleRemote(ctx, rt, pkt, ev) {
 		return
 	}
 
-	decision, matched := s.policy.Resolve(ev)
+	decision, matched := rt.policy.Resolve(ev)
 	if !matched {
 		slog.Info("non-matching packet",
 			"src", addrString(pkt.src),
@@ -358,12 +400,12 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 	}
 
 	s.matched.Add(1)
-	s.runDecision(ctx, pkt, ev, decision)
+	s.runDecision(ctx, rt, pkt, ev, decision)
 }
 
 // runDecision logs the match and triggers the action, honouring dry-run and cooldowns.
-func (s *ListenService) runDecision(ctx context.Context, pkt packet, ev wol.Event, decision wol.Decision) {
-	logOnly := s.dryRun || decision.DryRun
+func (s *ListenService) runDecision(ctx context.Context, rt routingSnapshot, pkt packet, ev wol.Event, decision wol.Decision) {
+	logOnly := rt.dryRun || decision.DryRun
 	trigger := ternary(logOnly, "DRY-RUN", string(decision.Action))
 
 	s.recordEvent(EventRecord{
@@ -389,7 +431,7 @@ func (s *ListenService) runDecision(ctx context.Context, pkt packet, ev wol.Even
 		return
 	}
 
-	if !s.allowAction(decision.Action) {
+	if !s.allowAction(rt, decision.Action) {
 		return
 	}
 
@@ -397,7 +439,7 @@ func (s *ListenService) runDecision(ctx context.Context, pkt packet, ev wol.Even
 	dispatchEv.Interface = decision.Interface
 	dispatchEv.TargetMAC = decision.TargetMAC
 
-	if dispatchErr := s.registry.Dispatch(ctx, decision.Action, dispatchEv); dispatchErr != nil {
+	if dispatchErr := rt.registry.Dispatch(ctx, decision.Action, dispatchEv); dispatchErr != nil {
 		slog.Error("action failed", "action", string(decision.Action), "error", dispatchErr)
 
 		return
@@ -429,15 +471,15 @@ func ternary(cond bool, a string, b string) string {
 // handleRemote consumes a remote command packet (§21) and reports whether the packet
 // was handled. A magic packet carrying a command segment is never routed to the rules,
 // so a malformed or unknown command cannot accidentally trigger a destructive action.
-func (s *ListenService) handleRemote(ctx context.Context, pkt packet, ev wol.Event) bool {
-	parsed, ok := s.policy.ParsePacket(pkt.payload)
+func (s *ListenService) handleRemote(ctx context.Context, rt routingSnapshot, pkt packet, ev wol.Event) bool {
+	parsed, ok := rt.policy.ParsePacket(pkt.payload)
 	if !ok || len(parsed.Content) == 0 {
 		return false
 	}
 
 	prefix := pkt.payload[:len(pkt.payload)-len(parsed.Content)]
 
-	cmd, args, err := s.remote.resolve(prefix, parsed.Content)
+	cmd, args, err := rt.remote.resolve(prefix, parsed.Content)
 	if err != nil {
 		slog.Warn("remote command rejected",
 			"src", addrString(pkt.src),
@@ -449,10 +491,10 @@ func (s *ListenService) handleRemote(ctx context.Context, pkt packet, ev wol.Eve
 	}
 
 	ev.Args = args
-	ev.Interface = s.policy.InterfaceForMAC(parsed.MAC)
+	ev.Interface = rt.policy.InterfaceForMAC(parsed.MAC)
 
 	s.matched.Add(1)
-	s.runDecision(ctx, pkt, ev, wol.Decision{
+	s.runDecision(ctx, rt, pkt, ev, wol.Decision{
 		Action:    cmd.Action(),
 		Interface: ev.Interface,
 		TargetMAC: parsed.MAC,
@@ -462,8 +504,8 @@ func (s *ListenService) handleRemote(ctx context.Context, pkt packet, ev wol.Eve
 }
 
 // allowAction applies the cooldown guard, counting and logging a suppressed run.
-func (s *ListenService) allowAction(action wol.Action) bool {
-	remaining, allowed := s.cooldowns.allow(string(action))
+func (s *ListenService) allowAction(rt routingSnapshot, action wol.Action) bool {
+	remaining, allowed := rt.cooldowns.allow(string(action))
 	if allowed {
 		return true
 	}

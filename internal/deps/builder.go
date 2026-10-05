@@ -49,6 +49,9 @@ type Builder struct {
 	httpOnce   sync.Once
 	httpServer *httpapi.Server
 	httpErr    error
+
+	// reloader rebuilds and applies the configuration on POST /v1/reload and SIGHUP.
+	reloader func(ctx context.Context) error
 }
 
 func NewBuilder(cfg *config.Config) *Builder {
@@ -121,28 +124,7 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 	var buildErr error
 
 	b.listenOnce.Do(func() {
-		ifaces, err := b.InterfaceResolver().Select(b.cfg.InterfaceNames)
-		if err != nil {
-			buildErr = fmt.Errorf("failed to select interfaces: %w", err)
-
-			return
-		}
-
-		registry := b.Registry()
-
-		if err := b.validateActions(registry); err != nil {
-			buildErr = err
-
-			return
-		}
-
-		policy, err := wol.NewRoutingPolicy(b.cfg.Rules, ifaces, wol.PolicyOptions{
-			ReservedPorts: b.cfg.ReservedPorts,
-			AllowReserved: b.cfg.AllowReservedActions,
-			SecureOn:      b.cfg.SecureOn,
-			Actions:       registry.Actions(),
-			ExtraPorts:    b.cfg.Remote.Ports,
-		})
+		registry, policy, ifaces, err := b.buildRuntime()
 		if err != nil {
 			buildErr = err
 
@@ -161,6 +143,37 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 
 	return b.listen, buildErr
 }
+
+// WithReloader installs the callback that rebuilds the configuration; it backs both
+// POST /v1/reload and the SIGHUP handler.
+func (b *Builder) WithReloader(fn func(ctx context.Context) error) *Builder {
+	b.reloader = fn
+
+	return b
+}
+
+// ReloadOptions assembles the runtime pieces of the current configuration for a
+// running listener (see ListenService.Reload).
+func (b *Builder) ReloadOptions() (app.ReloadOptions, error) {
+	registry, policy, _, err := b.buildRuntime()
+	if err != nil {
+		return app.ReloadOptions{}, err
+	}
+
+	return app.ReloadOptions{
+		Policy:      policy,
+		Registry:    registry,
+		DryRun:      b.cfg.DryRun,
+		Cooldown:    b.cfg.Cooldown,
+		Cooldowns:   cooldownWindows(b.cfg.ActionCooldowns),
+		Commands:    b.cfg.Remote.Commands,
+		RemotePorts: b.cfg.Remote.Ports,
+		RemoteKey:   b.cfg.Remote.HMACKey,
+	}, nil
+}
+
+// buildRuntime validates the configuration and assembles the rule set, the action
+// registry and the interfaces it resolves to.
 
 // cooldownWindows converts the per-action cooldown overrides into plain strings.
 func cooldownWindows(perAction map[wol.Action]time.Duration) map[string]time.Duration {
@@ -218,6 +231,7 @@ func (b *Builder) BuildHTTPServer() (*httpapi.Server, error) {
 				RunCommand: func(ctx context.Context, id string, args map[string]string) error {
 					return remoteCommandError(listenSvc.RunRemoteCommand(ctx, id, args), id)
 				},
+				Reload: b.reloadFunc(),
 			},
 		)
 	})
@@ -269,6 +283,51 @@ func (b *Builder) HTTPExecutor() *outbound.Executor {
 	})
 
 	return b.outbound
+}
+
+// buildRuntime validates the configuration and assembles the rule set, the action
+// registry and the interfaces it resolves to.
+func (b *Builder) buildRuntime() (*wol.Registry, *wol.RoutingPolicy, []wol.IfaceInfo, error) {
+	ifaces, err := b.InterfaceResolver().Select(b.cfg.InterfaceNames)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to select interfaces: %w", err)
+	}
+
+	registry := b.Registry()
+
+	if err := b.validateActions(registry); err != nil {
+		return nil, nil, nil, err
+	}
+
+	policy, err := wol.NewRoutingPolicy(b.cfg.Rules, ifaces, wol.PolicyOptions{
+		ReservedPorts: b.cfg.ReservedPorts,
+		AllowReserved: b.cfg.AllowReservedActions,
+		SecureOn:      b.cfg.SecureOn,
+		Actions:       registry.Actions(),
+		ExtraPorts:    b.cfg.Remote.Ports,
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return registry, policy, ifaces, nil
+}
+
+// reloadFunc translates the reload failures into the httpapi sentinels the control
+// plane maps onto status codes; it is nil when no reloader was installed.
+func (b *Builder) reloadFunc() func(ctx context.Context) error {
+	if b.reloader == nil {
+		return nil
+	}
+
+	return func(ctx context.Context) error {
+		err := b.reloader(ctx)
+		if errors.Is(err, app.ErrReloadRestartRequired) {
+			return fmt.Errorf("%w: %w", httpapi.ErrRestartRequired, err)
+		}
+
+		return err
+	}
 }
 
 // validateActions statically checks every configured exec/http action at startup.
