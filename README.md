@@ -224,6 +224,47 @@ without a key are all refused at start-up instead of failing silently. It proves
 from someone holding the key; it does not stop a replay of a captured packet (cooldowns and the
 rate limit bound that).
 
+### Raw shell (off by default)
+
+`security.allow_raw_shell: true` lets a remote sender run an arbitrary shell command through
+`/bin/sh -c`. It is the only place in sol that uses a shell, it is off unless you ask for it, and
+it is refused unless you also provide its own HMAC key and a dedicated port that the command
+channel does not use:
+
+```yaml
+version: 1
+
+security:
+  allow_remote_commands: true            # the raw shell rides on the command channel
+  remote_command_auth: { type: hmac, key_env: SOL_CMD_KEY }
+  remote_command_ports: [10012]
+
+  allow_raw_shell: true
+  raw_shell_auth: { type: hmac, key_env: SOL_RAW_SHELL_KEY }   # its own key, not the command key
+  raw_shell_ports: [10013]                                     # non-reserved, not shared
+  raw_shell_src_cidrs: ["192.168.0.0/24"]                      # who may use it at all
+  raw_shell_allowlist: ["^echo .*$"]                           # entries are anchored at both ends
+  raw_shell_timeout: 5s
+```
+
+```bash
+# UDP: [magic packet][secure_on?][command][8-byte HMAC tag]
+python3 -c 'import hashlib,hmac,socket; m=b"\xff"*6+bytes.fromhex("58:11:22:BC:78:66".replace(":",""))*16; c=b"echo hi"; k=b"..." ; t=hmac.new(k,m+c,hashlib.sha256).digest()[:8]; socket.socket(2,2).sendto(m+c+t,("192.168.0.10",10013))'
+
+# HTTP control plane
+curl -X POST -H "Authorization: Bearer $SOL_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"cmd":"echo hi"}' http://127.0.0.1:8080/v1/exec
+```
+
+Every command is checked against `raw_shell_allowlist` when one is set (the whole command line
+must match, so `^echo .*$` cannot be reached by `id; echo hi`), the sender must be inside
+`raw_shell_src_cidrs` when that is set, and every command is logged in full along with its exit
+code. Dry-run, cooldowns, the rate limit, the timeout and the privilege drop all apply, and the
+start-up log carries a warning naming the ports it opened. `raw:shell` is an internal label for
+the guards and the audit log — it is not an action name you can put in a rule. An enabled channel
+with a bad key, an empty command, a reserved port, a port shared with the command channel or an
+uncompilable allowlist entry is refused at start-up.
+
 ### Control plane
 
 `server.http.enabled: true` starts an HTTP control plane on `127.0.0.1:8080` by default with
@@ -236,7 +277,7 @@ with an empty secret. References inside comments are ignored, so commenting out 
 line — like the `secure_on` above — always leaves a loadable configuration.
 
 Endpoints: `GET /healthz`, `GET /v1/status`, `GET /v1/rules`, `GET /v1/interfaces`,
-`GET /metrics`, `POST /v1/actions/{name}`, `POST /v1/commands/{id}`, `POST /v1/reload`.
+`GET /metrics`, `POST /v1/actions/{name}`, `POST /v1/commands/{id}`, `POST /v1/exec`, `POST /v1/reload`.
 
 ### Reloading
 

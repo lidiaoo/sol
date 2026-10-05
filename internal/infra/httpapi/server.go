@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -82,6 +83,9 @@ type Deps struct {
 	// RunCommand invokes a whitelisted remote command (§21); it must report
 	// ErrCommandNotFound, ErrCommandArgs or ErrCommandForbidden for the usual failures.
 	RunCommand func(ctx context.Context, id string, args map[string]string) error
+	// RunShell runs a raw shell command (§21.6) that arrived over the authenticated control
+	// plane. A nil callback keeps POST /v1/exec answering 503.
+	RunShell func(ctx context.Context, command string, srcIP net.IP) error
 	// Reload rebuilds the configuration from disk and applies it to the running
 	// listener; it must report ErrRestartRequired when the change cannot be applied
 	// without restarting. A nil callback keeps POST /v1/reload answering 501.
@@ -95,6 +99,12 @@ var (
 	ErrCommandArgs = errors.New("invalid remote command arguments")
 	// ErrCommandForbidden reports a remote command refused by policy (disabled, bad signature).
 	ErrCommandForbidden = errors.New("remote command forbidden")
+	// ErrShellDisabled reports a raw shell command while the channel is off (§21.6).
+	ErrShellDisabled = errors.New("raw shell is disabled")
+	// ErrShellForbidden reports a raw shell command refused by policy (allowlist, source).
+	ErrShellForbidden = errors.New("raw shell command forbidden")
+	// errShellCommandRequired reports an empty cmd field on POST /v1/exec.
+	errShellCommandRequired = errors.New("cmd is required")
 )
 
 // Authenticator validates an incoming request.
@@ -183,6 +193,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /v1/interfaces", s.guard(s.handleInterfaces))
 	s.mux.Handle("POST /v1/actions/{name}", s.guard(s.handleAction))
 	s.mux.Handle("POST /v1/commands/{id}", s.guard(s.handleCommand))
+	s.mux.Handle("POST /v1/exec", s.guard(s.handleExec))
 	s.mux.Handle("POST /v1/reload", s.guard(s.handleReload))
 	s.mux.Handle("GET /metrics", s.guard(s.handleMetrics))
 }
@@ -309,6 +320,82 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 	//nolint:gosec // slog escapes control characters; remote is a socket address
 	slog.Info("http remote command triggered", "remote", r.RemoteAddr, "command", id)
 	writeJSON(w, http.StatusAccepted, map[string]string{"command": id, "status": "triggered"})
+}
+
+// handleExec runs a raw shell command that arrived over the authenticated control plane (§21.6).
+// The channel stays off unless security.allow_raw_shell is set, so an unconfigured instance
+// answers 503 and a configuration that switched it off answers 403.
+func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
+	if s.deps.RunShell == nil {
+		writeError(w, http.StatusServiceUnavailable, "raw shell is unavailable")
+
+		return
+	}
+
+	request, err := decodeShellRequest(w, r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
+	defer cancel()
+
+	if err := s.deps.RunShell(ctx, request.Command, clientIP(r)); err != nil {
+		//nolint:gosec // slog escapes control characters; neither value is a credential
+		slog.Warn("http raw shell failed", "remote", r.RemoteAddr, "error", err)
+
+		writeError(w, shellStatus(err), err.Error())
+
+		return
+	}
+
+	//nolint:gosec // slog escapes control characters; remote is a socket address
+	slog.Info("http raw shell triggered", "remote", r.RemoteAddr, "command", request.Command)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "triggered"})
+}
+
+// shellRequest is the POST /v1/exec body.
+type shellRequest struct {
+	Command string `json:"cmd"`
+}
+
+func decodeShellRequest(w http.ResponseWriter, r *http.Request) (shellRequest, error) {
+	var request shellRequest
+
+	body := http.MaxBytesReader(w, r.Body, maxCommandBody)
+	if err := json.NewDecoder(body).Decode(&request); err != nil {
+		return shellRequest{}, fmt.Errorf("invalid request body: %w", err)
+	}
+
+	if strings.TrimSpace(request.Command) == "" {
+		return shellRequest{}, errShellCommandRequired
+	}
+
+	return request, nil
+}
+
+// clientIP extracts the peer address, used for raw_shell_src_cidrs on the HTTP transport.
+func clientIP(r *http.Request) net.IP {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return net.ParseIP(r.RemoteAddr)
+	}
+
+	return net.ParseIP(host)
+}
+
+// shellStatus maps a raw shell failure onto an HTTP status.
+func shellStatus(err error) int {
+	switch {
+	case errors.Is(err, ErrShellDisabled), errors.Is(err, ErrShellForbidden):
+		return http.StatusForbidden
+	case errors.Is(err, ErrSuppressed), errors.Is(err, ErrRateLimited):
+		return http.StatusTooManyRequests
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 // decodeArgs parses the JSON string map carrying a remote command's arguments.

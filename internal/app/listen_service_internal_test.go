@@ -26,6 +26,7 @@ func (m *factoryMock) Create(_ int) (PacketListener, error) {
 type executorMock struct {
 	calls  int
 	action wol.Action
+	def    wol.ActionDef
 	event  wol.Event
 	err    error
 }
@@ -33,6 +34,7 @@ type executorMock struct {
 func (m *executorMock) Execute(_ context.Context, def wol.ActionDef, ev wol.Event) error {
 	m.calls++
 	m.action = def.Name
+	m.def = def
 	m.event = ev
 
 	return m.err

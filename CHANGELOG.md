@@ -65,6 +65,19 @@ tagged release.
   authentication without a key, a reserved port requiring it, and `sign: true` without a key are
   refused at start-up. The audit log records `authenticated=true|false` per match. Replay of a
   captured packet is not prevented (cooldowns and the rate limit bound it).
+- **Raw shell channel (`security.allow_raw_shell`, off by default)**: an opt-in that lets a remote
+  sender run an arbitrary shell command through `/bin/sh -c`, over UDP
+  (`[magic packet][secure_on?][command][HMAC tag]`) or `POST /v1/exec` on the control plane. It
+  rides on the remote command channel (`security.allow_remote_commands`) but carries its own HMAC
+  key (`raw_shell_auth`), its own non-reserved port set (`raw_shell_ports`, which may not overlap
+  `remote_command_ports`), an optional source filter (`raw_shell_src_cidrs`) and an optional
+  command allowlist (`raw_shell_allowlist`, entries anchored at both ends). The timeout and the
+  privilege drop (`raw_shell_timeout` / `raw_shell_user` / `raw_shell_group`) reuse the exec
+  parameters and are resolved at start-up. Every command is logged in full with its exit code,
+  the guards (dry-run, cooldown, rate limit) apply, and an enabled channel warns loudly at
+  start-up. `raw:shell` is an internal label, not an action name a rule may reference; a channel
+  that is half-configured (keys without the opt-in, no port, a bad key, a reserved or shared port,
+  an uncompilable allowlist entry) is refused at start-up.
 - **`exec` privilege drop**: `user`/`group` (name or id) run the command as that account with
   that account's groups; requires root, and the drop is validated at start-up rather than
   silently skipped.
@@ -105,6 +118,10 @@ tagged release.
   files; they are never read from the YAML body.
 - The control plane binds localhost by default and has no unauthenticated mode.
 - Exec commands run as argv without a shell unless `shell: true` is requested explicitly.
+- The raw shell channel is the one place that runs a shell: it is off by default, needs its own
+  HMAC key and a dedicated non-reserved port, honours `raw_shell_src_cidrs` and
+  `raw_shell_allowlist` (anchored at both ends), logs every command it runs, and warns at
+  start-up. Whoever holds that key can run anything the service user can.
 - `exec` drops supplementary groups, so a command dropped to `nobody` cannot keep sol's own
   group memberships (a real leak found by the smoke test).
 

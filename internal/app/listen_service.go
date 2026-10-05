@@ -91,6 +91,7 @@ type ListenService struct {
 	cooldowns *cooldowns
 	limiter   *rateLimiter
 	remote    *remoteRunner
+	rawShell  *rawShellRunner
 }
 
 // routingSnapshot is the state a single packet is routed with. It is taken once per
@@ -102,6 +103,7 @@ type routingSnapshot struct {
 	cooldowns *cooldowns
 	limiter   *rateLimiter
 	remote    *remoteRunner
+	rawShell  *rawShellRunner
 	dryRun    bool
 }
 
@@ -152,6 +154,19 @@ func (s *ListenService) WithRemoteCommands(commands map[string]wol.RemoteCommand
 	defer s.rtMu.Unlock()
 
 	s.remote = newRemoteRunner(commands, ports, key)
+
+	return s
+}
+
+// WithRawShell enables the raw shell transport of §21.6 from its resolved settings. It is the
+// only path in sol that runs a shell, so it stays off unless the operator asked for it, and its
+// ports are dedicated to it alone.
+func (s *ListenService) WithRawShell(settings RawShellSettings) *ListenService {
+	s.rtMu.Lock()
+	defer s.rtMu.Unlock()
+
+	s.rawShell = newRawShellRunner(settings.Enabled, settings.Ports, settings.Key,
+		settings.SrcNets, settings.Allowlist, settings.Exec)
 
 	return s
 }
@@ -260,6 +275,7 @@ func (s *ListenService) snapshot() routingSnapshot {
 		cooldowns: s.cooldowns,
 		limiter:   s.limiter,
 		remote:    s.remote,
+		rawShell:  s.rawShell,
 		dryRun:    s.dryRun,
 	}
 }
@@ -419,6 +435,10 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 	if pkt.src != nil {
 		ev.SrcIP = pkt.src.IP
 		ev.SrcPort = pkt.src.Port
+	}
+
+	if rt.rawShell.accepts(pkt.port) && s.handleRawShell(ctx, rt, pkt, ev) {
+		return
 	}
 
 	if rt.remote.accepts(pkt.port) && s.handleRemote(ctx, rt, pkt, ev) {

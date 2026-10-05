@@ -19,6 +19,9 @@ var (
 	ErrRemoteMissingArg     = errors.New("missing remote command argument")
 	ErrRemoteArgType        = errors.New("invalid remote command argument type")
 	ErrRemoteArgValue       = errors.New("remote command argument rejected by its spec")
+	ErrRawShellEmpty        = errors.New("raw shell command is empty")
+	ErrRawShellTooLong      = errors.New("raw shell command is too long")
+	ErrRawShellNotAllowed   = errors.New("raw shell command rejected by the allowlist")
 )
 
 const (
@@ -28,7 +31,41 @@ const (
 	RemoteSignatureLen = 8
 	// maxRemoteIDLen caps a command id or argument name.
 	maxRemoteIDLen = 32
+	// MaxRawShellCommand caps a remote shell command (§21.6). It is larger than a command
+	// segment because a shell line carries its own arguments, and it stays well inside the
+	// listener's read buffer.
+	MaxRawShellCommand = 512
 )
+
+// RawShellAction is the name the raw shell channel (§21.6) reports to the guards, the audit log
+// and the counter map. It is not a registered action: the command arrives with the packet, so
+// only the guards and the logging can treat it like one.
+const RawShellAction Action = "raw:shell"
+
+// ValidateRawShellCommand checks a remote shell command against the allowlist of §21.6. An empty
+// allowlist accepts every command (that is what enabling a remote shell means); entries are
+// full-match, so an entry such as `^/usr/local/bin/mark\.sh$` behaves exactly as written.
+func ValidateRawShellCommand(allowlist []*regexp.Regexp, command string) error {
+	if strings.TrimSpace(command) == "" {
+		return ErrRawShellEmpty
+	}
+
+	if len(command) > MaxRawShellCommand {
+		return fmt.Errorf("%w: %d bytes", ErrRawShellTooLong, len(command))
+	}
+
+	if len(allowlist) == 0 {
+		return nil
+	}
+
+	for _, entry := range allowlist {
+		if entry.MatchString(command) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("%w: %q", ErrRawShellNotAllowed, command)
+}
 
 // Remote argument types accepted in commands[].args.<name>.type.
 const (

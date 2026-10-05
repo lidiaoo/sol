@@ -750,6 +750,12 @@ commands[].id / type / command / args{type,enum,pattern,required} / timeout / wo
 security.allow_remote_commands / remote_command_auth{type,key_env,key_file} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）
 security.packet_auth{type:hmac,key_env,key_file}   整包认证（默认关闭，§19.14）：配了它，`match.auth: hmac` 的规则才只接受带 tag（截断 HMAC-SHA256，8 字节）的包；密钥不入 YAML
 match.auth                  可选，`hmac` = 只匹配认证过的包（§19.14）；保留端口不能要求认证；配了它却没配 packet_auth 启动即报错
+security.allow_raw_shell    可选，默认 false；裸 shell 通道的开关（§21.6 / §19.15）。它是远端命令通道的子开关：开启要求 security.allow_remote_commands
+security.raw_shell_ports    开启时必填；专用 UDP 端口，非保留、且不得与 remote_command_ports 重叠（这类包在规则匹配前被消费）
+security.raw_shell_auth     开启时必填；{type: hmac, key_env/key_file}，与 remote_command_auth 分开的两把 key（命令 id 通道泄漏≠交出 shell）
+security.raw_shell_allowlist 可选；命令白名单，条目两端锚定（`^echo .*$` 照旧生效；裸写 `echo` 只匹配该整串）；空 = 放行一切
+security.raw_shell_src_cidrs 可选；非空时只放行这些来源（UDP 按发包源 IP，HTTP 按 RemoteAddr，回环网段要显式写上）
+security.raw_shell_timeout / raw_shell_user / raw_shell_group   可选；复用 exec 的解析与降权（用户/组启动期解析，需 root）
 actions[].sign              可选（wol.send 用，§19.14）：把认证 tag 附在包尾，用来唤醒要求认证的目标；没配 packet_auth 却写 sign 启动即报错
 （`${VAR}` / `$VAR` 插值只在**数据**上生效：注释里写 `${VAR}` 不会变成必填变量，块标量正文照常插值）
 server.http.{enabled,listen,auth,tls}        控制面（§18 / §19.5）：auth.type = bearer|basic|mtls（默认 bearer，无 none）
@@ -1408,7 +1414,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 端口：`security.remote_command_ports` 会被绑定但**不参与规则匹配**（`PolicyOptions.ExtraPorts`）；端口上没有规则也能启动（`no rules configured` 只在既无规则又无远端端口时报）。该端口收到"空内容"的普通魔法包仍走规则（无规则即 non-matching）。
 - 失败语义：远端端口上"带命令段"的包一律被消费（不落入规则匹配），避免畸形命令包意外触发破坏性规则。
 - 冒烟（真机，`remote_command_ports: [10014]`，命令 `touch`/`lock`）：签名 `touch:name=alpha` 执行成功（`/usr/bin/touch /tmp/sol-remote-alpha.marker`，exit 0）；错 key / enum 越界 / 空段被拒并记 WARN；普通魔法包判 non-matching；HTTP `{"name":"beta"}` -> 202 且 marker 生成、`{"name":"gamma"}` -> 400（信息含 enum 列表）、未知 id -> 404、无 token -> 401；`/v1/status` 显示 `actions.remote:touch=2`、`rules: 0`。
-- 未做：`type: http`（HTTP 出站动作）、`sequence`、命令级 `user`/`group` 降权、覆盖整包的包级 HMAC（当前只认证命令段）、全局速率限制（令牌桶）、`allow_raw_shell` 原始命令。
+- 未做：`type: http`（HTTP 出站动作）、`sequence`、命令级 `user`/`group` 降权、覆盖整包的包级 HMAC（当前只认证命令段）、全局速率限制（令牌桶）。（`allow_raw_shell` 原始命令随后也已落地，见 §19.15。）
 
 ---
 
@@ -1525,6 +1531,32 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - 正确签名：手工按线格式签的 110 字节包 → 命中数 3，`authenticated=true`。
   - 配置错误 5 例全部 exit 1：`sign` 无 key、保留端口要求 auth、`packet_auth.type: shared`、key 环境变量为空、`auth: hmac` 无 key。
 
+### 19.15 原始命令（裸 shell，§21.6 落地）
+
+- 开关：`security.allow_raw_shell`（默认 `false`）。它是 §21 远端命令通道的子开关：`allow_remote_commands: true` 是前提，缺了它启动即报 `ErrRawShell`（裸 shell 不是"另一种命令"，它是那条通道的裸版本，共用同一套认证与端口纪律）。
+- 密钥：`raw_shell_auth: { type: hmac, key_env, key_file }`。**与 `remote_command_auth` 分开**：命令 id 通道泄漏一把 key 不等于连 shell 也交出去，两把 key 两套权限。
+- 端口：`raw_shell_ports` 必须显式给（`ErrRawShell`），且**非保留端口**、**不与 `remote_command_ports` 重叠**（重叠 → `ErrRawShell`，同一个包不能被两条通道解释）。实现上它们进 `PolicyOptions.ExtraPorts`，只被 bind、不参与规则匹配——包在匹配前就被消费。
+- 只配 `raw_shell_*` 而没开开关 → 启动即 `ErrRawShell`（"raw_shell_* keys are set without security.allow_raw_shell"）。半配置最危险：端口照 bind、key 照读，而运维以为通道是关的。
+- 线格式：`[magic 102B][secureon 6B?]<shell 命令字符串>[tag 8B]`，tag = 截断 HMAC-SHA256 覆盖 tag 之前的全部字节（含 SecureOn），与 §21.3 命令段共用 `signatureTag`。tag 校验失败 = `remote command signature mismatch`，直接丢弃。
+- 与命令段的区别：命令段是 `"<id>[:k=v,...]"`，要先查白名单；裸 shell 段的**整段就是命令**，没有 id、没有参数、没有 enum——所以它的白名单只能是 `raw_shell_allowlist`。
+- `raw_shell_allowlist`：条目**两端锚定**编译（`^(?:条目)$`）。文档示例里写 `^echo .*$` 照旧生效，而裸写 `echo` 只匹配整条命令是 `echo` 的命令，不会泄漏成"含 echo 就放行"。空 allowlist = 放行一切（运维明确要的远程 shell），写了坏正则 / 空条目 → 启动即 `ErrRawShell`。
+- `raw_shell_src_cidrs`：非空时**只**放行这些来源。UDP 上按发包源 IP 判定；HTTP 上按 `RemoteAddr` 判定（默认 `127.0.0.1`，所以给 HTTP 用就要把回环网段写进去，否则连控制面自己都会被拒——这是有意的：来源限制一旦配了，就不给任何来源开后门）。
+- 其它设置：`raw_shell_timeout` / `raw_shell_user` / `raw_shell_group` 复用 exec 的参数解析（`buildExecDef`），所以**降权在启动期就解析**（用户/组不存在、非 unix、非 root → fail fast），超时同样在启动期解析。
+- 执行：`/bin/sh -c <命令>`，走 exec 执行器（`Shell: true`），因此 shell 里的一切都成立（管道、重定向、`;`）。命令字符串仍过一遍白名单插值（`{{.MAC}}` / `{{.SrcIP}}` / `{{.Time}}` 等），含 `{{` 但不是合法模板的命令会执行失败并记日志。
+- 护栏：dry-run（只记 `trigger=DRY-RUN` 不执行）、cooldown、全局限流、审计（**完整命令** + 退出码；命令是明文的，这是通道的意义所在）、`Stats.Actions["raw:shell"]` 计数。护栏按动作名 `raw:shell` 记账，但这个名字**不是**可配置动作：`Action.Valid()` 对它返回 false，规则里写 `action: raw:shell` 报未知动作。
+- 启动告警：`raw shell enabled: remote senders can run shell commands` + 端口/来源网段数/白名单条目数/降权用户，落到启动日志第一屏。
+- HTTP：`POST /v1/exec {"cmd": "..."} `（控制面认证；`cmd` 必填）。状态码：`202` 已触发、`400` 空/坏 body、`403` 通道关（`ErrShellDisabled`）或白名单/来源拒绝（`ErrShellForbidden`）、`429` 被护栏拦下、`503` 该实例没接这条通道。
+- 实现：`internal/domain/wol/{remote.go,action.go,policy.go}`（`RawShellAction`/`ValidateRawShellCommand`/`MaxRawShellCommand`/`ErrRawShell*`、`Registry.DispatchDef`（跑未注册的 def，命令来自包所以进不了动作表）、`Action.Valid()` 显式拒绝这个名字、`ParseCIDRs` 导出复用）、`internal/config/{schema.go,config.go,load.go}`（8 个 `security.raw_shell_*` 键、`RawShell` 结构、`buildRawShell`/`rawShellPorts`/`rejectRawShellKeys`/`compileShellAllowlist`/`buildRawShellExec`，`requireCommands` 允许"只开裸 shell、commands 为空"）、`internal/app/{rawshell.go,listen_service.go}`（`rawShellRunner`、包路径在规则匹配前消费、`WithRawShell`、`RunRawShell`、快照携带）、`internal/infra/httpapi/server.go`（`POST /v1/exec`）、`internal/deps/builder.go`（装配、启动期校验 exec 设置、告警、`ExtraPorts` 合并）。
+- 单测：域层（allowlist 整串匹配/空命令/超长；`raw:shell` 不是可配置动作；`DispatchDef` 跑未注册 def 与缺执行器）、配置层（默认关、happy path 含 8 个键与锚定语义、11 类错误：没开关就配 key / 没开通道 / 缺端口 / 错 auth 类型 / 缺 key / 保留端口 / 与命令端口重叠 / 坏正则 / 空条目 / 坏网段 / 坏超时）、app 层（真签名命令执行、错 key/无签名/空命令/白名单外拒绝、allowlist 整串、`src_cidrs` 拒绝、dry-run 不执行、cooldown 抑制、HTTP `RunRawShell` 的禁止/空/关通道、HTTP 来源限制）、httpapi（`/v1/exec` 的 202/403/400/401/503 与未接通道）。
+- 冒烟（真机 s20，端口 10161 命令 / 10162 裸 shell / 控制面 18098，key 走环境变量）：27/27 通过。
+  - 签名且在白名单内的命令 → 文件真的被写出、日志 `raw shell command received`、审计含完整命令。
+  - 错 key / 完全无 tag / 白名单外命令（即使签名正确）→ 三样都不执行，各有对应日志（`remote command signature mismatch`、`rejected by the allowlist`）。
+  - HTTP：`202` 且命令真的执行；白名单外 `403`；不带 token `401`。
+  - `raw_shell_src_cidrs: [10.99.0.0/16]`：本机发出的包被拒（`raw shell sender is outside raw_shell_src_cidrs`）。
+  - **默认关的实证**：同一份配置去掉 `allow_raw_shell` 后，同一个包什么也不做、无任何 `raw shell` 日志，且按文档落回该端口的规则（`action: noop`）——证明关掉时端口语义没有残留。
+  - 配置错误 6 例全部 exit 1 且报错文本点名 `raw shell`。
+  - README 片段当断言跑（`s20/readme_wire.sh`）：从 README 里抽出那段 YAML 与那段 `python3 -c` 发送片段，真跑一遍。**抓到真错**：文档里的发送片段少写了「MAC 重复 16 次」（`bytes.fromhex(...)*16`），于是发出的是 6+6=12 字节的「魔法包」，被目标记成 `non-matching packet length=68`；补上后 README 示例端到端跑通（文件真的被写出、命令进审计日志）。这正是"发布的示例是对实现的断言"那条规矩的价值。
+
 ---
 
 ## 20. 安全模型总览（汇总）
@@ -1545,7 +1577,7 @@ noop/记日志  <  wol.send 唤醒别处  <  power.sleep/lock  <  power.shutdown
 - HTTP 控制面：默认本地 + 强制认证 + 可选 TLS + 审计；触发接口视为敏感。
 - HTTP 出站动作：注意 SSRF，可选 `url_allowlist`；不记录密钥。
 - 自定义命令：默认 argv 非 shell + 启动期静态校验 + 降权 + cooldown + 审计。
-- 远端命令（§21）：白名单 `id` + 参数校验；裸 shell 默认关闭，开启后等价远程 shell，必须认证 + 专用端口 + 建议 allowlist/来源白名单 + 启动告警。
+- 远端命令（§21）：白名单 `id` + 参数校验；**裸 shell 已落地但默认关闭**（§21.6 / §19.15），开启后等价远程 shell——必须自带 HMAC key + 专用非保留端口（不与命令端口重叠）+ 建议 allowlist/`src_cidrs` + 启动告警，且 `raw:shell` 不是可配置动作名。
 - 全局：`dry-run` 与构造期校验作为第一道防线；所有触发都写审计日志（来源、端口、命中规则、动作、结果）。
 
 ---
@@ -1616,16 +1648,16 @@ HMAC：命令段前/后附 8 字节截断 `HMAC-SHA256(magic+命令段+key)`；�
 
 开启前提（缺一即配置报错）：
 
-- `security.allow_remote_commands: true`
-- 强制认证已配（HMAC / token / mTLS）
-- 绑定专用非保留端口
+- `security.allow_remote_commands: true`（裸 shell 是这条通道的裸版本）
+- 自己的 HMAC 密钥 `raw_shell_auth`（与 `remote_command_auth` 分开的两把 key）
+- 绑定专用非保留端口，且不与 `remote_command_ports` 重叠
 
 ```yaml
 security:
   allow_remote_commands: true
   allow_raw_shell: false                 # 默认关闭；true = 开放远程 shell
   raw_shell_ports: [15]                  # 专用非保留端口
-  raw_shell_auth: { type: hmac, key_env: SOL_CMD_KEY }
+  raw_shell_auth: { type: hmac, key_env: SOL_RAW_SHELL_KEY }
   raw_shell_src_cidrs: ["10.0.0.0/24"]   # 强烈建议
   raw_shell_allowlist:                   # 可选；即便开了 raw 也建议限制
     - "^systemctl (suspend|reboot|poweroff)$"
@@ -1635,10 +1667,13 @@ security:
 行为：
 
 - 这是全项目唯一走 shell 的地方（其余动作一律 argv）。
-- 执行前按 `raw_shell_allowlist`（若配）校验，不匹配即拒绝并记日志。
+- 执行前按 `raw_shell_allowlist`（若配）校验，条目**两端锚定**，不匹配即拒绝并记日志。
 - 完整记录命令与退出码到审计日志。
-- 降权、timeout、cooldown、限速、dry-run 同样生效。
-- 启用时启动日志打**显著警告**。
+- 降权、timeout、cooldown、限速、dry-run 同样生效（降权与超时在启动期就解析，坏配置 fail fast）。
+- `raw_shell_src_cidrs` 非空时只放行这些来源（UDP 按发包源 IP，HTTP 按 `RemoteAddr`）。
+- 启用时启动日志打**显著警告**（端口、来源网段数、白名单条目数、降权用户）。
+
+落地细节、单测与真机冒烟见 §19.15。
 
 线格式：
 
@@ -1647,4 +1682,4 @@ UDP:  [magic 102B] [secureon 6B?] <shell 命令字符串>     （HMAC 校验）
 HTTP: POST /v1/exec  { "cmd": "..." }                    （认证）
 ```
 
-阶段：P4+（见 [TODO.md](../TODO.md)）。
+阶段：**P4 已落地**（§19.15；见 [TODO.md](../TODO.md)）。

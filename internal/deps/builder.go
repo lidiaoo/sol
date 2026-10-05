@@ -6,7 +6,10 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -153,7 +156,10 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 			b.cfg.DryRun,
 		).WithCooldowns(b.cfg.Cooldown, cooldownWindows(b.cfg.ActionCooldowns)).
 			WithRateLimit(b.cfg.RateLimit, b.cfg.RateBurst).
-			WithRemoteCommands(b.cfg.Remote.Commands, b.cfg.Remote.Ports, b.cfg.Remote.HMACKey)
+			WithRemoteCommands(b.cfg.Remote.Commands, b.cfg.Remote.Ports, b.cfg.Remote.HMACKey).
+			WithRawShell(rawShellSettings(b.cfg.Remote.RawShell))
+
+		b.warnRawShell()
 	})
 
 	return b.listen, buildErr
@@ -187,6 +193,19 @@ func (b *Builder) ReloadOptions() (app.ReloadOptions, error) {
 		RemotePorts: b.cfg.Remote.Ports,
 		RemoteKey:   b.cfg.Remote.HMACKey,
 	}, nil
+}
+
+// rawShellSettings converts the resolved raw shell configuration into the form the listen
+// service takes.
+func rawShellSettings(cfg config.RawShell) app.RawShellSettings {
+	return app.RawShellSettings{
+		Enabled:   cfg.Enabled,
+		Ports:     cfg.Ports,
+		Key:       cfg.Key,
+		SrcNets:   cfg.SrcNets,
+		Allowlist: cfg.Allowlist,
+		Exec:      cfg.Exec,
+	}
 }
 
 // cooldownWindows converts the per-action cooldown overrides into plain strings.
@@ -246,6 +265,12 @@ func (b *Builder) BuildHTTPServer() (*httpapi.Server, error) {
 
 					return err
 				},
+				RunShell: func(ctx context.Context, command string, srcIP net.IP) error {
+					return shellError(listenSvc.RunRawShell(ctx, app.RemoteShellRequest{
+						Command: command,
+						SrcIP:   srcIP,
+					}))
+				},
 				RunCommand: func(ctx context.Context, id string, args map[string]string) error {
 					return remoteCommandError(listenSvc.RunRemoteCommand(ctx, id, args), id)
 				},
@@ -255,6 +280,26 @@ func (b *Builder) BuildHTTPServer() (*httpapi.Server, error) {
 	})
 
 	return b.httpServer, b.httpErr
+}
+
+// shellError translates a raw shell failure into the httpapi sentinels the control plane maps
+// onto status codes (§21.6).
+func shellError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, app.ErrRawShellDisabled):
+		return fmt.Errorf("%w: %w", httpapi.ErrShellDisabled, err)
+	case errors.Is(err, app.ErrRawShellSource), errors.Is(err, wol.ErrRawShellNotAllowed),
+		errors.Is(err, wol.ErrRawShellEmpty), errors.Is(err, wol.ErrRawShellTooLong):
+		return fmt.Errorf("%w: %w", httpapi.ErrShellForbidden, err)
+	case errors.Is(err, app.ErrActionSuppressed):
+		return fmt.Errorf("%w: %w", httpapi.ErrSuppressed, err)
+	case errors.Is(err, app.ErrActionRateLimited):
+		return fmt.Errorf("%w: %w", httpapi.ErrRateLimited, err)
+	default:
+		return err
+	}
 }
 
 // remoteCommandError translates the app/domain remote-command failures into the
@@ -339,7 +384,7 @@ func (b *Builder) buildRuntime() (*wol.Registry, *wol.RoutingPolicy, []wol.Iface
 		AllowReserved: b.cfg.AllowReservedActions,
 		SecureOn:      b.cfg.SecureOn,
 		Actions:       registry.Actions(),
-		ExtraPorts:    b.cfg.Remote.Ports,
+		ExtraPorts:    append(slices.Clone(b.cfg.Remote.Ports), b.cfg.Remote.RawShell.Ports...),
 		PacketKey:     b.cfg.PacketKey,
 	})
 	if err != nil {
@@ -392,6 +437,23 @@ func (b *Builder) validateActions(registry *wol.Registry) error {
 		if err := validator.check(def); err != nil {
 			return fmt.Errorf("%s %s: %w", validator.label, def.Name, err)
 		}
+	}
+
+	return b.validateRawShell()
+}
+
+// validateRawShell checks the execution settings of the raw shell channel (§21.6) at start-up:
+// the timeout, and the privilege drop when one is configured. The command itself arrives with
+// the packet, so only the settings can be checked here.
+func (b *Builder) validateRawShell() error {
+	raw := b.cfg.Remote.RawShell
+	if !raw.Enabled {
+		return nil
+	}
+
+	def := wol.ActionDef{Name: wol.RawShellAction, Type: wol.ActionTypeExec, Exec: &raw.Exec}
+	if err := b.ExecExecutor().Validate(def); err != nil {
+		return fmt.Errorf("security.allow_raw_shell: %w", err)
 	}
 
 	return nil
@@ -503,4 +565,21 @@ func loadCertPool(path string) (*x509.CertPool, error) {
 	}
 
 	return pool, nil
+}
+
+// warnRawShell prints the §21.6 warning: an enabled raw shell means any sender holding the key
+// can run shell commands on this machine.
+func (b *Builder) warnRawShell() {
+	raw := b.cfg.Remote.RawShell
+	if !raw.Enabled {
+		return
+	}
+
+	slog.Warn("raw shell enabled: remote senders can run shell commands",
+		"ports", raw.Ports,
+		"src_cidrs", len(raw.SrcNets),
+		"allowlist_entries", len(raw.Allowlist),
+		"user", raw.Exec.User,
+		"group", raw.Exec.Group,
+	)
 }

@@ -72,8 +72,8 @@ type PolicyOptions struct {
 	SecureOn      []byte
 	// Actions maps known action names to their definitions; nil means BuiltinActions().
 	Actions map[Action]ActionDef
-	// ExtraPorts are bound but not routed; used by the remote command channel (§21),
-	// whose packets are consumed before rule matching.
+	// ExtraPorts are bound but not routed; used by the remote command channel (§21) and the
+	// raw shell transport (§21.6), whose packets are consumed before rule matching.
 	ExtraPorts []int
 	// PacketKey, when set, authenticates whole packets (§19.14): a payload that ends with a
 	// valid tag is matched on the bytes before the tag and can satisfy a rule with
@@ -445,6 +445,12 @@ func validatePorts(ports []int) error {
 	}
 
 	return nil
+}
+
+// ParseCIDRs validates src_cidrs-style entries. The raw shell channel (§21.6) reuses it, so a
+// network list means the same thing wherever it appears.
+func ParseCIDRs(cidrs []string) ([]*net.IPNet, error) {
+	return parseCIDRs(cidrs)
 }
 
 func parseCIDRs(cidrs []string) ([]*net.IPNet, error) {

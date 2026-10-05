@@ -199,10 +199,19 @@ func TestSchemaMirrorsTheConfigStructs(t *testing.T) {
 func TestSchemaEnumsMatchTheDomain(t *testing.T) {
 	schema := loadSchema(t)
 
-	tests := []struct {
-		pointer string
-		values  []string
-	}{
+	tests := schemaEnumCases()
+
+	for _, tc := range tests {
+		t.Run(tc.pointer, func(t *testing.T) {
+			require.ElementsMatch(t, tc.values, enumValues(t, schema, tc.pointer))
+		})
+	}
+}
+
+// schemaEnumCases is the pointer/value list each enum is checked against, kept apart from the
+// assertions so the test body stays readable.
+func schemaEnumCases() []enumCase {
+	return []enumCase{
 		{
 			pointer: "/$defs/action/properties/type",
 			values: []string{
@@ -240,6 +249,10 @@ func TestSchemaEnumsMatchTheDomain(t *testing.T) {
 			values:  []string{authTypeHMAC},
 		},
 		{
+			pointer: "/properties/security/properties/raw_shell_auth/properties/type",
+			values:  []string{authTypeHMAC},
+		},
+		{
 			pointer: "/$defs/match/properties/auth",
 			// Empty means "no authentication required".
 			values: []string{"", string(wol.AuthHMAC)},
@@ -256,10 +269,10 @@ func TestSchemaEnumsMatchTheDomain(t *testing.T) {
 			values:  []string{"", logging.FormatText, logging.FormatJSON},
 		},
 	}
+}
 
-	for _, tc := range tests {
-		t.Run(tc.pointer, func(t *testing.T) {
-			require.ElementsMatch(t, tc.values, enumValues(t, schema, tc.pointer))
-		})
-	}
+// enumCase is one schema pointer and the values it must offer.
+type enumCase struct {
+	pointer string
+	values  []string
 }

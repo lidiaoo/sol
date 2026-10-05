@@ -1,6 +1,8 @@
 package config
 
 import (
+	"net"
+	"regexp"
 	"time"
 
 	"github.com/bavix/sol/internal/domain/wol"
@@ -83,6 +85,28 @@ type RemoteCommands struct {
 	HMACKey []byte
 	// Commands maps a command id to its whitelisted definition.
 	Commands map[string]wol.RemoteCommand
+	// RawShell is the resolved raw shell transport (§21.6); Enabled is false unless the
+	// operator asked for it.
+	RawShell RawShell
+}
+
+// RawShell is the resolved raw shell channel of §21.6: remote senders may put a shell command
+// line into the packet instead of a whitelisted command id. It is the only place in sol where a
+// shell runs, and it stays off by default.
+type RawShell struct {
+	// Enabled reports whether the channel is on at all.
+	Enabled bool
+	// Ports are the dedicated UDP ports whose packets carry a shell command.
+	Ports []int
+	// Key authenticates those packets; the channel is never enabled without it.
+	Key []byte
+	// SrcNets, when set, restricts which senders may use the channel (empty allows any).
+	SrcNets []*net.IPNet
+	// Allowlist, when set, restricts which command lines may run (empty allows any).
+	Allowlist []*regexp.Regexp
+	// Exec carries the execution settings that apply to every command: shell mode, timeout
+	// and the optional privilege drop. Command itself is empty and filled per packet.
+	Exec wol.ExecParams
 }
 
 // Logging holds the configured log level and format. Empty values mean the built-in

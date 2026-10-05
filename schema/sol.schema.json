@@ -252,6 +252,62 @@
             "type": "string"
           }
         },
+        "allow_raw_shell": {
+          "type": "boolean",
+          "description": "Opt-in remote shell channel (off by default). Enabling it lets a sender holding raw_shell_auth.key run any shell command."
+        },
+        "raw_shell_ports": {
+          "type": "array",
+          "description": "Dedicated UDP ports carrying the shell command; reserved ports are refused.",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "raw_shell_auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Shared key authenticating the raw shell packets. The key never lives in this file.",
+          "properties": {
+            "type": {
+              "const": "hmac",
+              "description": "Only hmac is supported."
+            },
+            "key_env": {
+              "type": "string",
+              "description": "Environment variable holding the key."
+            },
+            "key_file": {
+              "type": "string",
+              "description": "0600 file holding the key."
+            }
+          }
+        },
+        "raw_shell_src_cidrs": {
+          "type": "array",
+          "description": "Networks allowed to use the channel; empty allows any sender.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "raw_shell_allowlist": {
+          "type": "array",
+          "description": "Patterns a shell command must match to run; each entry is anchored at both ends, and an empty list allows every command.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "raw_shell_timeout": {
+          "type": "string",
+          "description": "How long one command may run, e.g. 30s."
+        },
+        "raw_shell_user": {
+          "type": "string",
+          "description": "Run the command as this user (requires root)."
+        },
+        "raw_shell_group": {
+          "type": "string",
+          "description": "Run the command in this group (requires root)."
+        },
         "packet_auth": {
           "type": "object",
           "additionalProperties": false,

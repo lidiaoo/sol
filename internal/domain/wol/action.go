@@ -132,6 +132,10 @@ func (a Action) Valid() bool {
 	switch a {
 	case ActionNoop, ActionSleep, ActionShutdown, ActionReboot:
 		return true
+	case RawShellAction:
+		// The raw shell channel (§21.6) names itself in the guards and the audit log, but it
+		// is built from a packet, so no rule may reference it.
+		return false
 	default:
 		return false
 	}
@@ -196,6 +200,17 @@ func (r *Registry) Action(name Action) (ActionDef, bool) {
 	return def, ok
 }
 
+// DispatchDef executes one action definition, registered or not. The raw shell channel (§21.6)
+// builds its definition from the packet, so it cannot go through the action table.
+func (r *Registry) DispatchDef(ctx context.Context, def ActionDef, ev Event) error {
+	executor, ok := r.executors[def.Type]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNoExecutor, def.Type)
+	}
+
+	return executor.Execute(ctx, def, ev)
+}
+
 // Dispatch executes the action named by its definition.
 func (r *Registry) Dispatch(ctx context.Context, name Action, ev Event) error {
 	def, ok := r.actions[name]
@@ -203,10 +218,5 @@ func (r *Registry) Dispatch(ctx context.Context, name Action, ev Event) error {
 		return fmt.Errorf("%w: %s", ErrUnknownActionRef, name)
 	}
 
-	executor, ok := r.executors[def.Type]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNoExecutor, def.Type)
-	}
-
-	return executor.Execute(ctx, def, ev)
+	return r.DispatchDef(ctx, def, ev)
 }

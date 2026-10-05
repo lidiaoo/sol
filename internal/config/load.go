@@ -47,6 +47,7 @@ var (
 	ErrRemoteArgSpec         = errors.New("invalid remote command argument spec")
 	ErrRemoteAuth            = errors.New("remote command authorization is required")
 	ErrPacketAuth            = errors.New("packet authorization is invalid")
+	ErrRawShell              = errors.New("raw shell configuration is invalid")
 	ErrRemotePorts           = errors.New("invalid security.remote_command_ports")
 	ErrRemotePort            = errors.New("remote command port must not be a reserved port")
 	ErrSequenceStepsRequired = errors.New("sequence action requires steps")
@@ -171,6 +172,9 @@ const (
 	maxSendPort = 65535
 	// sendDefaultBroadcast is the limited broadcast address used when wol.send sets none.
 	sendDefaultBroadcast = "255.255.255.255"
+	// rawShellPlaceholder stands in for the per-packet command while the raw shell settings
+	// are validated at load time (§21.6).
+	rawShellPlaceholder = "true"
 )
 
 // parseWatch reads server.watch. Empty and "0" disable watching; anything below minWatch is
@@ -396,7 +400,7 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		return nil, err
 	}
 
-	remote, err := buildRemoteCommands(f.Security, f.Commands)
+	remote, err := buildRemote(f)
 	if err != nil {
 		return nil, err
 	}
@@ -814,6 +818,164 @@ func buildPacketAuth(cfg packetAuthConfig) ([]byte, error) {
 	return []byte(key), nil
 }
 
+// requireCommands refuses an enabled channel that would accept nothing. A raw shell-only
+// deployment is the exception (§21.6): that transport carries its own commands, so an empty
+// commands[] is not a mistake there.
+func requireCommands(cfg securityConfig, commands map[string]wol.RemoteCommand) error {
+	if len(commands) == 0 && !cfg.AllowRawShell {
+		return fmt.Errorf("%w: commands[] is empty", ErrRemoteCommandDef)
+	}
+
+	return nil
+}
+
+// buildRemote resolves the §21 remote command channel together with the raw shell transport that
+// rides on it (§21.6): the raw shell key is refused without the channel it belongs to.
+func buildRemote(f *fileConfig) (RemoteCommands, error) {
+	remote, err := buildRemoteCommands(f.Security, f.Commands)
+	if err != nil {
+		return RemoteCommands{}, err
+	}
+
+	rawShell, err := buildRawShell(f.Security, remote)
+	if err != nil {
+		return RemoteCommands{}, err
+	}
+
+	remote.RawShell = rawShell
+
+	return remote, nil
+}
+
+// buildRawShell resolves security.allow_raw_shell and its companion keys (§21.6). Enabling it
+// requires the remote channel to be on, a dedicated non-reserved port set and its own HMAC key;
+// a companion key without allow_raw_shell is a mistake, not a no-op.
+func buildRawShell(cfg securityConfig, remote RemoteCommands) (RawShell, error) {
+	if !cfg.AllowRawShell {
+		return RawShell{}, rejectRawShellKeys(cfg)
+	}
+
+	if !cfg.AllowRemoteCommands {
+		return RawShell{}, fmt.Errorf("%w: allow_raw_shell requires security.allow_remote_commands", ErrRawShell)
+	}
+
+	if cfg.RawShellAuth.Type != authTypeHMAC {
+		return RawShell{}, fmt.Errorf("%w: raw_shell_auth.type must be %q", ErrRawShell, authTypeHMAC)
+	}
+
+	key, err := resolveSecret(cfg.RawShellAuth.KeyEnv, cfg.RawShellAuth.KeyFile, "raw_shell_auth.key")
+	if err != nil {
+		return RawShell{}, fmt.Errorf("%w: %w", ErrRawShell, err)
+	}
+
+	ports, err := rawShellPorts(cfg, remote)
+	if err != nil {
+		return RawShell{}, err
+	}
+
+	srcNets, err := wol.ParseCIDRs(cfg.RawShellSrcCIDRs)
+	if err != nil {
+		return RawShell{}, fmt.Errorf("%w: raw_shell_src_cidrs: %w", ErrRawShell, err)
+	}
+
+	allowlist, err := compileShellAllowlist(cfg.RawShellAllowlist)
+	if err != nil {
+		return RawShell{}, err
+	}
+
+	exec, err := buildRawShellExec(cfg)
+	if err != nil {
+		return RawShell{}, fmt.Errorf("%w: %w", ErrRawShell, err)
+	}
+
+	return RawShell{
+		Enabled:   true,
+		Ports:     ports,
+		Key:       []byte(key),
+		SrcNets:   srcNets,
+		Allowlist: allowlist,
+		Exec:      exec,
+	}, nil
+}
+
+// rejectRawShellKeys reports the companion keys of an opt-in that is off. Half-configured
+// settings are a mistake: silently ignoring them would leave a port bound and a key read for a
+// channel the operator believes is disabled.
+func rejectRawShellKeys(cfg securityConfig) error {
+	configured := len(cfg.RawShellPorts) > 0 || cfg.RawShellAuth.Type != "" ||
+		cfg.RawShellAuth.KeyEnv != "" || cfg.RawShellAuth.KeyFile != "" ||
+		len(cfg.RawShellAllowlist) > 0 || len(cfg.RawShellSrcCIDRs) > 0
+
+	if configured {
+		return fmt.Errorf("%w: raw_shell_* keys are set without security.allow_raw_shell", ErrRawShell)
+	}
+
+	return nil
+}
+
+// rawShellPorts resolves the dedicated port set: at least one port, none reserved and none
+// shared with the remote command channel, so a packet's meaning never depends on which of the
+// two channels won the race.
+func rawShellPorts(cfg securityConfig, remote RemoteCommands) ([]int, error) {
+	ports, err := remoteCommandPorts(cfg.RawShellPorts, cfg.ReservedPorts)
+	if err != nil {
+		return nil, fmt.Errorf("%w: raw_shell_ports: %w", ErrRawShell, err)
+	}
+
+	for _, port := range ports {
+		if slices.Contains(remote.Ports, port) {
+			return nil, fmt.Errorf("%w: port %d is also security.remote_command_ports", ErrRawShell, port)
+		}
+	}
+
+	return ports, nil
+}
+
+// compileShellAllowlist turns the raw shell allowlist into full-match patterns: an entry is
+// anchored at both ends, so "^/usr/local/bin/mark\\.sh$" behaves as written and a bare
+// "systemctl" matches only that exact command line.
+func compileShellAllowlist(entries []string) ([]*regexp.Regexp, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	compiled := make([]*regexp.Regexp, 0, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry) == "" {
+			return nil, fmt.Errorf("%w: empty allowlist entry", ErrRawShell)
+		}
+
+		pattern, err := regexp.Compile("^(?:" + entry + ")$")
+		if err != nil {
+			return nil, fmt.Errorf("%w: %q: %w", ErrRawShell, entry, err)
+		}
+
+		compiled = append(compiled, pattern)
+	}
+
+	return compiled, nil
+}
+
+// buildRawShellExec reuses the exec parameter parsing for the settings that apply to every raw
+// shell command. The command itself is per packet, so a placeholder is used here and replaced at
+// execution time; shell mode is always on, which is the whole point of the channel.
+func buildRawShellExec(cfg securityConfig) (wol.ExecParams, error) {
+	def, err := buildExecDef(actionConfig{
+		Name:    string(wol.RawShellAction),
+		Type:    string(wol.ActionTypeExec),
+		Command: []string{rawShellPlaceholder},
+		Timeout: cfg.RawShellTimeout,
+		Shell:   true,
+		User:    cfg.RawShellUser,
+		Group:   cfg.RawShellGroup,
+	}, wol.ActionDef{Name: wol.RawShellAction, Type: wol.ActionTypeExec})
+	if err != nil {
+		return wol.ExecParams{}, err
+	}
+
+	return *def.Exec, nil
+}
+
 // buildRemoteCommands resolves the §21 remote command channel: the whitelisted
 // commands, the UDP ports allowed to carry command segments and the shared HMAC key.
 func buildRemoteCommands(cfg securityConfig, entries []commandConfig) (RemoteCommands, error) {
@@ -849,8 +1011,8 @@ func buildRemoteCommands(cfg securityConfig, entries []commandConfig) (RemoteCom
 		return RemoteCommands{}, fmt.Errorf("%w: %w", ErrRemoteAuth, err)
 	}
 
-	if len(remote.Commands) == 0 {
-		return RemoteCommands{}, fmt.Errorf("%w: commands[] is empty", ErrRemoteCommandDef)
+	if err := requireCommands(cfg, remote.Commands); err != nil {
+		return RemoteCommands{}, err
 	}
 
 	ports, err := remoteCommandPorts(cfg.RemoteCommandPorts, cfg.ReservedPorts)

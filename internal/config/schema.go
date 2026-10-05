@@ -119,6 +119,14 @@ type securityConfig struct {
 	PacketAuth               packetAuthConfig  `yaml:"packet_auth"`
 	RemoteCommandPorts       []int             `yaml:"remote_command_ports"`
 	URLAllowlist             []string          `yaml:"url_allowlist"`
+	AllowRawShell            bool              `yaml:"allow_raw_shell"`
+	RawShellPorts            []int             `yaml:"raw_shell_ports"`
+	RawShellAuth             remoteAuthConfig  `yaml:"raw_shell_auth"`
+	RawShellSrcCIDRs         []string          `yaml:"raw_shell_src_cidrs"`
+	RawShellAllowlist        []string          `yaml:"raw_shell_allowlist"`
+	RawShellTimeout          string            `yaml:"raw_shell_timeout"`
+	RawShellUser             string            `yaml:"raw_shell_user"`
+	RawShellGroup            string            `yaml:"raw_shell_group"`
 }
 
 // remoteAuthConfig is security.remote_command_auth: the shared key authenticating UDP
