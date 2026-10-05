@@ -1248,7 +1248,7 @@ P4  自定义命令 + HTTP
 - 构造期校验：端口范围、动作已知、内容 token（`value`/`value_hex` 互斥、≤ `MaxContentLen`=64）、CIDR、MAC、保留端口、重复 / 歧义规则。
 - 保留端口默认 `DefaultReservedPorts()` = {7,9}；`PolicyOptions.ReservedPorts` 可覆盖，`AllowReserved` 复刻旧行为。
 - 冲突判定（同作用域）：`ErrDuplicatePort`（同端口同内容条件）、`ErrAmbiguousRule`（同分且内容可能同时命中，如 prefix vs suffix）。`src_cidrs` 需完全一致才视为同作用域（保守）。
-- 尚未实现：`ErrRuleConflict` / `ErrInterfaceScopeConflict`（依赖 P3 的块级作用域）、`SecureOn` 的配置接线。
+- 后续阶段已补齐：`ErrRuleConflict` / `ErrInterfaceScopeConflict` 与 `SecureOn` 的配置接线都在 P3 落地（见 §19.3）。
 
 CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并打印 WARNING（`cmd/listen.go`），其余端口行为不变。
 
@@ -1287,6 +1287,8 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - `actions` 段：命名动作 `{name, type}`，type 暂限四种内置类型；定义会注册进 Registry，`rules[].action` 可直接引用；重名 -> `ErrDuplicateAction`（内置名不可重定义）。
 - `logging` 段：`level`（debug|info|warn|error，默认 info）+ `format`（text|json，默认 text）。程序日志已从 stdlib `log` 迁到 `log/slog` 结构化日志（`internal/infra/logging.Setup`，启动时装载、`slog.SetDefault`），非法 level/format fail fast。
 - 语义校验仍在 policy 构造期 fail fast：保留端口非 noop / 带内容、未知动作、端口范围、CIDR、重复与歧义规则等。
+- 冲突检测：同作用域同分且可能同时命中 -> `ErrDuplicatePort` / `ErrAmbiguousRule`（P1 已有）；**跨作用域**相交（per-NIC 规则 + 不限网卡的兜底、`mac: any` + `mac: self`）且 ports/content/src_cidrs 完全相同 -> `ErrRuleConflict`，错误信息带上两个 scopeKey，拒绝静默覆盖；块内规则把自己的 `match.interfaces` 指到别的网卡 -> `ErrInterfaceScopeConflict`。
+- 冲突冒烟：§13.8 的"每网卡规则 + 兜底一条"确实报 `ErrRuleConflict`；去掉兜底即通过；`enp6s0` 的块规则不能写成 `match.interfaces: [enp9s0f3u1]`；§13.9 的"全局规则 + 多个 interfaces 块（端口不重叠）"可用，且 enp6s0 的魔法包在只属于 enp9s0f3u1 的端口上判为不匹配。
 - 冒烟：文件版"全局 noop + 每网卡块 dry_run"生效（块规则命中打 `DRY-RUN`，全局规则照常执行）；出现 `--port` 时完全接管 rules；未设置变量 / 未知字段 / rules 双写 / 无规则 / secure_on 长度 / 保留端口违规 全部给出明确错误。
 
 **未实现（本小节不装作已有）**：

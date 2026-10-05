@@ -1,6 +1,7 @@
 package wol
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +16,7 @@ var (
 	ErrUnknownActionRef   = errors.New("unknown action reference")
 	ErrDuplicateInterface = errors.New("duplicate interface")
 	ErrSecureOnLength     = errors.New("secure_on must be exactly 6 bytes")
+	ErrRuleConflict       = errors.New("overlapping rule scopes with identical conditions")
 )
 
 const (
@@ -267,15 +269,21 @@ func (r *compiledRule) matches(ev Event, parsed ParsedPacket) bool {
 }
 
 func conflict(a compiledRule, b compiledRule) error {
-	if a.score != b.score {
+	if err := sameScopeConflict(a, b); err != nil {
+		return err
+	}
+
+	return crossScopeConflict(a, b)
+}
+
+// sameScopeConflict keeps the original behaviour: two rules with the same MAC scope and
+// the same specificity that can both match the same packet.
+func sameScopeConflict(a compiledRule, b compiledRule) error {
+	if a.score != b.score || a.mac.scopeKey() != b.mac.scopeKey() {
 		return nil
 	}
 
-	if !portsOverlap(a.ports, b.ports) || !srcOverlap(a.srcNets, b.srcNets) {
-		return nil
-	}
-
-	if a.mac.scopeKey() != b.mac.scopeKey() || !contentOverlap(a.content, b.content) {
+	if !portsOverlap(a.ports, b.ports) || !srcOverlap(a.srcNets, b.srcNets) || !contentOverlap(a.content, b.content) {
 		return nil
 	}
 
@@ -284,6 +292,22 @@ func conflict(a compiledRule, b compiledRule) error {
 	}
 
 	return fmt.Errorf("%w: ports %v", ErrAmbiguousRule, a.ports)
+}
+
+// crossScopeConflict rejects rules whose scopes overlap without being identical while
+// every other condition matches: the overlap has to be made explicit instead of being
+// resolved silently by preferring the more specific rule (§8, §17.9).
+func crossScopeConflict(a compiledRule, b compiledRule) error {
+	if a.mac.scopeKey() == b.mac.scopeKey() || !macsOverlap(a.mac, b.mac) {
+		return nil
+	}
+
+	if !samePorts(a.ports, b.ports) || a.content.key() != b.content.key() || !sameSRC(a.srcNets, b.srcNets) {
+		return nil
+	}
+
+	return fmt.Errorf("%w: ports %v with scopes %q and %q",
+		ErrRuleConflict, a.ports, a.mac.scopeKey(), b.mac.scopeKey())
 }
 
 func scoreRule(ports []int, content ContentMatcher, srcNets []*net.IPNet, mac compiledMAC) int {
@@ -425,6 +449,10 @@ func srcOverlap(a []*net.IPNet, b []*net.IPNet) bool {
 		return true
 	}
 
+	return sameSRC(a, b)
+}
+
+func sameSRC(a []*net.IPNet, b []*net.IPNet) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -436,4 +464,21 @@ func srcOverlap(a []*net.IPNet, b []*net.IPNet) bool {
 	}
 
 	return true
+}
+
+// macsOverlap reports whether two compiled MAC scopes can accept the same target MAC.
+func macsOverlap(a compiledMAC, b compiledMAC) bool {
+	if a.kind == MACAny || b.kind == MACAny {
+		return true
+	}
+
+	for _, left := range a.addrs {
+		for _, right := range b.addrs {
+			if bytes.Equal(left, right) {
+				return true
+			}
+		}
+	}
+
+	return false
 }

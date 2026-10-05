@@ -271,6 +271,75 @@ func TestRoutingPolicyResolveExplicitMAC(t *testing.T) {
 	require.Equal(t, wol.ActionNoop, act.Action)
 }
 
+func testIfacesTwo() []wol.IfaceInfo {
+	return []wol.IfaceInfo{
+		{Name: "eth0", MAC: testMAC()},
+		{Name: "wlan0", MAC: net.HardwareAddr{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}},
+	}
+}
+
+func scopedRule(rule wol.Rule, ifaces ...string) wol.Rule {
+	rule.Match.MAC = wol.MACSelector{Kind: wol.MACInterface, Ifaces: ifaces}
+
+	return rule
+}
+
+func TestRoutingPolicyRuleConflict(t *testing.T) {
+	t.Parallel()
+
+	t.Run("interface scope plus unrestricted rule on the same port", func(t *testing.T) {
+		t.Parallel()
+
+		rules := []wol.Rule{scopedRule(plainRule(8, wol.ActionShutdown), "eth0"), plainRule(8, wol.ActionNoop)}
+
+		_, err := wol.NewRoutingPolicy(rules, testIfacesTwo(), wol.PolicyOptions{})
+		require.ErrorIs(t, err, wol.ErrRuleConflict)
+	})
+
+	t.Run("any-mac scope plus self scope", func(t *testing.T) {
+		t.Parallel()
+
+		anyMAC := plainRule(9, wol.ActionNoop)
+		anyMAC.Match.MAC = wol.MACSelector{Kind: wol.MACAny}
+
+		_, err := wol.NewRoutingPolicy([]wol.Rule{anyMAC, plainRule(9, wol.ActionNoop)}, testIfaces(), wol.PolicyOptions{})
+		require.ErrorIs(t, err, wol.ErrRuleConflict)
+	})
+
+	t.Run("different content is not a conflict", func(t *testing.T) {
+		t.Parallel()
+
+		rules := []wol.Rule{
+			scopedRule(contentRule(8, wol.ContentSuffix, "reboot", wol.ActionReboot), "eth0"),
+			contentRule(8, wol.ContentSuffix, "lock", wol.ActionNoop),
+		}
+
+		_, err := wol.NewRoutingPolicy(rules, testIfacesTwo(), wol.PolicyOptions{})
+		require.NoError(t, err)
+	})
+
+	t.Run("different ports are not a conflict", func(t *testing.T) {
+		t.Parallel()
+
+		rules := []wol.Rule{scopedRule(plainRule(10, wol.ActionSleep), "wlan0"), plainRule(11, wol.ActionShutdown)}
+
+		_, err := wol.NewRoutingPolicy(rules, testIfacesTwo(), wol.PolicyOptions{})
+		require.NoError(t, err)
+	})
+
+	t.Run("disjoint explicit scopes are not a conflict", func(t *testing.T) {
+		t.Parallel()
+
+		rules := []wol.Rule{
+			scopedRule(plainRule(8, wol.ActionShutdown), "eth0"),
+			scopedRule(plainRule(8, wol.ActionNoop), "wlan0"),
+		}
+
+		_, err := wol.NewRoutingPolicy(rules, testIfacesTwo(), wol.PolicyOptions{})
+		require.NoError(t, err)
+	})
+}
+
 func TestNewRoutingPolicySecureOnLength(t *testing.T) {
 	t.Parallel()
 

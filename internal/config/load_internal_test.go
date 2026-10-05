@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -359,4 +360,58 @@ func TestLoadUnknownLoggingFieldIsRejected(t *testing.T) {
 	_, err := Load(writeConfig(t, "version: 1\nlogging:\n  level: info\n  colour: true\n"))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "colour")
+}
+
+func TestLoadBlockScopeConflict(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+server:
+  interfaces:
+    - name: eth0
+      rules:
+        - match: { interfaces: [wlan0], ports: [8] }
+          action: power.shutdown
+`)
+
+	_, err := Load(path)
+	require.ErrorIs(t, err, wol.ErrInterfaceScopeConflict)
+}
+
+func TestLoadBlockScopeMatchingIsAllowed(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+server:
+  interfaces:
+    - name: eth0
+      rules:
+        - match: { interfaces: [eth0], ports: [8] }
+          action: power.shutdown
+`)
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Equal(t, []string{"eth0"}, cfg.Rules[0].Match.MAC.Ifaces)
+}
+
+func TestLoadGlobalAndBlockRuleConflict(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+server:
+  rules:
+    - match: { ports: [8], content: { kind: none } }
+      action: noop
+  interfaces:
+    - name: eth0
+      rules:
+        - match: { ports: [8], content: { kind: none } }
+          action: power.shutdown
+`)
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	ifaces := []wol.IfaceInfo{{Name: "eth0", MAC: net.HardwareAddr{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}}}
+
+	_, err = wol.NewRoutingPolicy(cfg.Rules, ifaces, wol.PolicyOptions{Actions: cfg.Actions})
+	require.ErrorIs(t, err, wol.ErrRuleConflict)
 }

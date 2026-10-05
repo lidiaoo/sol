@@ -10,13 +10,14 @@ import (
 )
 
 var (
-	ErrUnknownContentKind = errors.New("unknown content kind")
-	ErrContentValue       = errors.New("content matcher requires exactly one of value or value_hex")
-	ErrContentTooLarge    = errors.New("content token exceeds max length")
-	ErrUnknownMACKind     = errors.New("unknown mac kind")
-	ErrMACConflict        = errors.New("match.mac and match.interfaces are mutually exclusive")
-	ErrUnknownInterface   = errors.New("unknown interface")
-	ErrInvalidCIDR        = errors.New("invalid src_cidr")
+	ErrUnknownContentKind     = errors.New("unknown content kind")
+	ErrContentValue           = errors.New("content matcher requires exactly one of value or value_hex")
+	ErrContentTooLarge        = errors.New("content token exceeds max length")
+	ErrUnknownMACKind         = errors.New("unknown mac kind")
+	ErrMACConflict            = errors.New("match.mac and match.interfaces are mutually exclusive")
+	ErrInterfaceScopeConflict = errors.New("rule scope does not match its interface block")
+	ErrUnknownInterface       = errors.New("unknown interface")
+	ErrInvalidCIDR            = errors.New("invalid src_cidr")
 )
 
 // MaxContentLen caps the decoded content token size.

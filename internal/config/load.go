@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -359,6 +360,10 @@ func buildRule(entry ruleConfig, scope *wol.MACSelector, dryRun bool, actions ma
 		return wol.Rule{}, err
 	}
 
+	if err := checkBlockScope(entry.Match.Interfaces, scope); err != nil {
+		return wol.Rule{}, err
+	}
+
 	mac, err := buildMAC(entry.Match, scope)
 	if err != nil {
 		return wol.Rule{}, err
@@ -431,4 +436,28 @@ func buildContent(content contentConfig) wol.ContentMatcher {
 		Hex:    content.ValueHex,
 		Offset: content.Offset,
 	}
+}
+
+// checkBlockScope rejects a rule inside a server.interfaces block that re-scopes itself to
+// another interface (§8: ErrInterfaceScopeConflict).
+func checkBlockScope(interfaces []string, scope *wol.MACSelector) error {
+	if scope == nil || len(interfaces) == 0 {
+		return nil
+	}
+
+	same := len(interfaces) == len(scope.Ifaces)
+
+	for _, name := range interfaces {
+		if !slices.Contains(scope.Ifaces, name) {
+			same = false
+
+			break
+		}
+	}
+
+	if !same {
+		return fmt.Errorf("%w: block %v vs match.interfaces %v", wol.ErrInterfaceScopeConflict, scope.Ifaces, interfaces)
+	}
+
+	return nil
 }

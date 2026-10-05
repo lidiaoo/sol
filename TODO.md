@@ -37,8 +37,8 @@
 - [x] 单测：包解析 / 内容匹配 / 优先级 / 保留端口 / 冲突 / 来源白名单（`internal/domain/wol/*_test.go`）
 
 遗留（不阻塞 P1）
-- [ ] `ErrRuleConflict` / `ErrInterfaceScopeConflict`：等 P3 的块级作用域（`server.interfaces[].rules` vs 全局）落地后再加；P1 用 `ErrDuplicatePort` / `ErrAmbiguousRule` 覆盖同作用域冲突
-- [ ] 歧义判定目前保守（`src_cidrs` 集合需完全一致才算同一作用域）
+- [x] `ErrRuleConflict` / `ErrInterfaceScopeConflict`：已在 P3 落地（跨作用域冲突检测 + 块作用域校验，见设计 §19.3）
+- [ ] 歧义判定仍偏保守（`src_cidrs` 需完全相同才算同一作用域；重叠但不相同的 CIDR 集合不报错）
 
 ## P2 动作模型与 CLI（§4、§10、§16、§17）✅
 
@@ -75,7 +75,7 @@
 - [x] `actions` 段 + 命名动作引用（注册进 Registry；重名 -> `ErrDuplicateAction`）
 - [x] `logging` 段（`level` / `format`：text/json）+ `log` -> `log/slog` 结构化日志迁移（`internal/infra/logging`）
 - [ ] 每网卡 `secure_on`：需要支持 per-rule secureOn 的包解析（现状是整 policy 一个）
-- [ ] 冲突检测 `ErrRuleConflict` / `ErrInterfaceScopeConflict`：跨作用域（全局 vs 块）冲突的显式报错
+- [x] 冲突检测 `ErrRuleConflict` / `ErrInterfaceScopeConflict`：跨作用域（全局 vs 块）冲突的显式报错
 - [ ] 热重载（可选，等价 SIGHUP）
 - [ ] 附 JSON Schema（编辑器补全）
 
