@@ -94,6 +94,18 @@ func (b *Builder) Registry() *wol.Registry {
 			registry.RegisterAction(def)
 		}
 
+		// Whitelisted remote commands (§21) are ordinary exec actions named
+		// "remote:<id>", so cooldowns, audit logging and manual triggers apply.
+		for _, cmd := range b.cfg.Remote.Commands {
+			params := cmd.Exec
+
+			registry.RegisterAction(wol.ActionDef{
+				Name: cmd.Action(),
+				Type: wol.ActionTypeExec,
+				Exec: &params,
+			})
+		}
+
 		b.registry = registry
 	})
 
@@ -124,6 +136,7 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 			AllowReserved: b.cfg.AllowReservedActions,
 			SecureOn:      b.cfg.SecureOn,
 			Actions:       registry.Actions(),
+			ExtraPorts:    b.cfg.Remote.Ports,
 		})
 		if err != nil {
 			buildErr = err
@@ -137,7 +150,8 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 			policy,
 			ifaces,
 			b.cfg.DryRun,
-		).WithCooldowns(b.cfg.Cooldown, cooldownWindows(b.cfg.ActionCooldowns))
+		).WithCooldowns(b.cfg.Cooldown, cooldownWindows(b.cfg.ActionCooldowns)).
+			WithRemoteCommands(b.cfg.Remote.Commands, b.cfg.Remote.Ports, b.cfg.Remote.HMACKey)
 	})
 
 	return b.listen, buildErr
@@ -196,11 +210,51 @@ func (b *Builder) BuildHTTPServer() (*httpapi.Server, error) {
 
 					return err
 				},
+				RunCommand: func(ctx context.Context, id string, args map[string]string) error {
+					return remoteCommandError(listenSvc.RunRemoteCommand(ctx, id, args), id)
+				},
 			},
 		)
 	})
 
 	return b.httpServer, b.httpErr
+}
+
+// remoteCommandError translates the app/domain remote-command failures into the
+// httpapi sentinels the control plane maps onto status codes.
+func remoteCommandError(err error, id string) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, app.ErrRemoteUnknownCommand):
+		return fmt.Errorf("%w: %s", httpapi.ErrCommandNotFound, id)
+	case errors.Is(err, app.ErrRemoteDisabled), errors.Is(err, wol.ErrRemoteSignature):
+		return fmt.Errorf("%w: %w", httpapi.ErrCommandForbidden, err)
+	case remoteArgError(err):
+		return fmt.Errorf("%w: %w", httpapi.ErrCommandArgs, err)
+	default:
+		return err
+	}
+}
+
+// remoteArgError reports whether err is one of the remote argument validation failures.
+func remoteArgError(err error) bool {
+	targets := []error{
+		wol.ErrRemoteSegmentFormat,
+		wol.ErrRemoteSegmentTooLong,
+		wol.ErrRemoteUnknownArg,
+		wol.ErrRemoteMissingArg,
+		wol.ErrRemoteArgType,
+		wol.ErrRemoteArgValue,
+	}
+
+	for _, target := range targets {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // validateExecActions statically checks every configured exec action at startup.

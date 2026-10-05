@@ -37,11 +37,16 @@ func NewExecutor(allowlist []string) *Executor {
 }
 
 // Validate checks an exec action at startup: a command must be present and resolvable,
-// and must live inside the allowlist when one is configured.
+// with parseable argument templates, and must live inside the allowlist when one is
+// configured.
 func (e *Executor) Validate(def wol.ActionDef) error {
 	params := def.Exec
 	if params == nil || len(params.Command) == 0 {
 		return ErrEmptyCommand
+	}
+
+	if err := parseTemplates(params.Command); err != nil {
+		return err
 	}
 
 	if params.Shell {
@@ -183,6 +188,8 @@ type Vars struct {
 	Interface string
 	MAC       string
 	Time      string
+	// Arg holds the validated arguments of a remote command ({{\.Arg.<name>}}, §21).
+	Arg map[string]string
 }
 
 func interpolate(args []string, action wol.Action, ev wol.Event) ([]string, error) {
@@ -194,6 +201,7 @@ func interpolate(args []string, action wol.Action, ev wol.Event) ([]string, erro
 		Interface: ev.Interface,
 		MAC:       ev.TargetMAC.String(),
 		Time:      time.Now().Format(time.RFC3339),
+		Arg:       ev.Args,
 	}
 
 	out := make([]string, 0, len(args))
@@ -214,6 +222,18 @@ func interpolate(args []string, action wol.Action, ev wol.Event) ([]string, erro
 	}
 
 	return out, nil
+}
+
+// parseTemplates parses the argv templates at startup so that syntax errors fail fast
+// instead of at trigger time.
+func parseTemplates(args []string) error {
+	for _, arg := range args {
+		if _, err := template.New("arg").Option("missingkey=error").Parse(arg); err != nil {
+			return fmt.Errorf("invalid template %q: %w", arg, err)
+		}
+	}
+
+	return nil
 }
 
 func shellCommand(ctx context.Context, line string) *osexec.Cmd {

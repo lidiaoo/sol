@@ -38,6 +38,8 @@ type Event struct {
 	Interface string
 	// TargetMAC is the MAC carried by the magic packet, when known.
 	TargetMAC net.HardwareAddr
+	// Args carries the validated arguments of a remote command invocation (§21).
+	Args map[string]string
 }
 
 // IfaceInfo describes a local interface that rules can match against.
@@ -69,6 +71,9 @@ type PolicyOptions struct {
 	SecureOn      []byte
 	// Actions maps known action names to their definitions; nil means BuiltinActions().
 	Actions map[Action]ActionDef
+	// ExtraPorts are bound but not routed; used by the remote command channel (§21),
+	// whose packets are consumed before rule matching.
+	ExtraPorts []int
 }
 
 type compiledRule struct {
@@ -87,6 +92,7 @@ type RoutingPolicy struct {
 	ifaceByMAC    map[string]string
 	secureOn      []byte
 	reservedPorts map[int]bool
+	extraPorts    []int
 	allowReserved bool
 }
 
@@ -106,6 +112,7 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 		ifaceByMAC:    macIndex(ifaces),
 		secureOn:      opts.SecureOn,
 		reservedPorts: reservedSet(opts.ReservedPorts),
+		extraPorts:    opts.ExtraPorts,
 		allowReserved: opts.AllowReserved,
 	}
 
@@ -160,10 +167,11 @@ func (p *RoutingPolicy) Resolve(ev Event) (Decision, bool) {
 	return Decision{}, false
 }
 
-// Ports returns the distinct listen ports declared by the rules.
+// Ports returns the distinct ports to bind: the ports declared by the rules plus the
+// extra (unrouted) ports, such as those of the remote command channel.
 func (p *RoutingPolicy) Ports() []int {
-	seen := make(map[int]bool, len(p.rules))
-	ports := make([]int, 0, len(p.rules))
+	seen := make(map[int]bool, len(p.rules)+len(p.extraPorts))
+	ports := make([]int, 0, len(p.rules)+len(p.extraPorts))
 
 	for _, rule := range p.rules {
 		for _, port := range rule.ports {
@@ -176,7 +184,26 @@ func (p *RoutingPolicy) Ports() []int {
 		}
 	}
 
+	for _, port := range p.extraPorts {
+		if seen[port] {
+			continue
+		}
+
+		seen[port] = true
+		ports = append(ports, port)
+	}
+
 	return ports
+}
+
+// ParsePacket parses a UDP payload with the policy's secure-on value.
+func (p *RoutingPolicy) ParsePacket(payload []byte) (ParsedPacket, bool) {
+	return ParsePacket(payload, p.secureOn)
+}
+
+// InterfaceForMAC returns the local interface owning mac, when known.
+func (p *RoutingPolicy) InterfaceForMAC(mac net.HardwareAddr) string {
+	return p.ifaceByMAC[mac.String()]
 }
 
 // Rules returns the configured rules.

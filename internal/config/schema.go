@@ -23,12 +23,13 @@ var (
 
 // fileConfig mirrors the on-disk YAML document.
 type fileConfig struct {
-	Version  int            `yaml:"version"`
-	Server   serverConfig   `yaml:"server"`
-	Security securityConfig `yaml:"security"`
-	Logging  loggingConfig  `yaml:"logging"`
-	Actions  []actionConfig `yaml:"actions"`
-	Rules    []ruleConfig   `yaml:"rules"`
+	Version  int             `yaml:"version"`
+	Server   serverConfig    `yaml:"server"`
+	Security securityConfig  `yaml:"security"`
+	Logging  loggingConfig   `yaml:"logging"`
+	Actions  []actionConfig  `yaml:"actions"`
+	Commands []commandConfig `yaml:"commands"`
+	Rules    []ruleConfig    `yaml:"rules"`
 }
 
 type loggingConfig struct {
@@ -108,6 +109,36 @@ type securityConfig struct {
 	ExecAllowlist            []string          `yaml:"exec_allowlist"`
 	Cooldown                 string            `yaml:"cooldown"`
 	Cooldowns                map[string]string `yaml:"cooldowns"`
+	AllowRemoteCommands      bool              `yaml:"allow_remote_commands"`
+	RemoteCommandAuth        remoteAuthConfig  `yaml:"remote_command_auth"`
+	RemoteCommandPorts       []int             `yaml:"remote_command_ports"`
+}
+
+// remoteAuthConfig is security.remote_command_auth: the shared key authenticating UDP
+// remote command segments (§21.3). The key never lives in YAML.
+type remoteAuthConfig struct {
+	Type    string `yaml:"type"`
+	KeyEnv  string `yaml:"key_env"`
+	KeyFile string `yaml:"key_file"`
+}
+
+// commandConfig is one whitelisted remote command of the commands[] section (§21.3).
+type commandConfig struct {
+	ID      string               `yaml:"id"`
+	Type    string               `yaml:"type"`
+	Command []string             `yaml:"command"`
+	Args    map[string]argConfig `yaml:"args"`
+	Timeout string               `yaml:"timeout"`
+	Workdir string               `yaml:"workdir"`
+	Env     []string             `yaml:"env"`
+}
+
+// argConfig constrains one remote command argument.
+type argConfig struct {
+	Type     string   `yaml:"type"`
+	Enum     []string `yaml:"enum"`
+	Pattern  string   `yaml:"pattern"`
+	Required *bool    `yaml:"required"`
 }
 
 type actionConfig struct {

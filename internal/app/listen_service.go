@@ -81,6 +81,7 @@ type ListenService struct {
 	lastSeen *EventRecord
 
 	cooldowns *cooldowns
+	remote    *remoteRunner
 }
 
 func NewListenService(
@@ -107,6 +108,25 @@ func (s *ListenService) WithCooldowns(global time.Duration, perAction map[string
 	s.cooldowns = newCooldowns(global, perAction)
 
 	return s
+}
+
+// WithRemoteCommands enables the whitelisted remote command channel (§21). Without
+// ports the channel stays disabled.
+func (s *ListenService) WithRemoteCommands(commands map[string]wol.RemoteCommand, ports []int, key []byte) *ListenService {
+	s.remote = newRemoteRunner(commands, ports, key)
+
+	return s
+}
+
+// RunRemoteCommand invokes a whitelisted remote command (authenticated HTTP transport).
+// It reuses the manual-trigger path, so dry-run, cooldowns and audit logging apply.
+func (s *ListenService) RunRemoteCommand(ctx context.Context, id string, args map[string]string) error {
+	cmd, err := s.remote.manual(id, args)
+	if err != nil {
+		return err
+	}
+
+	return s.Dispatch(ctx, cmd.Action(), wol.Event{Args: args})
 }
 
 // Stats returns a snapshot of the counters for the control plane.
@@ -322,6 +342,10 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 		ev.SrcPort = pkt.src.Port
 	}
 
+	if s.remote.accepts(pkt.port) && s.handleRemote(ctx, pkt, ev) {
+		return
+	}
+
 	decision, matched := s.policy.Resolve(ev)
 	if !matched {
 		slog.Info("non-matching packet",
@@ -400,6 +424,41 @@ func ternary(cond bool, a string, b string) string {
 	}
 
 	return b
+}
+
+// handleRemote consumes a remote command packet (§21) and reports whether the packet
+// was handled. A magic packet carrying a command segment is never routed to the rules,
+// so a malformed or unknown command cannot accidentally trigger a destructive action.
+func (s *ListenService) handleRemote(ctx context.Context, pkt packet, ev wol.Event) bool {
+	parsed, ok := s.policy.ParsePacket(pkt.payload)
+	if !ok || len(parsed.Content) == 0 {
+		return false
+	}
+
+	prefix := pkt.payload[:len(pkt.payload)-len(parsed.Content)]
+
+	cmd, args, err := s.remote.resolve(prefix, parsed.Content)
+	if err != nil {
+		slog.Warn("remote command rejected",
+			"src", addrString(pkt.src),
+			"port", pkt.port,
+			"error", err,
+		)
+
+		return true
+	}
+
+	ev.Args = args
+	ev.Interface = s.policy.InterfaceForMAC(parsed.MAC)
+
+	s.matched.Add(1)
+	s.runDecision(ctx, pkt, ev, wol.Decision{
+		Action:    cmd.Action(),
+		Interface: ev.Interface,
+		TargetMAC: parsed.MAC,
+	})
+
+	return true
 }
 
 // allowAction applies the cooldown guard, counting and logging a suppressed run.

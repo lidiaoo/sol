@@ -91,7 +91,10 @@
 - [ ] `/v1/reload` 热重载（当前显式 501）
 - [ ] mTLS 端到端冒烟（配置已支持 + 启动加载证书）
 - [ ] HTTP 出站动作（webhook、`url_allowlist`、超时 / 重试）
-- [ ] 远端命令通道（`commands[].id` 白名单 + args 校验 + HMAC）
+- [x] 远端命令通道（`commands[].id` 白名单 + HMAC + 参数校验 + UDP/HTTP 双传输；`remote:<id>` 注册为普通动作，复用 cooldown / dry-run / 审计）——见设计 §19.7
+- [ ] 远端命令的 `user`/`group` 降权
+- [ ] 远端 `type: http` 出站动作与 `sequence`
+- [ ] 覆盖整包的包级 HMAC（当前只认证命令段）
 - [ ] 远端原始命令（`allow_raw_shell` 默认关 + `/bin/sh -c` + 认证 / 端口 / allowlist + 启动告警）
 - [ ] `wol.send`（预留，唤醒别的机器）
 - [x] 按动作 cooldown（`security.cooldown` + `security.cooldowns.<动作名>`；包触发与手动触发共用，抑制计入 `sol_suppressed_total`，手动触发返回 429）——见设计 §19.6

@@ -26,12 +26,14 @@ func (m *factoryMock) Create(_ int) (PacketListener, error) {
 type executorMock struct {
 	calls  int
 	action wol.Action
+	event  wol.Event
 	err    error
 }
 
-func (m *executorMock) Execute(_ context.Context, def wol.ActionDef, _ wol.Event) error {
+func (m *executorMock) Execute(_ context.Context, def wol.ActionDef, ev wol.Event) error {
 	m.calls++
 	m.action = def.Name
+	m.event = ev
 
 	return m.err
 }
@@ -107,6 +109,7 @@ func testRegistry(executor wol.Executor) *wol.Registry {
 		wol.ActionTypeSleep,
 		wol.ActionTypeShutdown,
 		wol.ActionTypeReboot,
+		wol.ActionTypeExec,
 	)
 
 	return registry

@@ -122,7 +122,9 @@ func buildConfig(command *cobra.Command) (*config.Config, error) {
 		cfg.Rules = rules
 	}
 
-	if len(cfg.Rules) == 0 {
+	// Remote command ports are bound without rules, so a config with only the §21
+	// channel is valid.
+	if len(cfg.Rules) == 0 && len(cfg.Remote.Ports) == 0 {
 		return nil, errNoRules
 	}
 

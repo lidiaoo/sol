@@ -53,10 +53,25 @@ type Config struct {
 	Actions map[wol.Action]wol.ActionDef
 	// Logging holds the raw logging settings; empty values mean the defaults.
 	Logging Logging
+	// Remote holds the resolved remote command channel (§21).
+	Remote RemoteCommands
 	// HTTP holds the resolved control-plane settings.
 	HTTP HTTP
 	// Rules are the routing rules, already expanded from any interface blocks.
 	Rules []wol.Rule
+}
+
+// RemoteCommands is the resolved remote command channel (§21).
+type RemoteCommands struct {
+	// Enabled reports whether remote senders may invoke the whitelisted commands.
+	Enabled bool
+	// Ports are the UDP ports whose packets may carry a remote command segment.
+	Ports []int
+	// HMACKey authenticates UDP command segments; empty means the UDP transport is
+	// not configured (only the authenticated HTTP transport may then be used).
+	HMACKey []byte
+	// Commands maps a command id to its whitelisted definition.
+	Commands map[string]wol.RemoteCommand
 }
 
 // Logging holds the configured log level and format. Empty values mean the built-in

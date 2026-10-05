@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -63,7 +64,19 @@ type Deps struct {
 	Interfaces func() []wol.IfaceInfo
 	// Dispatch triggers a named action; it must return wol.ErrUnknownActionRef for unknown names.
 	Dispatch func(ctx context.Context, action wol.Action) error
+	// RunCommand invokes a whitelisted remote command (§21); it must report
+	// ErrCommandNotFound, ErrCommandArgs or ErrCommandForbidden for the usual failures.
+	RunCommand func(ctx context.Context, id string, args map[string]string) error
 }
+
+var (
+	// ErrCommandNotFound reports a command id that is not whitelisted.
+	ErrCommandNotFound = errors.New("unknown remote command")
+	// ErrCommandArgs reports rejected remote command arguments.
+	ErrCommandArgs = errors.New("invalid remote command arguments")
+	// ErrCommandForbidden reports a remote command refused by policy (disabled, bad signature).
+	ErrCommandForbidden = errors.New("remote command forbidden")
+)
 
 // Authenticator validates an incoming request.
 type Authenticator interface {
@@ -150,6 +163,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /v1/rules", s.guard(s.handleRules))
 	s.mux.Handle("GET /v1/interfaces", s.guard(s.handleInterfaces))
 	s.mux.Handle("POST /v1/actions/{name}", s.guard(s.handleAction))
+	s.mux.Handle("POST /v1/commands/{id}", s.guard(s.handleCommand))
 	s.mux.Handle("POST /v1/reload", s.guard(s.handleReload))
 	s.mux.Handle("GET /metrics", s.guard(s.handleMetrics))
 }
@@ -238,6 +252,75 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	//nolint:gosec // slog escapes control characters; remote is a socket address
 	slog.Info("http action triggered", "remote", r.RemoteAddr, "action", string(name))
 	writeJSON(w, http.StatusAccepted, map[string]string{"action": string(name), "status": "triggered"})
+}
+
+// maxCommandBody caps the JSON body of a remote command invocation.
+const maxCommandBody = 4 << 10
+
+func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	if s.deps.RunCommand == nil {
+		writeError(w, http.StatusServiceUnavailable, "remote commands are unavailable")
+
+		return
+	}
+
+	args, err := decodeArgs(w, r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
+	defer cancel()
+
+	if err := s.deps.RunCommand(ctx, id, args); err != nil {
+		//nolint:gosec // slog escapes control characters; neither value is a credential
+		slog.Warn("http remote command failed", "remote", r.RemoteAddr, "command", id, "error", err)
+
+		writeError(w, commandStatus(err), err.Error())
+
+		return
+	}
+
+	//nolint:gosec // slog escapes control characters; remote is a socket address
+	slog.Info("http remote command triggered", "remote", r.RemoteAddr, "command", id)
+	writeJSON(w, http.StatusAccepted, map[string]string{"command": id, "status": "triggered"})
+}
+
+// decodeArgs parses the JSON string map carrying a remote command's arguments.
+func decodeArgs(w http.ResponseWriter, r *http.Request) (map[string]string, error) {
+	args := make(map[string]string)
+
+	body := http.MaxBytesReader(w, r.Body, maxCommandBody)
+
+	if err := json.NewDecoder(body).Decode(&args); err != nil {
+		if errors.Is(err, io.EOF) {
+			return args, nil
+		}
+
+		return nil, fmt.Errorf("invalid argument object: %w", err)
+	}
+
+	return args, nil
+}
+
+// commandStatus maps a remote command failure onto an HTTP status.
+func commandStatus(err error) int {
+	switch {
+	case errors.Is(err, ErrCommandNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, ErrCommandArgs):
+		return http.StatusBadRequest
+	case errors.Is(err, ErrCommandForbidden):
+		return http.StatusForbidden
+	case errors.Is(err, ErrSuppressed):
+		return http.StatusTooManyRequests
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {

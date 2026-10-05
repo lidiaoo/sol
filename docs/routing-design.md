@@ -738,7 +738,8 @@ actions[].command / timeout / workdir / env / shell   exec 用：argv 数组（�
 security.exec_allowlist     可选，限 exec 的绝对路径命令只能落在这些目录下（§19.4）
 security.cooldown           可选，同一动作两次执行的最小间隔（如 5s；空 = 关闭，§19.6）
 security.cooldowns.<动作名>  可选，按动作覆盖全局 cooldown
-commands[].id / type / command / args        远端白名单命令（§21）
+commands[].id / type / command / args{type,enum,pattern,required} / timeout / workdir / env   远端白名单命令（§21 / §19.7），type 暂只支持 exec
+security.allow_remote_commands / remote_command_auth{type,key_env,key_file} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）
 server.http.{enabled,listen,auth,tls}        控制面（§18 / §19.5）：auth.type = bearer|basic|mtls（默认 bearer，无 none）
 server.http.auth.token_env / token_file      bearer 密钥来源（二选一；文件必须 600 权限）
 server.http.auth.user + password_env / password_file   basic 认证
@@ -1339,6 +1340,24 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 启动日志打印默认窗口与每个按动作窗口。
 - 冒烟（真机，`security.cooldown: 60s`，端口 10041 -> noop，连发 3 个魔法包）：`matched=3, suppressed=2, actions.noop=1`；`/metrics` 出现 `sol_suppressed_total 2`；窗口内 `POST /v1/actions/noop` 得 429 + `action suppressed by cooldown: noop`；日志 3 条抑制告警带 `remaining`。
 - 未做：全局速率限制（令牌桶 / 每秒上限）只有按动作 cooldown；执行中再次触发的合并（singleflight）语义未定义。
+
+---
+
+### 19.7 P4 部分落地（远端命令通道 §21）
+
+代码位置：`internal/domain/wol/remote.go`（线格式、HMAC、参数校验）、`internal/config/load.go`（`buildRemoteCommands`）、`internal/app/remote.go` + `listen_service.go`（`WithRemoteCommands`/`handleRemote`/`RunRemoteCommand`）、`internal/infra/httpapi`（`POST /v1/commands/{id}`）、`internal/deps/builder.go`（注册 `remote:<id>` 动作 + `ExtraPorts`）。
+
+- 传输：UDP（线格式 `[magic 102B][secureon 6B?]<id>[:k=v,...][HMAC 8B]`）+ HTTP `POST /v1/commands/{id}`（JSON 参数对象，复用 §18 认证）。
+- HMAC：`HMAC-SHA256(key, prefix||segment)` 截断 8 字节、附在命令段之后（prefix = magic + 可选 secureOn 的原始字节）；校验失败丢弃并记 WARN。
+- 默认关闭：`security.allow_remote_commands: false`。开启时必须 `remote_command_auth.type: hmac` + `key_env`/`key_file`（文件 600 权限，密钥不入 YAML）+ 至少一个非保留端口，否则启动报错（`ErrRemoteAuth` / `ErrRemotePorts` / `ErrRemotePort`）；未开启却写了 `remote_command_ports` 同样报错。
+- 白名单：`commands[].id`（1..32 个 `[A-Za-z0-9_.-]`，重复 -> `ErrRemoteCommandID`）。本期只支持 `type: exec`（其它 -> `ErrRemoteCommandType`）；命令体复用 exec 的参数解析与启动期静态校验（timeout/workdir/env/allowlist）。
+- 参数校验：`commands[].args.<name>` 支持 `type: string|int|bool`（缺省 string）、`enum`、`pattern`（正则）、`required`（默认 true）。多传/漏传/类型或取值不符一律拒绝（`ErrRemoteUnknownArg` / `ErrRemoteMissingArg` / `ErrRemoteArgType` / `ErrRemoteArgValue`）；spec 自身非法（未知类型、enum 值与类型不符、非法参数名）启动即报 `ErrRemoteArgSpec`。
+- 插值：argv 里写 `{{.Arg.<name>}}`，复用 exec 的 `missingkey=error` 模板（启动期先 parse 一遍，语法错 fail fast）。参数只做白名单插值，绝不拼成 shell 字符串。
+- 动作映射：每个命令注册为普通动作 `remote:<id>`，于是 cooldown（`security.cooldowns` 里可写 `remote:lock`）、dry-run、审计日志、`POST /v1/actions/remote:<id>` 手动触发全部复用。
+- 端口：`security.remote_command_ports` 会被绑定但**不参与规则匹配**（`PolicyOptions.ExtraPorts`）；端口上没有规则也能启动（`no rules configured` 只在既无规则又无远端端口时报）。该端口收到"空内容"的普通魔法包仍走规则（无规则即 non-matching）。
+- 失败语义：远端端口上"带命令段"的包一律被消费（不落入规则匹配），避免畸形命令包意外触发破坏性规则。
+- 冒烟（真机，`remote_command_ports: [10014]`，命令 `touch`/`lock`）：签名 `touch:name=alpha` 执行成功（`/usr/bin/touch /tmp/sol-remote-alpha.marker`，exit 0）；错 key / enum 越界 / 空段被拒并记 WARN；普通魔法包判 non-matching；HTTP `{"name":"beta"}` -> 202 且 marker 生成、`{"name":"gamma"}` -> 400（信息含 enum 列表）、未知 id -> 404、无 token -> 401；`/v1/status` 显示 `actions.remote:touch=2`、`rules: 0`。
+- 未做：`type: http`（HTTP 出站动作）、`sequence`、命令级 `user`/`group` 降权、覆盖整包的包级 HMAC（当前只认证命令段）、全局速率限制（令牌桶）、`allow_raw_shell` 原始命令。
 
 ---
 

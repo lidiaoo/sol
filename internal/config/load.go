@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,10 +35,18 @@ var (
 	ErrHTTPUser             = errors.New("server.http.auth.user is required for basic auth")
 	ErrHTTPTLS              = errors.New("invalid server.http.tls configuration")
 	ErrCooldown             = errors.New("invalid security.cooldown")
+	ErrRemoteCommandID      = errors.New("invalid remote command id")
+	ErrRemoteCommandType    = errors.New("unsupported remote command type")
+	ErrRemoteCommandDef     = errors.New("invalid remote command definition")
+	ErrRemoteArgSpec        = errors.New("invalid remote command argument spec")
+	ErrRemoteAuth           = errors.New("remote command authorization is required")
+	ErrRemotePorts          = errors.New("invalid security.remote_command_ports")
+	ErrRemotePort           = errors.New("remote command port must not be a reserved port")
 )
 
 const (
 	authTypeBearer    = AuthTypeBearer
+	authTypeHMAC      = "hmac"
 	authTypeBasic     = AuthTypeBasic
 	authTypeMTLS      = AuthTypeMTLS
 	defaultHTTPListen = "127.0.0.1:8080"
@@ -219,12 +228,8 @@ func splitList(value string) []string {
 }
 
 func (f *fileConfig) toConfig() (*Config, error) {
-	if f.Version != 0 && f.Version != supportedVersion {
-		return nil, fmt.Errorf("%w: %d", ErrUnsupportedVersion, f.Version)
-	}
-
-	if len(f.Rules) > 0 && len(f.Server.Rules) > 0 {
-		return nil, ErrRulesConflict
+	if err := f.validate(); err != nil {
+		return nil, err
 	}
 
 	actions, err := buildActions(f.Actions)
@@ -252,6 +257,11 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		return nil, err
 	}
 
+	remote, err := buildRemoteCommands(f.Security, f.Commands)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		InterfaceNames:       names,
 		DryRun:               f.Security.DryRun,
@@ -261,11 +271,25 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		ExecAllowlist:        f.Security.ExecAllowlist,
 		Cooldown:             cooldown,
 		ActionCooldowns:      actionCooldowns,
+		Remote:               remote,
 		Actions:              actions,
 		Logging:              Logging{Level: f.Logging.Level, Format: f.Logging.Format},
 		HTTP:                 httpCfg,
 		Rules:                rules,
 	}, nil
+}
+
+// validate rejects structurally inconsistent documents before anything is built.
+func (f *fileConfig) validate() error {
+	if f.Version != 0 && f.Version != supportedVersion {
+		return fmt.Errorf("%w: %d", ErrUnsupportedVersion, f.Version)
+	}
+
+	if len(f.Rules) > 0 && len(f.Server.Rules) > 0 {
+		return ErrRulesConflict
+	}
+
+	return nil
 }
 
 func globalRules(f *fileConfig) []ruleConfig {
@@ -371,6 +395,176 @@ func parseTimeout(value string) (time.Duration, error) {
 	}
 
 	return timeout, nil
+}
+
+// buildRemoteCommands resolves the §21 remote command channel: the whitelisted
+// commands, the UDP ports allowed to carry command segments and the shared HMAC key.
+func buildRemoteCommands(cfg securityConfig, entries []commandConfig) (RemoteCommands, error) {
+	remote := RemoteCommands{Enabled: cfg.AllowRemoteCommands, Commands: map[string]wol.RemoteCommand{}}
+
+	for _, entry := range entries {
+		cmd, err := buildRemoteCommand(entry)
+		if err != nil {
+			return RemoteCommands{}, err
+		}
+
+		if _, dup := remote.Commands[cmd.ID]; dup {
+			return RemoteCommands{}, fmt.Errorf("%w: duplicate id %q", ErrRemoteCommandID, cmd.ID)
+		}
+
+		remote.Commands[cmd.ID] = cmd
+	}
+
+	if !cfg.AllowRemoteCommands {
+		if len(cfg.RemoteCommandPorts) > 0 {
+			return RemoteCommands{}, fmt.Errorf("%w: security.allow_remote_commands is false", ErrRemotePorts)
+		}
+
+		return remote, nil
+	}
+
+	if cfg.RemoteCommandAuth.Type != authTypeHMAC {
+		return RemoteCommands{}, fmt.Errorf("%w: remote_command_auth.type must be %q", ErrRemoteAuth, authTypeHMAC)
+	}
+
+	key, err := resolveSecret(cfg.RemoteCommandAuth.KeyEnv, cfg.RemoteCommandAuth.KeyFile, "remote_command_auth.key")
+	if err != nil {
+		return RemoteCommands{}, fmt.Errorf("%w: %w", ErrRemoteAuth, err)
+	}
+
+	if len(remote.Commands) == 0 {
+		return RemoteCommands{}, fmt.Errorf("%w: commands[] is empty", ErrRemoteCommandDef)
+	}
+
+	ports, err := remoteCommandPorts(cfg.RemoteCommandPorts, cfg.ReservedPorts)
+	if err != nil {
+		return RemoteCommands{}, err
+	}
+
+	remote.HMACKey = []byte(key)
+	remote.Ports = ports
+
+	return remote, nil
+}
+
+// buildRemoteCommand turns one commands[] entry into its whitelisted definition,
+// reusing the exec parameter parsing (timeout, workdir, env, allowlist validation).
+func buildRemoteCommand(entry commandConfig) (wol.RemoteCommand, error) {
+	if !wol.ValidRemoteName(entry.ID) {
+		return wol.RemoteCommand{}, fmt.Errorf("%w: %q", ErrRemoteCommandID, entry.ID)
+	}
+
+	if entry.Type != "" && entry.Type != string(wol.ActionTypeExec) {
+		return wol.RemoteCommand{}, fmt.Errorf("%w: %s", ErrRemoteCommandType, entry.Type)
+	}
+
+	if err := buildArgSpecsCheck(entry.ID, entry.Args); err != nil {
+		return wol.RemoteCommand{}, err
+	}
+
+	def, err := buildActionDef(actionConfig{
+		Name:    string(wol.RemoteAction(entry.ID)),
+		Type:    string(wol.ActionTypeExec),
+		Command: entry.Command,
+		Timeout: entry.Timeout,
+		Workdir: entry.Workdir,
+		Env:     entry.Env,
+	}, wol.ActionTypeExec)
+	if err != nil {
+		return wol.RemoteCommand{}, fmt.Errorf("commands[%s]: %w", entry.ID, err)
+	}
+
+	args, err := buildArgSpecs(entry.Args)
+	if err != nil {
+		return wol.RemoteCommand{}, err
+	}
+
+	return wol.RemoteCommand{ID: entry.ID, Exec: *def.Exec, Args: args}, nil
+}
+
+// buildArgSpecs compiles the declared argument specs of a remote command.
+func buildArgSpecs(entries map[string]argConfig) (map[string]wol.ArgSpec, error) {
+	specs := make(map[string]wol.ArgSpec, len(entries))
+
+	for name, cfg := range entries {
+		spec := wol.ArgSpec{Type: cfg.Type, Enum: cfg.Enum, Required: true}
+
+		if cfg.Required != nil {
+			spec.Required = *cfg.Required
+		}
+
+		if cfg.Pattern != "" {
+			pattern, err := regexp.Compile(cfg.Pattern)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %s: %w", ErrRemoteArgSpec, name, err)
+			}
+
+			spec.Pattern = pattern
+		}
+
+		if err := validateArgSpec(name, spec); err != nil {
+			return nil, err
+		}
+
+		specs[name] = spec
+	}
+
+	return specs, nil
+}
+
+// buildArgSpecsCheck validates the argument names before the command is built.
+func buildArgSpecsCheck(id string, entries map[string]argConfig) error {
+	for name := range entries {
+		if !wol.ValidRemoteName(name) {
+			return fmt.Errorf("%w: commands[%s]: argument %q", ErrRemoteArgSpec, id, name)
+		}
+	}
+
+	return nil
+}
+
+func validateArgSpec(name string, spec wol.ArgSpec) error {
+	switch spec.Type {
+	case "", wol.ArgTypeString, wol.ArgTypeInt, wol.ArgTypeBool:
+	default:
+		return fmt.Errorf("%w: %s: unknown type %q", ErrRemoteArgSpec, name, spec.Type)
+	}
+
+	for _, enumValue := range spec.Enum {
+		if err := spec.Validate(enumValue); err != nil {
+			return fmt.Errorf("%w: %s: enum %q: %w", ErrRemoteArgSpec, name, enumValue, err)
+		}
+	}
+
+	return nil
+}
+
+// remoteCommandPorts validates the UDP ports allowed to carry command segments.
+func remoteCommandPorts(ports []int, reserved []int) ([]int, error) {
+	if len(ports) == 0 {
+		return nil, fmt.Errorf("%w: at least one port is required", ErrRemotePorts)
+	}
+
+	if len(reserved) == 0 {
+		reserved = wol.DefaultReservedPorts()
+	}
+
+	out := make([]int, 0, len(ports))
+
+	for _, port := range ports {
+		switch {
+		case port <= 0 || port > 65535:
+			return nil, fmt.Errorf("%w: %d", ErrRemotePorts, port)
+		case slices.Contains(reserved, port):
+			return nil, fmt.Errorf("%w: %d", ErrRemotePort, port)
+		case slices.Contains(out, port):
+			return nil, fmt.Errorf("%w: duplicate %d", ErrRemotePorts, port)
+		}
+
+		out = append(out, port)
+	}
+
+	return out, nil
 }
 
 // buildAllRules expands the global rules and every interface block into one ordered list.
