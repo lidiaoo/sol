@@ -1334,6 +1334,9 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 
 ---
 
+- mTLS 冒烟（真机，`auth.type: mtls` + 自签 CA，`127.0.0.1:18083`）：带 CA 签发的客户端证书 -> `/healthz` 200、`/v1/status` 200（回显 `auth_type: mtls`）、`/metrics` 200；**不带**客户端证书 -> TLS 握手被拒（curl exit 55）；用另一个 CA 签发的客户端证书 -> 握手被拒（exit 55）；客户端不信任服务端证书 -> exit 60；对 TLS 端口发明文 HTTP -> Go 的 TLS 服务端直接回 400。
+- 注意：`auth.type: mtls` 的校验发生在 **TLS 层**，所以连 `/healthz` 也需要客户端证书（bearer / basic 下它是免认证的）。需要"免认证探活"就选 bearer/basic，或在 TCP 层做探活。
+
 ### 19.6 P4 部分落地（cooldown 护栏）
 
 - 配置：`security.cooldown`（全局最小执行间隔，Go duration，默认空 = 关闭）+ `security.cooldowns.<动作名>`（按动作覆盖）。解析失败或负值 -> `ErrCooldown`；键不是已知动作名 -> `wol.ErrUnknownActionRef`；按动作窗口必须为正。

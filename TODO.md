@@ -89,7 +89,7 @@
 - [ ] `exec` 的 `user`/`group` 降权（配置里写了会在启动期报错 `ErrExecUserUnsupported`）
 - [x] HTTP 控制面（bearer/basic/mTLS、默认 127.0.0.1、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`/v1/actions/{name}`、`/metrics`、`/healthz`、审计）——实现对照见设计 §19.5
 - [ ] `/v1/reload` 热重载（当前显式 501）
-- [ ] mTLS 端到端冒烟（配置已支持 + 启动加载证书）
+- [x] mTLS 端到端冒烟（配置已支持 + 启动加载证书；带证书 200、无证书/异 CA 证书握手被拒、明文 HTTP 400；注意 mTLS 下 `/healthz` 也需客户端证书）——见设计 §19.5
 - [x] HTTP 出站动作（webhook、`url_allowlist`、超时 / 重试、不跟随重定向、headers 不落日志）——见设计 §19.8
 - [ ] `sequence`（一个动作串多个动作）
 - [ ] 出站 allowlist 的精确 / 正则匹配（当前前缀匹配）
