@@ -34,6 +34,10 @@ var ErrSuppressed = errors.New("action suppressed by cooldown")
 // ErrRateLimited reports that an action was dropped by the global rate limit.
 var ErrRateLimited = errors.New("action suppressed by rate limit")
 
+// ErrInFlight reports that the same action was already running: the duplicate was refused
+// instead of being run a second time (§19.12.1).
+var ErrInFlight = errors.New("action suppressed: the same action is already running")
+
 // ErrRestartRequired reports a reload that cannot be applied to the running process
 // (for example a changed listening port set) and needs a restart instead.
 var ErrRestartRequired = errors.New("restart required")
@@ -63,6 +67,7 @@ type Status struct {
 	Matched     uint64  `json:"matched"`
 	Suppressed  uint64  `json:"suppressed"`
 	RateLimited uint64  `json:"rate_limited"`
+	Inflight    uint64  `json:"inflight"`
 	// Replayed counts the authenticated packets refused as stale or as a replay (§19.16);
 	// ReplayReasons breaks that down and stays absent while the count is zero.
 	Replayed      uint64            `json:"replayed"`
@@ -276,7 +281,7 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		case errors.Is(err, ErrSuppressed):
 			status = http.StatusTooManyRequests
-		case errors.Is(err, ErrRateLimited):
+		case errors.Is(err, ErrRateLimited), errors.Is(err, ErrInFlight):
 			status = http.StatusTooManyRequests
 		}
 
@@ -395,7 +400,7 @@ func shellStatus(err error) int {
 	switch {
 	case errors.Is(err, ErrShellDisabled), errors.Is(err, ErrShellForbidden):
 		return http.StatusForbidden
-	case errors.Is(err, ErrSuppressed), errors.Is(err, ErrRateLimited):
+	case errors.Is(err, ErrSuppressed), errors.Is(err, ErrRateLimited), errors.Is(err, ErrInFlight):
 		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
@@ -428,9 +433,7 @@ func commandStatus(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, ErrCommandForbidden):
 		return http.StatusForbidden
-	case errors.Is(err, ErrSuppressed):
-		return http.StatusTooManyRequests
-	case errors.Is(err, ErrRateLimited):
+	case errors.Is(err, ErrSuppressed), errors.Is(err, ErrRateLimited), errors.Is(err, ErrInFlight):
 		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
@@ -476,6 +479,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "# TYPE sol_packets_total counter\nsol_packets_total %d\n", st.Packets)
 	fmt.Fprintf(w, "# TYPE sol_matched_total counter\nsol_matched_total %d\n", st.Matched)
 	fmt.Fprintf(w, "# TYPE sol_suppressed_total counter\nsol_suppressed_total %d\n", st.Suppressed)
+	fmt.Fprintf(w, "# TYPE sol_inflight_total counter\nsol_inflight_total %d\n", st.Inflight)
 	fmt.Fprintf(w, "# TYPE sol_rate_limited_total counter\nsol_rate_limited_total %d\n", st.RateLimited)
 	fmt.Fprintf(w, "# TYPE sol_replayed_total counter\nsol_replayed_total %d\n", st.Replayed)
 

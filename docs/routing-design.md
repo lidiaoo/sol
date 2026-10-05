@@ -746,6 +746,7 @@ security.cooldown           可选，同一动作两次执行的最小间隔（�
 security.cooldowns.<动作名>  可选，按动作覆盖全局 cooldown
 security.rate_limit         可选，全局令牌桶：跨所有动作与触发源的执行速率上限（10/s、600/m、3600/h，裸数字 = 每秒；空或 0 = 关闭，§19.12）
 security.rate_burst         可选，桶容量（吸收瞬时突发；0 = 一秒的 rate_limit；只写 burst 不写 rate 启动即报错）
+（护栏）执行中的重入        无配置项：同一个"要跑的活"正在执行时再次触发一律被抑制（429 / 只记日志），身份 = 动作名 + 参数（裸 shell 是命令行），见 §19.12.1
 commands[].id / type / command / args{type,enum,pattern,required} / timeout / workdir / env / user / group   远端白名单命令（§21 / §19.7），type 暂只支持 exec；user/group 复用 exec 的降权
 security.allow_remote_commands / remote_command_auth{type,key_env,key_file,window} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）。配了 window（如 60s）后命令段变成 [stamp 8B][tag 8B]，同一个 tag 只接受一次（§21.3 / §19.17）
 security.packet_auth{type,key_env,key_file,window}   整包认证（默认关闭，§19.14）+ 重放防护窗口（§19.16）：配上 window（如 60s）后包尾变成 [stamp 8B][tag 8B]，stamp 也在 tag 覆盖内；接收方只收窗口内的 stamp，且同一个 tag 只接受一次（缓存 4096 条，满了拒绝而非淘汰）；两端要么都配 window、要么都不配，混用不支持
@@ -1396,7 +1397,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 覆盖面：包触发与 HTTP 手动触发（`POST /v1/actions/{name}`）共用同一护栏；手动触发被抑制返回 429（`httpapi.ErrSuppressed`，deps 从 `app.ErrActionSuppressed` 转译），包触发只记日志。
 - 启动日志打印默认窗口与每个按动作窗口。
 - 冒烟（真机，`security.cooldown: 60s`，端口 10041 -> noop，连发 3 个魔法包）：`matched=3, suppressed=2, actions.noop=1`；`/metrics` 出现 `sol_suppressed_total 2`；窗口内 `POST /v1/actions/noop` 得 429 + `action suppressed by cooldown: noop`；日志 3 条抑制告警带 `remaining`。
-- 未做：全局速率限制（令牌桶 / 每秒上限）只有按动作 cooldown；执行中再次触发的合并（singleflight）语义未定义。
+- 未做：全局速率限制（令牌桶）见 §19.12；执行中再次触发的语义见 §19.12.1（已定义：抑制，不合并等待）。
 
 ---
 
@@ -1494,6 +1495,21 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - 持续速率：再连发 40 个包（桶里只剩回补的 1 个令牌）-> **只执行 1 个**、39 个被抑制；总数自洽（48 个包 + 2 次手动 = 7 次执行、43 次抑制）。
   - `rate_limit: fast` -> `invalid security.rate_limit: "fast": want a positive number, e.g. 10/s, 600/m or 3600/h`；只写 `rate_burst: 5` -> `invalid security.rate_limit: security.rate_burst is set without a security.rate_limit`（均 exit 1）。
 - 单测：`internal/app/ratelimit_internal_test.go`（注入时钟：突发、按 rate 回补、补满不超容量、`0.5/s` 的下限、`matches` 语义、8×50 并发下"冻结时钟只发出桶内令牌数"）+ `internal/config/ratelimit_internal_test.go`（8 种合法写法 + 7 种拒绝写法）。app 覆盖率 93.4%。
+
+### 19.12.1 执行中的重入（in-flight 去重）
+
+§19.6 留下的是"执行中再次触发的合并语义未定义"：cooldown 管的是**一次执行之后**的重复（固定窗口），而一个跑得久的动作（关机、`timeout: 5m` 的 exec）在窗口内仍可被再次触发，于是出现两个并发实例。
+
+- **语义：抑制，不是合并等待。** 同一个"要跑的活"正在执行时，再次触发立刻被拒（`app.ErrActionInFlight`），而不是等第一次跑完再把结果共享给它。理由：动作可能跑几分钟，把控制面请求挂在上面等于让 HTTP 请求跟着动作一起超时；而"已经有人在跑"本身就是调用方要知道的答案。
+- **身份 = 动作名 + 这次实际要跑什么**（`runKey`）：远端命令带上已校验的参数（`remote:backup target=home` 不会抑制 `target=work`，同参数的重放会），裸 shell 带上命令行（`echo hi` 抑制 `echo hi`，不抑制 `echo bye`），普通动作就是动作名。触发源的信封（源 IP、包内容）**不进**身份：同一个包从另一个地址重发、或同内容的包，都是重复。
+- **无条件开启，没有配置项**：它不会造成"本该跑两次"的新语义（该跑两次的是*不同*的活），漏掉它的代价却是并发实例。与 cooldown / 令牌桶同属 §4.3 护栏；它不在 routing 快照里（只按 run key 在内存标记），所以 reload 清不掉它。
+- **计数与可见性**：计入 `suppressed`（与 cooldown/限流同一口径的"被拒"总数）+ 独立的 `inflight`；`/v1/status` 回 `inflight`，`/metrics` 有 `sol_inflight_total`，日志 `action suppressed: already running`。
+- **HTTP 状态码**：`POST /v1/actions/{name}`、`POST /v1/commands/{id}`、`POST /v1/exec` 都回 **429**（`httpapi.ErrInFlight`）；UDP 触发的包只记日志（与 cooldown 一致）。
+- **顺带修掉两个真缺陷**：① `POST /v1/commands/{id}` 被 cooldown / 限流拒绝时会掉进 `remoteCommandError` 的 default，**回 500 而不是 429**（读起来像 sol 坏了）；② `POST /v1/exec` 的护栏拒绝被 `runRawShell` 静默吞掉，**回 202 却什么都没跑**（`shellError` 里那三个 429 分支本来是死代码）。现在 `runRawShell` 返回错误：包路径只记日志，HTTP 路径据实回 429。
+- **覆盖面**：UDP 包触发（`handlePacket`）、HTTP 手动触发（`Dispatch`）、远端命令（UDP / HTTP 共用 `Dispatch`）、裸 shell（UDP / HTTP 共用 `runRawShell`）。注意**包路径本身是串行的**（事件循环逐个处理包、动作同步执行），所以纯 UDP 场景下这条护栏主要防"包 + 控制面/远端命令同时触发"；纯包突发仍该由 `security.cooldown` 管。
+- **单测**：`internal/app/inflight_internal_test.go`（guard 的 begin/release/不同 key；`runKey` 的身份规则；并发 `Dispatch` 同动作 -> `ErrActionInFlight`、不同参数不被误杀、跑完释放；裸 shell 同命令去重、不同命令不误杀）+ `internal/deps/guardrails_internal_test.go`（远端命令的三种护栏都映射成能回 429 的 sentinel）+ `internal/infra/httpapi/inflight_test.go`（`/v1/status` 的 `inflight`、`/metrics` 的 `sol_inflight_total`、三条 HTTP 触发路径都回 429）。
+- **冒烟（真机 s24，16/16）**：动作 `sleep 2; echo ... >> marker`，**不配任何 cooldown**。① 两个并发 `POST /v1/actions/slow` -> `202 429`，429 正文写明 already running，marker 恰好 1 行；② 等第一次跑完再触发 -> 202、marker 2 行（标记确实释放）；③ 远端命令同样 `202 429`、只跑一次；④ 裸 shell 同样 `429 202`、只跑一次；⑤ `inflight=3`、`suppressed=3`、`sol_inflight_total 3`、三条 `already running` 日志。
+- **未做**：把包路径改成并发执行（现在是一个事件循环顺序处理，动作期间的包排在 2 条缓冲里）；跨实例去重（多实例本就不共享状态，§16.2）；"合并等待并共享结果"的形态（明确不做，理由见上）。
 
 ### 19.13 wol.send（反向：唤醒别的机器）
 

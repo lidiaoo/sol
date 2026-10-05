@@ -69,13 +69,28 @@ func TestReloadRequiresPolicyAndRegistry(t *testing.T) {
 	}), ErrReloadIncomplete)
 }
 
+// allowOnce runs one guardrail check on a throwaway key and releases it at once: these tests are
+// about which guard answers, not about what runs afterwards.
+func allowOnce(t *testing.T, service *ListenService) error {
+	t.Helper()
+
+	release, err := service.allowAction(service.snapshot(), wol.ActionNoop, "noop")
+	if release != nil {
+		release()
+	}
+
+	return err
+}
+
 func TestReloadKeepsTheRunningCooldownGuard(t *testing.T) {
 	t.Parallel()
 
 	service, ifaces := reloadFixture(t, 10041)
 	service.WithCooldowns(time.Minute, nil)
 
-	require.NoError(t, service.allowAction(service.snapshot(), wol.ActionNoop))
+	release, err := service.allowAction(service.snapshot(), wol.ActionNoop, "noop")
+	require.NoError(t, err)
+	release()
 
 	next := mustPolicy(t, ifaces, []wol.Rule{ruleFor(10041, wol.ActionNoop)})
 
@@ -86,7 +101,8 @@ func TestReloadKeepsTheRunningCooldownGuard(t *testing.T) {
 		Registry: testRegistry(&executorMock{}),
 		Cooldown: time.Minute,
 	}))
-	require.ErrorIs(t, service.allowAction(service.snapshot(), wol.ActionNoop), ErrActionSuppressed)
+	_, err = service.allowAction(service.snapshot(), wol.ActionNoop, "noop")
+	require.ErrorIs(t, err, ErrActionSuppressed)
 
 	// changed windows: a new guard starts
 	require.NoError(t, service.Reload(ReloadOptions{
@@ -94,7 +110,7 @@ func TestReloadKeepsTheRunningCooldownGuard(t *testing.T) {
 		Registry: testRegistry(&executorMock{}),
 		Cooldown: 2 * time.Minute,
 	}))
-	require.NoError(t, service.allowAction(service.snapshot(), wol.ActionNoop))
+	require.NoError(t, allowOnce(t, service))
 }
 
 // TestReloadKeepsTheRunningRateLimitGuard is the same guarantee for the token bucket: an
@@ -105,8 +121,8 @@ func TestReloadKeepsTheRunningRateLimitGuard(t *testing.T) {
 	service, ifaces := reloadFixture(t, 10041)
 	service.WithRateLimit(1, 1)
 
-	require.NoError(t, service.allowAction(service.snapshot(), wol.ActionNoop))
-	require.ErrorIs(t, service.allowAction(service.snapshot(), wol.ActionNoop), ErrActionRateLimited,
+	require.NoError(t, allowOnce(t, service))
+	require.ErrorIs(t, allowOnce(t, service), ErrActionRateLimited,
 		"the bucket holds a single token")
 
 	next := mustPolicy(t, ifaces, []wol.Rule{ruleFor(10041, wol.ActionNoop)})
@@ -118,7 +134,7 @@ func TestReloadKeepsTheRunningRateLimitGuard(t *testing.T) {
 		RateLimit: 1,
 		RateBurst: 1,
 	}))
-	require.ErrorIs(t, service.allowAction(service.snapshot(), wol.ActionNoop), ErrActionRateLimited)
+	require.ErrorIs(t, allowOnce(t, service), ErrActionRateLimited)
 
 	// changed limit: the operator asked for a different guard, so it starts full
 	require.NoError(t, service.Reload(ReloadOptions{
@@ -127,5 +143,5 @@ func TestReloadKeepsTheRunningRateLimitGuard(t *testing.T) {
 		RateLimit: 1,
 		RateBurst: 5,
 	}))
-	require.NoError(t, service.allowAction(service.snapshot(), wol.ActionNoop))
+	require.NoError(t, allowOnce(t, service))
 }

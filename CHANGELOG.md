@@ -75,6 +75,16 @@ tagged release.
   cache. Refusals are counted: `/v1/status` reports `replayed` with a `replay_reasons` breakdown
   and `/metrics` exports `sol_replayed_total` (plus a line per reason), so a channel under replay
   is visible without scraping logs.
+- A trigger that arrives while the same action is still running is suppressed instead of starting
+  a second run of it (the §19.6 open question: no merge-and-wait, because a run can take minutes
+  and a control-plane request should not be pinned to it). The identity is the action plus what it
+  would actually do - the validated remote arguments, or the raw shell command - so two different
+  invocations of one action never suppress each other. It needs no configuration, counts as
+  `inflight` (plus `suppressed`) in `/v1/status` and as `sol_inflight_total` in `/metrics`, and
+  answers 429 on `/v1/actions/{name}`, `/v1/commands/{id}` and `/v1/exec`.
+- Fixed: a remote command refused by a cooldown or the rate limit answered 500 on
+  `POST /v1/commands/{id}` instead of 429, and a raw shell command refused by a guardrail answered
+  202 on `POST /v1/exec` without running anything.
 - Hot reload can move the listening port set. The new ports are bound before anything is closed,
   so a reload that cannot bind one of them is refused with 409 and the running listener keeps
   serving; on success the added ports start reading at once and the ports that left the set are

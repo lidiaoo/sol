@@ -271,18 +271,7 @@ func (b *Builder) BuildHTTPServer() (*httpapi.Server, error) {
 				Status:     b.statusFunc(listenSvc),
 				Rules:      listenSvc.Rules,
 				Interfaces: listenSvc.Interfaces,
-				Dispatch: func(ctx context.Context, action wol.Action) error {
-					err := listenSvc.Dispatch(ctx, action, wol.Event{})
-					if errors.Is(err, app.ErrActionSuppressed) {
-						return fmt.Errorf("%w: %s", httpapi.ErrSuppressed, action)
-					}
-
-					if errors.Is(err, app.ErrActionRateLimited) {
-						return fmt.Errorf("%w: %s", httpapi.ErrRateLimited, action)
-					}
-
-					return err
-				},
+				Dispatch:   dispatchFunc(listenSvc),
 				RunShell: func(ctx context.Context, command string, srcIP net.IP) error {
 					return shellError(listenSvc.RunRawShell(ctx, app.RemoteShellRequest{
 						Command: command,
@@ -300,6 +289,25 @@ func (b *Builder) BuildHTTPServer() (*httpapi.Server, error) {
 	return b.httpServer, b.httpErr
 }
 
+// dispatchFunc triggers a named action from the control plane and translates the guardrail
+// refusals into the sentinels the HTTP layer answers 429 with.
+func dispatchFunc(service *app.ListenService) func(context.Context, wol.Action) error {
+	return func(ctx context.Context, action wol.Action) error {
+		err := service.Dispatch(ctx, action, wol.Event{})
+
+		switch {
+		case errors.Is(err, app.ErrActionSuppressed):
+			return fmt.Errorf("%w: %s", httpapi.ErrSuppressed, action)
+		case errors.Is(err, app.ErrActionRateLimited):
+			return fmt.Errorf("%w: %s", httpapi.ErrRateLimited, action)
+		case errors.Is(err, app.ErrActionInFlight):
+			return fmt.Errorf("%w: %s", httpapi.ErrInFlight, action)
+		default:
+			return err
+		}
+	}
+}
+
 // shellError translates a raw shell failure into the httpapi sentinels the control plane maps
 // onto status codes (§21.6).
 func shellError(err error) error {
@@ -315,6 +323,8 @@ func shellError(err error) error {
 		return fmt.Errorf("%w: %w", httpapi.ErrSuppressed, err)
 	case errors.Is(err, app.ErrActionRateLimited):
 		return fmt.Errorf("%w: %w", httpapi.ErrRateLimited, err)
+	case errors.Is(err, app.ErrActionInFlight):
+		return fmt.Errorf("%w: %w", httpapi.ErrInFlight, err)
 	default:
 		return err
 	}
@@ -332,6 +342,12 @@ func remoteCommandError(err error, id string) error {
 		return fmt.Errorf("%w: %w", httpapi.ErrCommandForbidden, err)
 	case remoteArgError(err):
 		return fmt.Errorf("%w: %w", httpapi.ErrCommandArgs, err)
+	case errors.Is(err, app.ErrActionSuppressed):
+		return fmt.Errorf("%w: %w", httpapi.ErrSuppressed, err)
+	case errors.Is(err, app.ErrActionRateLimited):
+		return fmt.Errorf("%w: %w", httpapi.ErrRateLimited, err)
+	case errors.Is(err, app.ErrActionInFlight):
+		return fmt.Errorf("%w: %w", httpapi.ErrInFlight, err)
 	default:
 		return err
 	}
@@ -552,6 +568,7 @@ func (b *Builder) statusFunc(svc *app.ListenService) func() httpapi.Status {
 			Matched:       stats.Matched,
 			Suppressed:    stats.Suppressed,
 			RateLimited:   stats.RateLimited,
+			Inflight:      stats.Inflight,
 			Replayed:      b.rejections.total(),
 			ReplayReasons: b.rejections.reasons(),
 			Actions:       stats.Actions,

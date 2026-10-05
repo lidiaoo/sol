@@ -16,6 +16,9 @@ import (
 
 var (
 	errNilListener = errors.New("nil listener")
+	// ErrActionInFlight reports that the same action is already running: the duplicate trigger
+	// was suppressed rather than run a second time (§19.12.1).
+	ErrActionInFlight = errors.New("action suppressed by in-flight guard")
 	// ErrActionSuppressed reports that an action was rate-limited by its cooldown.
 	ErrActionSuppressed = errors.New("action suppressed by cooldown")
 
@@ -64,8 +67,10 @@ type Stats struct {
 	Matched     uint64
 	Suppressed  uint64
 	RateLimited uint64
-	Actions     map[string]uint64
-	LastEvent   *EventRecord
+	// Inflight counts the triggers refused because the same run was already going (§19.12.1).
+	Inflight  uint64
+	Actions   map[string]uint64
+	LastEvent *EventRecord
 }
 
 type ListenService struct {
@@ -78,6 +83,7 @@ type ListenService struct {
 	matched     atomic.Uint64
 	blocked     atomic.Uint64
 	rateLimited atomic.Uint64
+	inFlight    atomic.Uint64
 
 	mu       sync.Mutex
 	actions  map[string]uint64
@@ -92,6 +98,9 @@ type ListenService struct {
 	cooldowns *cooldowns
 	limiter   *rateLimiter
 	remote    *remoteRunner
+	// inflight is not part of the routing snapshot: it holds no configuration, and a reload must
+	// not forget which runs are going.
+	inflight *inflight
 	// onReject reports a refused remote segment to the same place the policy reports refused
 	// packets (§19.16). It lives on the service so a reload keeps the counters.
 	onReject func(reason string)
@@ -130,6 +139,7 @@ func NewListenService(
 		actions:   make(map[string]uint64),
 		cooldowns: newCooldowns(0, nil),
 		limiter:   newRateLimiter(0, 0),
+		inflight:  newInflight(),
 	}
 }
 
@@ -209,6 +219,7 @@ func (s *ListenService) Stats() Stats {
 		Matched:     s.matched.Load(),
 		Suppressed:  s.blocked.Load(),
 		RateLimited: s.rateLimited.Load(),
+		Inflight:    s.inFlight.Load(),
 		Actions:     actions,
 		LastEvent:   s.lastSeen,
 	}
@@ -240,9 +251,12 @@ func (s *ListenService) Dispatch(ctx context.Context, action wol.Action, ev wol.
 		return nil
 	}
 
-	if err := s.allowAction(rt, action); err != nil {
+	release, err := s.allowAction(rt, action, runKey(string(action), ev, ""))
+	if err != nil {
 		return err
 	}
+
+	defer release()
 
 	if err := rt.registry.Dispatch(ctx, action, ev); err != nil {
 		return err
@@ -431,14 +445,17 @@ func (s *ListenService) runDecision(ctx context.Context, rt routingSnapshot, pkt
 		return
 	}
 
-	if err := s.allowAction(rt, decision.Action); err != nil {
+	dispatchEv := ev
+	dispatchEv.Interface = decision.Interface
+	dispatchEv.TargetMAC = decision.TargetMAC
+
+	release, err := s.allowAction(rt, decision.Action, runKey(string(decision.Action), dispatchEv, ""))
+	if err != nil {
 		// allowAction already counted and logged which guard stopped it.
 		return
 	}
 
-	dispatchEv := ev
-	dispatchEv.Interface = decision.Interface
-	dispatchEv.TargetMAC = decision.TargetMAC
+	defer release()
 
 	if dispatchErr := rt.registry.Dispatch(ctx, decision.Action, dispatchEv); dispatchErr != nil {
 		slog.Error("action failed", "action", string(decision.Action), "error", dispatchErr)
@@ -504,16 +521,18 @@ func (s *ListenService) handleRemote(ctx context.Context, rt routingSnapshot, pk
 	return true
 }
 
-// allowAction applies the guardrails: the per-action cooldown first, then the global rate
-// limit. Both count and log a suppressed run, and the returned error names the guard that
-// stopped it. A suppressed attempt still counts as an attempt for the cooldown window, which
-// is what the packet path has always done.
-func (s *ListenService) allowAction(rt routingSnapshot, action wol.Action) error {
+// allowAction applies the guardrails: the per-action cooldown first, the global rate limit next,
+// and last the in-flight guard, which needs the key of the run it is about to mark. Every guard
+// counts and logs a suppressed run, and the returned error names the one that stopped it; the
+// caller must run the action and call the returned release when it is done. A suppressed attempt
+// still counts as an attempt for the cooldown window, which is what the packet path has always
+// done.
+func (s *ListenService) allowAction(rt routingSnapshot, action wol.Action, key string) (func(), error) {
 	if remaining, allowed := rt.cooldowns.allow(string(action)); !allowed {
 		s.blocked.Add(1)
 		slog.Warn("action suppressed by cooldown", "action", string(action), "retry_in", remaining.String())
 
-		return fmt.Errorf("%w: retry in %s", ErrActionSuppressed, remaining)
+		return nil, fmt.Errorf("%w: retry in %s", ErrActionSuppressed, remaining)
 	}
 
 	if retryIn, allowed := rt.limiter.allow(); !allowed {
@@ -521,8 +540,17 @@ func (s *ListenService) allowAction(rt routingSnapshot, action wol.Action) error
 		s.rateLimited.Add(1)
 		slog.Warn("action suppressed by rate limit", "action", string(action), "retry_in", retryIn.String())
 
-		return fmt.Errorf("%w: retry in %s", ErrActionRateLimited, retryIn)
+		return nil, fmt.Errorf("%w: retry in %s", ErrActionRateLimited, retryIn)
 	}
 
-	return nil
+	release, started := s.inflight.begin(key)
+	if !started {
+		s.blocked.Add(1)
+		s.inFlight.Add(1)
+		slog.Warn("action suppressed: already running", "action", string(action))
+
+		return nil, fmt.Errorf("%w: %s is already running", ErrActionInFlight, action)
+	}
+
+	return release, nil
 }

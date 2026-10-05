@@ -173,7 +173,12 @@ func (s *ListenService) handleRawShell(ctx context.Context, rt routingSnapshot, 
 	ev.Args = nil
 
 	s.matched.Add(1)
-	s.runRawShell(ctx, rt, pkt, ev, command)
+
+	if err := s.runRawShell(ctx, rt, pkt, ev, command); err != nil {
+		// A guardrail refused it: allowAction already counted and logged which one, so the packet
+		// path only has to drop it. The HTTP transport is the one that needs the reason back.
+		slog.Debug("raw shell command dropped", "error", err)
+	}
 
 	return true
 }
@@ -181,7 +186,7 @@ func (s *ListenService) handleRawShell(ctx context.Context, rt routingSnapshot, 
 // runRawShell applies the guardrails and runs one remote shell command with the same dry-run,
 // audit and counter treatment as a routed action. The command itself is logged, which is the
 // point of the channel: an operator has to be able to see what ran.
-func (s *ListenService) runRawShell(ctx context.Context, rt routingSnapshot, pkt packet, ev wol.Event, command string) {
+func (s *ListenService) runRawShell(ctx context.Context, rt routingSnapshot, pkt packet, ev wol.Event, command string) error {
 	logOnly := rt.dryRun
 	trigger := ternary(logOnly, "DRY-RUN", string(wol.RawShellAction))
 
@@ -205,23 +210,29 @@ func (s *ListenService) runRawShell(ctx context.Context, rt routingSnapshot, pkt
 	)
 
 	if logOnly {
-		return
+		return nil
 	}
 
-	if err := s.allowAction(rt, wol.RawShellAction); err != nil {
-		// allowAction already counted and logged which guard stopped it.
-		return
+	release, err := s.allowAction(rt, wol.RawShellAction, runKey(string(wol.RawShellAction), ev, command))
+	if err != nil {
+		// allowAction already counted and logged which guard stopped it; the caller decides what
+		// the refusal means - the packet path drops it, the HTTP transport answers 429.
+		return err
 	}
+
+	defer release()
 
 	def := wol.ActionDef{Name: wol.RawShellAction, Type: wol.ActionTypeExec, Exec: rt.rawShell.params(command)}
 
 	if err := rt.registry.DispatchDef(ctx, def, ev); err != nil {
 		slog.Error("action failed", "action", string(wol.RawShellAction), "error", err)
 
-		return
+		return err
 	}
 
 	s.recordAction(string(wol.RawShellAction))
+
+	return nil
 }
 
 // RunRawShell runs a shell command that arrived over the authenticated HTTP transport
@@ -247,9 +258,8 @@ func (s *ListenService) RunRawShell(ctx context.Context, request RemoteShellRequ
 	}
 
 	s.matched.Add(1)
-	s.runRawShell(ctx, rt, packet{src: addrFromIP(request.SrcIP)}, wol.Event{SrcIP: request.SrcIP}, command)
 
-	return nil
+	return s.runRawShell(ctx, rt, packet{src: addrFromIP(request.SrcIP)}, wol.Event{SrcIP: request.SrcIP}, command)
 }
 
 // RemoteShellRequest is one POST /v1/exec body after decoding.
