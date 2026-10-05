@@ -1,8 +1,8 @@
 # SoL 功能与配置设计草案
 
-状态：设计讨论稿（定义模型、规则、配置与安全约束；不写实现）
-范围：包内容匹配、端口路由、保留端口、动作模型（电源 / exec / HTTP / 远端命令）、多端口 / 多网卡、配置文件、HTTP、安全模型
-进度跟踪：[TODO.md](../TODO.md)（P1-P4 可勾选落地清单）
+状态：设计定稿 + 实现对照（§19 逐节记录已落地部分、设计取舍与真机冒烟证据）
+范围：包内容匹配、端口路由、保留端口、动作模型（电源 / exec / HTTP / 远端命令 / sequence）、多端口 / 多网卡、配置文件、HTTP、安全模型
+进度跟踪：[TODO.md](../TODO.md)（P1-P4 可勾选落地清单）；使用者视角见 [README](../README.md)，升级注意事项见 [CHANGELOG](../CHANGELOG.md)
 
 ## 目录
 
@@ -1237,15 +1237,16 @@ P2  动作模型与 CLI
 P3  配置文件
       + YAML 加载 + 严格解码（未知字段报错）+ 优先级（默认<文件<env<flag）
       + actions 段、src_cidrs 接线
-      + 热重载（可选）
+      + 热重载 ✅（§19.9：SIGHUP + POST /v1/reload + server.watch/--watch 自动 reload）
 
 P4  自定义命令 + HTTP
-      + exec 动作（argv 非 shell、超时、降权、cooldown、审计）
-      + HTTP 控制面（认证 + 默认本地）
-      + HTTP 出站动作（webhook）
-      + 远端命令通道（白名单 id + 参数校验 + HMAC，§21）
-      + 原始命令（裸 shell，默认关闭，§21.6）
-      + 预留 wol.send
+      + exec 动作（argv 非 shell、超时、降权、cooldown、审计）✅（降权见 §19.4）
+      + HTTP 控制面（认证 + 默认本地）✅（§19.5；mTLS 已实测）
+      + HTTP 出站动作（webhook）✅（§19.8）
+      + 远端命令通道（白名单 id + 参数校验 + HMAC，§21）✅（§19.7）
+      + sequence 顺序组合 ✅（§19.10）
+      + 原始命令（裸 shell，默认关闭，§21.6）⏳ 未做
+      + 预留 wol.send ⏳ 未做
 ```
 
 ### 19.1 P1 已落地（实现对照）

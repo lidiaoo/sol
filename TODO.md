@@ -7,9 +7,9 @@
 
 - 项目：sol（bavix/sol）—— 监听 Wake-on-LAN 魔法包，触发本机电源动作（反向 WoL）。
 - 本次目标：从"单端口 × 单网卡 × 单动作"扩成"多端口 × 多网卡 × 包内容匹配 × 具名动作"，并用**保留端口 {7,9}** 把标准 WOL 端口变成安全边界；HTTP、自定义命令、远端命令列为后续阶段。
-- 现状：**设计定稿**（docs/routing-design.md，21 节 + 背景）；**P1（domain 模型与匹配）、P2（动作模型与 CLI）已落地，P3（配置文件）部分落地**，其余待开发。
-- 怎么读：设计文档讲"为什么这么做 / 具体怎么做"；本文件讲"做到哪了 / 下一步"。
-- 阶段：P1 模型 ✅ -> P2 动作与 CLI ✅ -> P3 配置文件（进行中）-> P4 自定义命令 + HTTP + 远端命令。
+- 现状：**设计定稿**（docs/routing-design.md，21 节 + 背景）；**P1（domain 模型与匹配）、P2（动作模型与 CLI）、P3（配置文件）全部落地**；**P4 主体落地**：exec / HTTP 控制面 / cooldown / 远端命令通道 / HTTP 出站 / mTLS / exec 降权 / 热重载 / `sequence` / 配置文件自动 reload。剩余项见下方未勾选条目。
+- 怎么读：设计文档讲"为什么这么做 / 具体怎么做"；本文件讲"做到哪了 / 下一步"；README 面向使用者（安装 / CLI / 配置 / 安全），CHANGELOG 面向升级者（breaking 变更）。
+- 阶段：P1 模型 ✅ -> P2 动作与 CLI ✅ -> P3 配置文件 ✅ -> P4 自定义命令 + HTTP + 远端命令（**主体 ✅**，剩包级 HMAC、`allow_raw_shell`、`wol.send`、限流等）。
 
 ---
 
@@ -76,7 +76,7 @@
 - [x] `logging` 段（`level` / `format`：text/json）+ `log` -> `log/slog` 结构化日志迁移（`internal/infra/logging`）
 - [ ] 每网卡 `secure_on`：需要支持 per-rule secureOn 的包解析（现状是整 policy 一个）
 - [x] 冲突检测 `ErrRuleConflict` / `ErrInterfaceScopeConflict`：跨作用域（全局 vs 块）冲突的显式报错
-- [ ] 热重载（可选，等价 SIGHUP）
+- [x] 热重载（`SIGHUP` + `POST /v1/reload` + `server.watch`/`--watch` 自动 reload；见 §19.9）
 - [ ] 附 JSON Schema（编辑器补全）
 
 ## P4 自定义命令 + HTTP + 远端命令（§4.3、§18、§21）进行中
@@ -107,10 +107,11 @@
 
 ## 文档 / 发布
 
-- [ ] README：`--port 9` 行为变更；systemd 示例改非保留端口；`sol ifaces` 说明
-- [ ] README：<1024 端口（7/9/8）需 root 或 `CAP_NET_BIND_SERVICE`
-- [ ] CHANGELOG：标注 breaking（`--port 9` shutdown -> noop）
-- [ ] 设计文档 §19 与本文件保持同步
+- [x] README：`--port 9` 行为变更；systemd 示例改非保留端口；`sol ifaces` 说明（README 已重写：新增动作表、配置文件示例、控制面、远端命令、reload、接口选择、迁移说明）
+- [x] README：<1024 端口（7/9/8）需 root 或 `CAP_NET_BIND_SERVICE`（含 systemd `AmbientCapabilities` 示例与非 root 建议）
+- [x] CHANGELOG：标注 breaking（`--port 9` shutdown -> noop；`--iface` 不再必填；默认严格匹配）+ 全部新增能力；新建 CHANGELOG.md
+- [x] 设计文档 §19 与本文件保持同步；并补齐四向交叉链接：README -> 设计/TODO/CHANGELOG、CHANGELOG -> 设计/TODO
+- [x] README 配置示例经真机验证：`sol listen --config` 加载无误、控制面 `/healthz` 200、自动选网卡、`/v1/rules` 回显两条规则、带 `lock` 后缀的包命中并执行成功
 
 ## 待确认 / 开放问题
 
