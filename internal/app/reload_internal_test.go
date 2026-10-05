@@ -45,18 +45,17 @@ func TestReloadSwapsTheRoutingState(t *testing.T) {
 	require.Equal(t, wol.ActionShutdown, service.Rules()[0].Action)
 }
 
-func TestReloadRejectsAChangedPortSet(t *testing.T) {
+func TestReloadAcceptsAChangedPortSet(t *testing.T) {
 	t.Parallel()
 
 	service, ifaces := reloadFixture(t, 10041)
 
-	// the sockets are bound from the startup port set, so a reload that moves them
-	// must be refused as a whole rather than silently half-applied
+	// The port set may move: the sockets are rebound by the listener set (see
+	// TestReloadBindsAndClosesPorts). Without a running listener this is just the state swap.
 	grown := mustPolicy(t, ifaces, []wol.Rule{ruleFor(10041, wol.ActionNoop), ruleFor(10042, wol.ActionNoop)})
 
-	err := service.Reload(ReloadOptions{Policy: grown, Registry: testRegistry(&executorMock{})})
-	require.ErrorIs(t, err, ErrReloadRestartRequired)
-	require.Len(t, service.Rules(), 1, "the old rule set keeps running")
+	require.NoError(t, service.Reload(ReloadOptions{Policy: grown, Registry: testRegistry(&executorMock{})}))
+	require.Len(t, service.Rules(), 2)
 }
 
 func TestReloadRequiresPolicyAndRegistry(t *testing.T) {

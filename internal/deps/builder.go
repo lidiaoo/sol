@@ -190,7 +190,7 @@ func (b *Builder) WithReloader(fn func(ctx context.Context) error) *Builder {
 // ReloadOptions assembles the runtime pieces of the current configuration for a
 // running listener (see ListenService.Reload).
 func (b *Builder) ReloadOptions() (app.ReloadOptions, error) {
-	registry, policy, _, err := b.buildRuntime()
+	registry, policy, ifaces, err := b.buildRuntime()
 	if err != nil {
 		return app.ReloadOptions{}, err
 	}
@@ -198,6 +198,7 @@ func (b *Builder) ReloadOptions() (app.ReloadOptions, error) {
 	return app.ReloadOptions{
 		Policy:       policy,
 		Registry:     registry,
+		Ifaces:       ifaces,
 		DryRun:       b.cfg.DryRun,
 		Cooldown:     b.cfg.Cooldown,
 		Cooldowns:    cooldownWindows(b.cfg.ActionCooldowns),
@@ -427,7 +428,7 @@ func (b *Builder) reloadFunc() func(ctx context.Context) error {
 
 	return func(ctx context.Context) error {
 		err := b.reloader(ctx)
-		if errors.Is(err, app.ErrReloadRestartRequired) {
+		if errors.Is(err, app.ErrReloadBind) {
 			return fmt.Errorf("%w: %w", httpapi.ErrRestartRequired, err)
 		}
 

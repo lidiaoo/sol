@@ -9,7 +9,7 @@
 - 本次目标：从"单端口 × 单网卡 × 单动作"扩成"多端口 × 多网卡 × 包内容匹配 × 具名动作"，并用**保留端口 {7,9}** 把标准 WOL 端口变成安全边界；HTTP、自定义命令、远端命令列为后续阶段。
 - 现状：**设计定稿**（docs/routing-design.md，21 节 + 背景）；**P1（domain 模型与匹配）、P2（动作模型与 CLI）、P3（配置文件）全部落地**；**P4 主体落地**：exec / HTTP 控制面 / cooldown / 远端命令通道 / HTTP 出站 / mTLS / exec 降权 / 热重载 / `sequence` / 配置文件自动 reload。剩余项见下方未勾选条目。
 - 怎么读：设计文档讲"为什么这么做 / 具体怎么做"；本文件讲"做到哪了 / 下一步"；README 面向使用者（安装 / CLI / 配置 / 安全），CHANGELOG 面向升级者（breaking 变更）。
-- 阶段：P1 模型 ✅ -> P2 动作与 CLI ✅ -> P3 配置文件 ✅ -> P4 自定义命令 + HTTP + 远端命令（**主体 ✅**，剩 cooldown singleflight、热重载重绑端口/网卡、命令段重放防护等）；`wol.send` 唤醒别的机器 ✅（§19.13）；包级 HMAC ✅（§19.14）；远端原始命令（默认关）✅（§21.6 / §19.15）。
+- 阶段：P1 模型 ✅ -> P2 动作与 CLI ✅ -> P3 配置文件 ✅ -> P4 自定义命令 + HTTP + 远端命令（**主体 ✅**，剩 cooldown singleflight 等）；`wol.send` 唤醒别的机器 ✅（§19.13）；包级 HMAC ✅（§19.14）；远端原始命令（默认关）✅（§21.6 / §19.15）。
 
 ---
 
@@ -90,7 +90,7 @@
 - [ ] 降权只支持 root（`CAP_SETUID`/`CAP_SETGID` 单权限）；非 unix 平台直接报 `ErrUserUnsupported`
 - [x] HTTP 控制面（bearer/basic/mTLS、默认 127.0.0.1、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`/v1/actions/{name}`、`/metrics`、`/healthz`、审计）——实现对照见设计 §19.5
 - [x] `/v1/reload` 热重载 + `SIGHUP`（原子换入 policy/registry/cooldown/remote；端口集合变化 -> 409 要求重启；配置非法 -> 400 且旧配置继续跑；`-race` 下 60 次 reload 无 data race）——见设计 §19.9
-- [ ] 热重载重绑端口 / 网卡集合（当前必须重启）
+- [x] 热重载重绑端口 / 网卡集合：`listenerSet`（`internal/app/listeners.go`）先 `rebind()` 绑新增端口、全部成功才换状态并 `commit()`（新增开读、离开的 `Close()`）；失败整体拒绝（`ErrReloadBind` -> 409），已跑的端口一个不动。网卡不需要重绑（socket 绑 `0.0.0.0`），但 `ReloadOptions.Ifaces` 会刷新状态视图/日志——见设计 §19.9
 - [x] 配置文件变更自动 reload（`server.watch: 5s` / CLI `--watch`；轮询式，刻意不引 fsnotify，最小间隔 1s，坏配置只记错不换掉老配置；实测覆盖写入后 1 个轮询周期内自动 `configuration reloaded`）——见设计 §19.9
 - [x] mTLS 端到端冒烟（配置已支持 + 启动加载证书；带证书 200、无证书/异 CA 证书握手被拒、明文 HTTP 400；注意 mTLS 下 `/healthz` 也需客户端证书）——见设计 §19.5
 - [x] HTTP 出站动作（webhook、`url_allowlist`、超时 / 重试、不跟随重定向、headers 不落日志）——见设计 §19.8

@@ -75,6 +75,12 @@ tagged release.
   cache. Refusals are counted: `/v1/status` reports `replayed` with a `replay_reasons` breakdown
   and `/metrics` exports `sol_replayed_total` (plus a line per reason), so a channel under replay
   is visible without scraping logs.
+- Hot reload can move the listening port set. The new ports are bound before anything is closed,
+  so a reload that cannot bind one of them is refused with 409 and the running listener keeps
+  serving; on success the added ports start reading at once and the ports that left the set are
+  closed. The interface list is refreshed with the reload, so `/v1/interfaces` and the audit log
+  follow the machine. `app.ErrReloadRestartRequired` (a port change needed a restart) is gone,
+  replaced by `app.ErrReloadBind`.
 - Remote command segments can be stamped too (`remote_command_auth.window`), and so can the raw
   shell channel that rides on them (`raw_shell_auth.window`). The same guard as packet
   authentication then accepts a command once inside the window and refuses a captured segment:

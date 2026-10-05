@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"slices"
 	"time"
 
 	"github.com/bavix/sol/internal/domain/wol"
@@ -13,10 +12,9 @@ import (
 var (
 	// ErrReloadIncomplete reports a reload missing the mandatory rule set or registry.
 	ErrReloadIncomplete = errors.New("reload requires both a routing policy and an action registry")
-	// ErrReloadRestartRequired reports a reload that changes the bound port set. The
-	// sockets are created at startup, and a listener that keeps serving the old ports
-	// while the file says something else would be a lie.
-	ErrReloadRestartRequired = errors.New("reload rejected: the listening port set changed, restart sol")
+	// ErrReloadBind reports a reload whose new ports could not be bound. Nothing is
+	// changed: the running listener keeps serving the set it already had.
+	ErrReloadBind = errors.New("reload rejected: could not bind the new listening ports")
 )
 
 // ReloadOptions is a rebuilt configuration for a running listener.
@@ -31,16 +29,20 @@ type ReloadOptions struct {
 	Commands    map[string]wol.RemoteCommand
 	RemotePorts []int
 	RemoteKey   []byte
+	// Ifaces is the interface set the fresh configuration resolved. Sockets listen on every
+	// address, so nothing is rebound here -- but MAC resolution, the status view and the audit
+	// log should describe the machine as it is now.
+	Ifaces []wol.IfaceInfo
 	// RemoteWindow carries the command channel's replay window across a reload: dropping it
 	// here would quietly undo §21.3 on the first SIGHUP. The reporter is not part of the
 	// options -- it belongs to the service, so the counters survive.
 	RemoteWindow time.Duration
 }
 
-// Reload swaps the routing state. It is atomic: a packet already being handled keeps
-// the snapshot it started with, everything after the call routes with the new rules.
-// Interfaces may change freely -- the sockets listen on every address -- but a change
-// of the port set is refused, because it cannot be applied without rebinding.
+// Reload swaps the routing state. It is atomic: a packet already being handled keeps the snapshot
+// it started with, everything after the call routes with the new rules. The port set may change:
+// the ports the new configuration adds are bound first, and only then is anything closed, so a
+// reload that cannot bind one of them leaves the running listener untouched.
 func (s *ListenService) Reload(opts ReloadOptions) error {
 	if opts.Policy == nil || opts.Registry == nil {
 		return ErrReloadIncomplete
@@ -49,8 +51,11 @@ func (s *ListenService) Reload(opts ReloadOptions) error {
 	s.rtMu.Lock()
 	defer s.rtMu.Unlock()
 
-	if !slices.Equal(s.policy.Ports(), opts.Policy.Ports()) {
-		return fmt.Errorf("%w: %v -> %v", ErrReloadRestartRequired, s.policy.Ports(), opts.Policy.Ports())
+	ports := opts.Policy.Ports()
+
+	added, err := s.listeners.rebind(ports)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrReloadBind, err)
 	}
 
 	// Keep the running guard when the windows did not change, so a reload cannot be
@@ -67,6 +72,11 @@ func (s *ListenService) Reload(opts ReloadOptions) error {
 	s.policy = opts.Policy
 	s.registry = opts.Registry
 	s.dryRun = opts.DryRun
+
+	if len(opts.Ifaces) > 0 {
+		s.ifaces = opts.Ifaces
+	}
+
 	s.remote = newRemoteRunner(RemoteSettings{
 		Commands: opts.Commands,
 		Ports:    opts.RemotePorts,
@@ -74,6 +84,9 @@ func (s *ListenService) Reload(opts ReloadOptions) error {
 		Window:   opts.RemoteWindow,
 		OnReject: s.onReject,
 	})
+
+	// Only now can the new ports start reading: their packets route with the state above.
+	s.listeners.commit(added, ports)
 
 	return nil
 }

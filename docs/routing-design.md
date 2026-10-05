@@ -1376,7 +1376,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 ### 19.5 P4 部分落地（HTTP 控制面）
 
 - 包 `internal/infra/httpapi`：纯 `net/http`（Go 1.22+ 方法模式路由），无框架依赖；配置段 `server.http.{enabled,listen,auth,tls}`，默认 `listen: 127.0.0.1:8080`、默认 `auth.type: bearer`。
-- 已实现端点：`GET /healthz`（免认证，只回 `{"status":"ok"}`）、`GET /v1/status`（uptime、计数器、最近命中事件、网卡、规则数、dry_run、auth 类型）、`GET /v1/rules`（脱敏视图：ports / mac / content / src_cidrs / action / dry_run）、`GET /v1/interfaces`、`POST /v1/actions/{name}`（手动触发 -> 202，未知动作 -> 404）、`GET /metrics`（`sol_packets_total` / `sol_matched_total` / `sol_actions_total{action=...}` / `sol_rules` / `sol_uptime_seconds`）；`POST /v1/reload`（重建配置并原子换入；200 `{"reloaded":true}`、配置非法 400、改动监听端口 409、没装 reloader 时 501，见 §19.9）。
+- 已实现端点：`GET /healthz`（免认证，只回 `{"status":"ok"}`）、`GET /v1/status`（uptime、计数器、最近命中事件、网卡、规则数、dry_run、auth 类型）、`GET /v1/rules`（脱敏视图：ports / mac / content / src_cidrs / action / dry_run）、`GET /v1/interfaces`、`POST /v1/actions/{name}`（手动触发 -> 202，未知动作 -> 404）、`GET /metrics`（`sol_packets_total` / `sol_matched_total` / `sol_actions_total{action=...}` / `sol_rules` / `sol_uptime_seconds`）；`POST /v1/reload`（重建配置并原子换入；200 `{"reloaded":true}`、配置非法 400、监听端口集合可热改（新增端口绑定失败才 409）、没装 reloader 时 501，见 §19.9）。
 - 认证三选一，**没有 `none`**：`bearer`（`crypto/subtle` 常量时间比较）、`basic`（用户名在 YAML，口令走环境变量或 600 文件）、`mtls`（TLS 层 `RequireAndVerifyClientCert` + `client_ca_file`）；所有 `/v1/*` 与 `/metrics` 强制认证，401 带 `WWW-Authenticate`。
 - 密钥不落 YAML：只从 `*_env` 或 `*_file` 读；文件带 group/other 权限位直接启动报错（`ErrHTTPSecret`）。TLS 证书与客户端 CA 启动时加载，失败即失败。
 - 审计：认证拒绝、手动触发、触发失败、reload 请求都进 slog（带来源地址与动作名）。
@@ -1439,7 +1439,8 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - **原子性**：`ListenService` 把"路由状态"（policy / registry / cooldowns / remote / dry_run）收进 `rtMu sync.RWMutex` + `routingSnapshot`，**每个包只取一次快照**再走匹配与下发——一次 reload 不会出现"用旧规则匹配、用新 registry 下发"的错配。计数器仍是 atomic 且在锁外，reload 不会等正在执行的动作。
 - 语义边界（刻意写死，避免"看起来生效了其实没有"）：
   - 可热换：规则、动作表、cooldown 窗口、远端命令通道、dry_run，以及日志级别（`logging.Setup` 用 `slog.SetDefault` 重新安装，不会重复挂 handler）。
-  - **监听端口集合不能变**：socket 在启动时创建，reload 先比 `policy.Ports()`，不一致就**整体拒绝** -> `app.ErrReloadRestartRequired` -> HTTP 409，日志写明 `[10061] -> [10061 10062]`，老规则继续跑。不做"半应用"——那会让监听端口与配置文件长期不一致。
+  - **监听端口集合可以变**：reload 先对"新增且尚未监听"的端口 `rebind()`（`factory.Create`），**全部成功才继续**；任何一个失败就把这一批刚开的 socket 关掉并整体拒绝（`app.ErrReloadBind` -> HTTP 409，语义是"无法应用到运行中的进程"，典型原因就是端口被占）。已跑的端口一个也不动：失败等于什么都没变，不存在"半应用"。绑定成功后先换策略/动作表，最后 `commit()`——新增端口此刻才开读（用的已经是新状态），离开集合的端口 `Close()` 并记 `stopped listening`，所以也没有"新端口先用旧规则"的窗口。
+  - **网卡集合不需要重绑**：socket 绑的是 `0.0.0.0`，换网卡只影响 MAC 解析、状态视图与审计日志。`ReloadOptions.Ifaces` 把重新发现的一组网卡带进来，`/v1/interfaces`、`/v1/status` 与 `logIfaces` 立刻反映当下的机器；`Interfaces()` 同时改走快照，免得和 reload 抢同一份切片。
   - cooldown 窗口没变时**沿用正在跑的护栏对象**，防止用 reload 变相清冷却。
   - 网卡解析结果随 policy 一起换（socket 绑 0.0.0.0，换网卡不需要重绑）。
 - 自动 reload（`server.watch` / `--watch`）：`server.watch: 5s`（或 CLI `--watch 5s`，flag 优先，`--watch 0` 显式关掉）后，`cmd/watch.go` 起一个 goroutine 每 `watch` 轮询配置文件，检测到**大小或 mtime 变化**就调用上面同一个回调。刻意用轮询而不是 fsnotify：sol 目前零第三方依赖（除 yaml/cobra），轮询的代价是一次 stat + 变更时一次读，换来依赖面不增长。语义边界：
@@ -1449,10 +1450,10 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - 一个变更只 reload 一次（戳在 reload 前刷新）；reload 失败（配置写坏）只记 `automatic reload failed` + 原始错误，**老配置继续跑**、进程不退。
   - 间隔本身不会因为 reload 而改变（改 `server.watch` 需要重启）——与端口集合同理。
 - 失败处理：配置读不了 / 校验不过 -> 400，并把原始错误原样返回（例：`rule 1: unknown action reference: mark-typo`），运行中的配置**完全不受影响**。
-- 冒烟（真机，规则端口 10061，控制面 `127.0.0.1:18084`，bearer）：① reload 前 10061 -> `mark-a`，生成 marker；② 文件改成 `mark-b`（端口集合不变）-> `POST /v1/reload` 200 `{"reloaded":true}` -> 10061 改为生成 `mark-b` marker；③ `kill -HUP` -> 日志 `reload signal received` + `configuration reloaded`，行为不变；④ 换成多一个端口的配置 -> 409 `restart required: ... [10061] -> [10061 10062]`，10061 仍按新规则触发、10062 没有被监听（无 marker）；⑤ 换成引用不存在动作的文件 -> 400 `unknown action reference: mark-typo`，老规则照旧；启动期只有 1 条 `listening`（端口集合始终是启动时那一套）。
+- 冒烟（真机，规则端口 10061，控制面 `127.0.0.1:18084`，bearer）：① reload 前 10061 -> `mark-a`，生成 marker；② 文件改成 `mark-b`（端口集合不变）-> `POST /v1/reload` 200 `{"reloaded":true}` -> 10061 改为生成 `mark-b` marker；③ `kill -HUP` -> 日志 `reload signal received` + `configuration reloaded`，行为不变；④ 换成多一个端口的配置 -> 200：日志出现 `listening 10062`，**两个端口都生效**（10061 与 10062 都按新规则触发）；⑤ 换成少一个端口的配置 -> 200：日志 `stopped listening 10062`，10062 的包不再被处理、10061 照常；⑥ 换成要绑一个被别的进程占住的端口 -> 409（`ErrReloadBind`），老集合原样继续服务、被占端口不会被监听；⑤ 换成引用不存在动作的文件 -> 400 `unknown action reference: mark-typo`，老规则照旧；启动期只有 1 条 `listening`（端口集合始终是启动时那一套）。
 - 并发冒烟（`-race` 构建的二进制）：一边 60 次 reload（40 次成功 + 20 次因端口变更被拒），一边持续灌魔法包（期间 5813 条命中/执行日志），race detector **0 data race**。
 - 冒烟（自动 reload，真机 `server.watch: 1s`，规则端口 10101，无 SIGHUP / 无 HTTP 触发）：① 配置 A（`mark-a`）生效，包生成 `marker-a`；② 直接把新配置覆盖到原文件 -> 日志 `configuration file changed` + `configuration reloaded` 各 1 条，同一个包改为生成 `marker-b`；③ 把文件换成引用不存在动作的坏配置 -> 1 条 `automatic reload failed`（含 `unknown action type` 原始错误），进程仍活着、`marker-b` 照旧触发（老配置继续跑）；④ `server.watch: 500ms` -> 启动 `exit 1`（`invalid server.watch interval: "500ms" (minimum 1s, empty disables it)`）。
-- 未做：端口 / 网卡集合变化后自动重绑（现在要求重启）、旧 policy 的平滑过渡（当前是换指针，旧对象等 GC）、fsnotify 事件式监听（现在是 1s 起的轮询）、watch 间隔的热改。
+- 未做：旧 policy 的平滑过渡（当前是换指针，旧对象等 GC）、fsnotify 事件式监听（现在是 1s 起的轮询）、watch 间隔的热改（改 `server.watch` 仍需重启）、以及"同一端口在两个实例间搬家"这类跨进程协调（同端口多实例本来就不支持，§16.2）。
 
 ### 19.10 P4 部分落地（`sequence` 顺序组合）
 

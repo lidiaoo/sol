@@ -305,10 +305,14 @@ Endpoints: `GET /healthz`, `GET /v1/status`, `GET /v1/rules`, `GET /v1/interface
 
 Three paths, one implementation: `SIGHUP`, `POST /v1/reload`, and `server.watch` / `--watch`
 (polling the configuration file). Rules, actions, cooldowns, the rate limit, the remote command
-channel, `dry_run` and the log level are swapped atomically per packet. A configuration that
-fails to load leaves the running one untouched; a change to the **listening port set** needs a
-restart and is refused with HTTP 409 rather than half-applied. An unchanged cooldown or rate
-limit keeps its running state, so a reload cannot be used to refresh a guard by accident.
+channel, `dry_run` and the log level are swapped atomically per packet, and the **listening
+port set moves with them**: ports the new configuration adds are bound before anything is closed,
+so a reload that cannot bind one of them (HTTP 409) changes nothing at all, while a successful
+one starts reading the new ports immediately and closes the ports that left the set. A
+configuration that fails to load leaves the running one untouched, and an unchanged cooldown or
+rate limit keeps its running state, so a reload cannot be used to refresh a guard by accident.
+The interface list is refreshed too, so `/v1/interfaces` and the audit log describe the machine as
+it is now.
 
 ### Guards
 

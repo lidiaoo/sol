@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -24,11 +25,14 @@ func (m *factoryMock) Create(_ int) (PacketListener, error) {
 }
 
 type executorMock struct {
-	calls  int
-	action wol.Action
-	def    wol.ActionDef
-	event  wol.Event
-	err    error
+	// handled, when set, is closed by the first execution: it lets a mock listener wait for the
+	// packet it just delivered to be acted on before reporting the stop that ends Run.
+	handled chan struct{}
+	calls   int
+	action  wol.Action
+	def     wol.ActionDef
+	event   wol.Event
+	err     error
 }
 
 func (m *executorMock) Execute(_ context.Context, def wol.ActionDef, ev wol.Event) error {
@@ -37,24 +41,35 @@ func (m *executorMock) Execute(_ context.Context, def wol.ActionDef, ev wol.Even
 	m.def = def
 	m.event = ev
 
+	if m.handled != nil {
+		close(m.handled)
+		m.handled = nil
+	}
+
 	return m.err
 }
 
 type listenerMock struct {
-	packets [][]byte
-	srcs    []*net.UDPAddr
-	errs    []error
-	idx     int
-	closed  bool
+	packets   [][]byte
+	srcs      []*net.UDPAddr
+	errs      []error
+	idx       int
+	closed    bool
+	delivered int
+	handled   chan struct{}
 }
 
-func (m *listenerMock) ReadPacket(_ context.Context) ([]byte, *net.UDPAddr, error) {
+func (m *listenerMock) ReadPacket(ctx context.Context) ([]byte, *net.UDPAddr, error) {
 	if m.idx >= len(m.errs) {
+		m.awaitHandled(ctx)
+
 		return nil, nil, context.Canceled
 	}
 
 	err := m.errs[m.idx]
 	if err != nil {
+		m.awaitHandled(ctx)
+
 		m.idx++
 
 		return nil, nil, err
@@ -63,6 +78,7 @@ func (m *listenerMock) ReadPacket(_ context.Context) ([]byte, *net.UDPAddr, erro
 	payload := m.packets[m.idx]
 	src := m.srcs[m.idx]
 	m.idx++
+	m.delivered++
 
 	return payload, src, nil
 }
@@ -71,6 +87,22 @@ func (m *listenerMock) Close() error {
 	m.closed = true
 
 	return nil
+}
+
+// awaitHandled waits for the packets already delivered to be acted on before reporting a stop.
+// Without it the event loop is free to notice the stop first and drop a packet the test is about
+// to assert on - a race in the harness, not in the service. The wait is bounded because some
+// tests deliver a packet and expect no execution at all (a dry run, a non-matching payload).
+func (m *listenerMock) awaitHandled(ctx context.Context) {
+	if m.handled == nil || m.delivered == 0 {
+		return
+	}
+
+	select {
+	case <-m.handled:
+	case <-ctx.Done():
+	case <-time.After(500 * time.Millisecond):
+	}
 }
 
 type testFixture struct {
@@ -128,12 +160,14 @@ func newFixture(t *testing.T, port int, action wol.Action, packets [][]byte, pac
 		srcs[i] = &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 10001 + i}
 	}
 
+	handled := make(chan struct{})
 	listener := &listenerMock{
 		packets: packets,
 		srcs:    srcs,
 		errs:    packetErrs,
+		handled: handled,
 	}
-	executor := &executorMock{}
+	executor := &executorMock{handled: handled}
 
 	svc := NewListenService(&factoryMock{listener: listener}, testRegistry(executor), policy, ifaces, dryRun)
 

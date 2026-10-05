@@ -69,8 +69,9 @@ type Stats struct {
 }
 
 type ListenService struct {
-	factory PacketListenerFactory
-	ifaces  []wol.IfaceInfo
+	factory   PacketListenerFactory
+	ifaces    []wol.IfaceInfo
+	listeners *listenerSet
 
 	startedAt   time.Time
 	packets     atomic.Uint64
@@ -102,6 +103,7 @@ type ListenService struct {
 // (matching the old rules, dispatching through the new registry).
 type routingSnapshot struct {
 	policy    *wol.RoutingPolicy
+	ifaces    []wol.IfaceInfo
 	registry  *wol.Registry
 	cooldowns *cooldowns
 	limiter   *rateLimiter
@@ -119,6 +121,7 @@ func NewListenService(
 ) *ListenService {
 	return &ListenService{
 		factory:   factory,
+		listeners: newListenerSet(factory),
 		registry:  registry,
 		policy:    policy,
 		ifaces:    ifaces,
@@ -224,7 +227,7 @@ func (s *ListenService) Rules() []wol.Rule {
 
 // Interfaces returns the interfaces this instance listens for.
 func (s *ListenService) Interfaces() []wol.IfaceInfo {
-	return s.ifaces
+	return s.snapshot().ifaces
 }
 
 // Dispatch triggers a named action outside the packet path (control plane).
@@ -253,18 +256,20 @@ func (s *ListenService) Dispatch(ctx context.Context, action wol.Action, ev wol.
 func (s *ListenService) Run(ctx context.Context) error {
 	rt := s.snapshot()
 
-	s.logIfaces()
+	s.logIfaces(rt)
 	s.logRules(rt)
 	s.logCooldowns(rt)
 	s.logRateLimit(rt)
 
-	listeners, err := s.createListeners(rt)
-	if err != nil {
+	pktCh := make(chan packet, packetChannelSize)
+	ports := rt.policy.Ports()
+	errCh := make(chan error, len(ports))
+
+	if err := s.listeners.configure(ctx, pktCh, errCh, ports); err != nil {
 		return err
 	}
-	defer s.closeListeners(listeners)
 
-	pktCh, errCh := s.startListenerGoroutines(ctx, listeners, rt.policy.Ports())
+	defer s.listeners.closeAll()
 
 	s.eventLoop(ctx, pktCh, errCh)
 
@@ -284,6 +289,7 @@ func (s *ListenService) snapshot() routingSnapshot {
 		limiter:   s.limiter,
 		remote:    s.remote,
 		rawShell:  s.rawShell,
+		ifaces:    s.ifaces,
 		dryRun:    s.dryRun,
 	}
 }
@@ -302,8 +308,8 @@ func (s *ListenService) recordEvent(rec EventRecord) {
 	s.lastSeen = &rec
 }
 
-func (s *ListenService) logIfaces() {
-	for _, iface := range s.ifaces {
+func (s *ListenService) logIfaces(rt routingSnapshot) {
+	for _, iface := range rt.ifaces {
 		slog.Info("using interface",
 			"name", iface.Name,
 			"ip", iface.IPv4().String(),
@@ -343,78 +349,6 @@ func (s *ListenService) logRateLimit(rt routingSnapshot) {
 	}
 
 	slog.Info("global rate limit", "actions_per_second", rate, "burst", burst)
-}
-
-func (s *ListenService) createListeners(rt routingSnapshot) ([]PacketListener, error) {
-	ports := rt.policy.Ports()
-	listeners := make([]PacketListener, 0, len(ports))
-
-	for _, p := range ports {
-		lis, err := s.factory.Create(p)
-		if err != nil {
-			for _, l := range listeners {
-				_ = l.Close()
-			}
-
-			return nil, fmt.Errorf("failed to create listener on port %d: %w", p, err)
-		}
-
-		listeners = append(listeners, lis)
-	}
-
-	for _, p := range ports {
-		slog.Info("listening", "port", p)
-	}
-
-	return listeners, nil
-}
-
-func (s *ListenService) closeListeners(listeners []PacketListener) {
-	for _, l := range listeners {
-		_ = l.Close()
-	}
-}
-
-func (s *ListenService) startListenerGoroutines(ctx context.Context, listeners []PacketListener, ports []int) (chan packet, chan error) {
-	pktCh := make(chan packet, packetChannelSize)
-	errCh := make(chan error, len(listeners))
-
-	for idx, lis := range listeners {
-		go s.listenOnPort(ctx, lis, ports[idx], pktCh, errCh)
-	}
-
-	return pktCh, errCh
-}
-
-func (s *ListenService) listenOnPort(ctx context.Context, listener PacketListener, port int, pktCh chan packet, errCh chan error) {
-	if listener == nil {
-		errCh <- errNilListener
-
-		return
-	}
-
-	for {
-		payload, src, err := listener.ReadPacket(ctx)
-		if shouldStop(err) {
-			errCh <- err
-
-			return
-		}
-
-		if err != nil {
-			slog.Warn("read error", "port", port, "error", err)
-
-			continue
-		}
-
-		select {
-		case pktCh <- packet{payload, src, port}:
-		case <-ctx.Done():
-			errCh <- ctx.Err()
-
-			return
-		}
-	}
 }
 
 func (s *ListenService) eventLoop(ctx context.Context, pktCh chan packet, errCh chan error) {
