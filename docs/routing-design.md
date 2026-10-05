@@ -418,6 +418,7 @@ Resolve（伪代码）：
 - `--port` 不带动作时默认动作 = shutdown（保持兼容），可用 `--default-action` 覆盖。
 - 纯 CLI 模式（不给 `--config`）完全支持"端口→动作"矩阵（含多端口、多实例）；内容匹配与 `src_cidrs` 只能通过配置文件。
 - 新增 `--config`（指定配置文件路径）与 `--allow-reserved-actions` 覆盖开关。
+- 新增 `--watch 5s`（P4 落地）：轮询配置文件，变了就自动 reload；`--watch 0` 关掉，优先于 `server.watch`。详见 §19.9。
 - rules 合并语义：一旦命令行给了任何 `--port`，则命令行**完全接管 rules**（忽略配置文件里的 rules）；`actions`/`security`/`logging`/`server` 等仍取配置文件。未给 `--port` 时，rules 全部来自配置文件。校验在合并后的最终集合上执行。
 - `--port 9` 语义变更：从 shutdown 变为 `noop`（记日志）。属 breaking change，启动时打 warning。
 - 老用户迁移：把破坏性动作改用非保留端口（如 8），或开覆盖开关。
@@ -745,6 +746,7 @@ security.cooldowns.<动作名>  可选，按动作覆盖全局 cooldown
 commands[].id / type / command / args{type,enum,pattern,required} / timeout / workdir / env / user / group   远端白名单命令（§21 / §19.7），type 暂只支持 exec；user/group 复用 exec 的降权
 security.allow_remote_commands / remote_command_auth{type,key_env,key_file} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）
 server.http.{enabled,listen,auth,tls}        控制面（§18 / §19.5）：auth.type = bearer|basic|mtls（默认 bearer，无 none）
+server.watch                可选，配置文件的轮询间隔（如 5s；空/0 = 关闭，最小 1s）；变了就自动 reload（§19.9），CLI `--watch` 优先
 server.http.auth.token_env / token_file      bearer 密钥来源（二选一；文件必须 600 权限）
 server.http.auth.user + password_env / password_file   basic 认证
 server.http.tls.{cert_file,key_file,client_ca_file}    TLS / mTLS（client_ca_file 用于 mtls）
@@ -1399,10 +1401,17 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - **监听端口集合不能变**：socket 在启动时创建，reload 先比 `policy.Ports()`，不一致就**整体拒绝** -> `app.ErrReloadRestartRequired` -> HTTP 409，日志写明 `[10061] -> [10061 10062]`，老规则继续跑。不做"半应用"——那会让监听端口与配置文件长期不一致。
   - cooldown 窗口没变时**沿用正在跑的护栏对象**，防止用 reload 变相清冷却。
   - 网卡解析结果随 policy 一起换（socket 绑 0.0.0.0，换网卡不需要重绑）。
+- 自动 reload（`server.watch` / `--watch`）：`server.watch: 5s`（或 CLI `--watch 5s`，flag 优先，`--watch 0` 显式关掉）后，`cmd/watch.go` 起一个 goroutine 每 `watch` 轮询配置文件，检测到**大小或 mtime 变化**就调用上面同一个回调。刻意用轮询而不是 fsnotify：sol 目前零第三方依赖（除 yaml/cobra），轮询的代价是一次 stat + 变更时一次读，换来依赖面不增长。语义边界：
+  - 用 `config.ResolvePath` 取"启动时真正读的那个文件"（显式路径 > `$SOL_CONFIG` > 默认位置）；没有配置文件（纯 flag）时不起 watcher。
+  - 间隔下限 1s，`watch: 500ms` / `nonsense` / `-1s` 启动即报 `ErrWatchInterval`（`invalid server.watch interval: "500ms" (minimum 1s, empty disables it)`），避免手抖写成毫秒级热轮询；空串与 `0` 表示关闭。
+  - 基线戳在**启动函数里同步取**：启动时文件还不存在（先跑 sol、之后才创建 `~/.config/sol/sol.yaml`）会在文件出现时算作变更并 reload，而不是把它当成基线吞掉。
+  - 一个变更只 reload 一次（戳在 reload 前刷新）；reload 失败（配置写坏）只记 `automatic reload failed` + 原始错误，**老配置继续跑**、进程不退。
+  - 间隔本身不会因为 reload 而改变（改 `server.watch` 需要重启）——与端口集合同理。
 - 失败处理：配置读不了 / 校验不过 -> 400，并把原始错误原样返回（例：`rule 1: unknown action reference: mark-typo`），运行中的配置**完全不受影响**。
 - 冒烟（真机，规则端口 10061，控制面 `127.0.0.1:18084`，bearer）：① reload 前 10061 -> `mark-a`，生成 marker；② 文件改成 `mark-b`（端口集合不变）-> `POST /v1/reload` 200 `{"reloaded":true}` -> 10061 改为生成 `mark-b` marker；③ `kill -HUP` -> 日志 `reload signal received` + `configuration reloaded`，行为不变；④ 换成多一个端口的配置 -> 409 `restart required: ... [10061] -> [10061 10062]`，10061 仍按新规则触发、10062 没有被监听（无 marker）；⑤ 换成引用不存在动作的文件 -> 400 `unknown action reference: mark-typo`，老规则照旧；启动期只有 1 条 `listening`（端口集合始终是启动时那一套）。
 - 并发冒烟（`-race` 构建的二进制）：一边 60 次 reload（40 次成功 + 20 次因端口变更被拒），一边持续灌魔法包（期间 5813 条命中/执行日志），race detector **0 data race**。
-- 未做：端口 / 网卡集合变化后自动重绑（现在要求重启）、配置文件变更自动 reload（fsnotify/watch）、旧 policy 的平滑过渡（当前是换指针，旧对象等 GC）。
+- 冒烟（自动 reload，真机 `server.watch: 1s`，规则端口 10101，无 SIGHUP / 无 HTTP 触发）：① 配置 A（`mark-a`）生效，包生成 `marker-a`；② 直接把新配置覆盖到原文件 -> 日志 `configuration file changed` + `configuration reloaded` 各 1 条，同一个包改为生成 `marker-b`；③ 把文件换成引用不存在动作的坏配置 -> 1 条 `automatic reload failed`（含 `unknown action type` 原始错误），进程仍活着、`marker-b` 照旧触发（老配置继续跑）；④ `server.watch: 500ms` -> 启动 `exit 1`（`invalid server.watch interval: "500ms" (minimum 1s, empty disables it)`）。
+- 未做：端口 / 网卡集合变化后自动重绑（现在要求重启）、旧 policy 的平滑过渡（当前是换指针，旧对象等 GC）、fsnotify 事件式监听（现在是 1s 起的轮询）、watch 间隔的热改。
 
 ### 19.10 P4 部分落地（`sequence` 顺序组合）
 

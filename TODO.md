@@ -91,7 +91,7 @@
 - [x] HTTP 控制面（bearer/basic/mTLS、默认 127.0.0.1、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`/v1/actions/{name}`、`/metrics`、`/healthz`、审计）——实现对照见设计 §19.5
 - [x] `/v1/reload` 热重载 + `SIGHUP`（原子换入 policy/registry/cooldown/remote；端口集合变化 -> 409 要求重启；配置非法 -> 400 且旧配置继续跑；`-race` 下 60 次 reload 无 data race）——见设计 §19.9
 - [ ] 热重载重绑端口 / 网卡集合（当前必须重启）
-- [ ] 配置文件变更自动 reload（fsnotify / watch 模式）
+- [x] 配置文件变更自动 reload（`server.watch: 5s` / CLI `--watch`；轮询式，刻意不引 fsnotify，最小间隔 1s，坏配置只记错不换掉老配置；实测覆盖写入后 1 个轮询周期内自动 `configuration reloaded`）——见设计 §19.9
 - [x] mTLS 端到端冒烟（配置已支持 + 启动加载证书；带证书 200、无证书/异 CA 证书握手被拒、明文 HTTP 400；注意 mTLS 下 `/healthz` 也需客户端证书）——见设计 §19.5
 - [x] HTTP 出站动作（webhook、`url_allowlist`、超时 / 重试、不跟随重定向、headers 不落日志）——见设计 §19.8
 - [x] `sequence`（一个动作串多个动作：按序执行、失败不中断后续、`errors.Join` 汇总、不许嵌套 / 自引用；护栏按组合名算）——见设计 §19.10

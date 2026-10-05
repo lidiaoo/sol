@@ -37,10 +37,13 @@ type loggingConfig struct {
 	Format string `yaml:"format"`
 }
 
+// serverConfig is the server section: the control plane, the interfaces and the rules.
 type serverConfig struct {
 	HTTP       httpConfig    `yaml:"http"`
 	Interfaces []ifaceConfig `yaml:"interfaces"`
 	Rules      []ruleConfig  `yaml:"rules"`
+	// Watch is the config-file poll interval ("5s"); empty disables watching.
+	Watch string `yaml:"watch"`
 }
 
 type ifaceConfig struct {

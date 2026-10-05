@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -62,6 +63,8 @@ var listenCmd = &cobra.Command{
 		}
 
 		watchReloadSignals(ctx, reload)
+
+		watchConfigFile(ctx, config.ResolvePath(configPath), cfg.Watch, reload)
 
 		return application.Run(ctx)
 	},
@@ -131,6 +134,7 @@ var (
 	defaultActionName    string
 	allowReservedActions bool
 	configPath           string
+	watchInterval        time.Duration
 )
 
 func init() {
@@ -151,6 +155,9 @@ func init() {
 		"Action for ports given without an explicit action (noop|sleep|shutdown|reboot)")
 	listenCmd.Flags().BoolVar(&allowReservedActions, "allow-reserved-actions", false,
 		"Allow non-noop actions on the reserved ports 7 and 9 (reverts to the old behaviour)")
+	listenCmd.Flags().DurationVar(&watchInterval, "watch", 0,
+		"Poll the configuration file and reload it on change (e.g. 5s); 0 disables it. "+
+			"Overrides server.watch")
 }
 
 // buildConfig merges the configuration file with the CLI flags. Precedence is
@@ -166,6 +173,22 @@ func buildConfig(command *cobra.Command) (*config.Config, error) {
 		return nil, logErr
 	}
 
+	if err = applyFlags(command, cfg); err != nil {
+		return nil, err
+	}
+
+	// Remote command ports are bound without rules, so a config with only the §21
+	// channel is valid.
+	if len(cfg.Rules) == 0 && len(cfg.Remote.Ports) == 0 {
+		return nil, errNoRules
+	}
+
+	return cfg, nil
+}
+
+// applyFlags overlays the flags the operator actually set onto the loaded configuration;
+// precedence is defaults < file < environment < flags.
+func applyFlags(command *cobra.Command, cfg *config.Config) error {
 	if len(interfaceNames) > 0 {
 		cfg.InterfaceNames = interfaceNames
 	}
@@ -178,23 +201,22 @@ func buildConfig(command *cobra.Command) (*config.Config, error) {
 		cfg.AllowReservedActions = allowReservedActions
 	}
 
+	// --watch overrides server.watch, including an explicit --watch 0 turning it off.
+	if command.Flags().Changed("watch") {
+		cfg.Watch = watchInterval
+	}
+
 	// Any --port makes the command line take over the rule set completely.
 	if len(portStrings) > 0 {
 		rules, rulesErr := parsePorts(cfg.AllowReservedActions)
 		if rulesErr != nil {
-			return nil, rulesErr
+			return rulesErr
 		}
 
 		cfg.Rules = rules
 	}
 
-	// Remote command ports are bound without rules, so a config with only the §21
-	// channel is valid.
-	if len(cfg.Rules) == 0 && len(cfg.Remote.Ports) == 0 {
-		return nil, errNoRules
-	}
-
-	return cfg, nil
+	return nil
 }
 
 func parsePorts(allowReserved bool) ([]wol.Rule, error) {

@@ -42,6 +42,7 @@ var (
 	ErrRemotePorts           = errors.New("invalid security.remote_command_ports")
 	ErrRemotePort            = errors.New("remote command port must not be a reserved port")
 	ErrSequenceStepsRequired = errors.New("sequence action requires steps")
+	ErrWatchInterval         = errors.New("invalid server.watch interval")
 	ErrHTTPURLRequired       = errors.New("http action requires url")
 )
 
@@ -95,6 +96,13 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// ResolvePath returns the configuration file Load would read for path: an explicit path
+// wins, then $SOL_CONFIG, then the default locations; it is empty when there is no file.
+// The automatic reload watches this file.
+func ResolvePath(path string) string {
+	return resolvePath(path)
+}
+
 func loadFile(path string) (*Config, error) {
 	resolved := resolvePath(path)
 	if resolved == "" {
@@ -144,6 +152,34 @@ func resolvePath(path string) string {
 	}
 
 	return ""
+}
+
+// minWatch keeps the poll interval sane: watching a config file must stay cheaper than the
+// reload it triggers.
+const minWatch = time.Second
+
+// parseWatch reads server.watch. Empty and "0" disable watching; anything below minWatch is
+// rejected, so a typo ("50" meaning 50ms?) fails the start-up instead of polling hot.
+func parseWatch(value string) (time.Duration, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, nil
+	}
+
+	interval, err := time.ParseDuration(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %q: %w", ErrWatchInterval, value, err)
+	}
+
+	if interval == 0 {
+		return 0, nil
+	}
+
+	if interval < minWatch {
+		return 0, fmt.Errorf("%w: %q (minimum %s, empty disables it)", ErrWatchInterval, value, minWatch)
+	}
+
+	return interval, nil
 }
 
 func defaults() *Config {
@@ -263,7 +299,13 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		return nil, err
 	}
 
+	watch, err := parseWatch(f.Server.Watch)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
+		Watch:                watch,
 		InterfaceNames:       names,
 		DryRun:               f.Security.DryRun,
 		AllowReservedActions: f.Security.AllowReservedPortActions,

@@ -59,6 +59,8 @@ type Config struct {
 	Remote RemoteCommands
 	// HTTP holds the resolved control-plane settings.
 	HTTP HTTP
+	// Watch is the configuration-file poll interval of the automatic reload; zero disables it.
+	Watch time.Duration
 	// Rules are the routing rules, already expanded from any interface blocks.
 	Rules []wol.Rule
 }
