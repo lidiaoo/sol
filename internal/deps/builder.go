@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bavix/sol/internal/app"
@@ -32,6 +33,11 @@ var (
 
 type Builder struct {
 	cfg *config.Config
+
+	// rejections counts the authenticated packets refused for replay reasons (§19.16). The
+	// policy reports them through OnAuthRejected, so they live beside the policy rather than in
+	// the listener, and both /v1/status and /metrics read them from here.
+	rejections replayCounters
 
 	resolverOnce sync.Once
 	resolver     app.InterfaceResolver
@@ -391,6 +397,7 @@ func (b *Builder) buildRuntime() (*wol.Registry, *wol.RoutingPolicy, []wol.Iface
 		PacketKey:     b.cfg.PacketKey,
 		PacketWindow:  b.cfg.PacketWindow,
 		OnAuthRejected: func(reason string) {
+			b.rejections.add(reason)
 			slog.Warn("authenticated packet refused", "reason", reason)
 		},
 	})
@@ -472,6 +479,44 @@ type actionValidator struct {
 	check func(wol.ActionDef) error
 }
 
+// replayCounters counts the rejected authenticated packets per reason. The three reasons are
+// the ones the policy can report, so a new one shows up as a compile-time reminder here.
+type replayCounters struct {
+	stale  atomic.Uint64
+	seen   atomic.Uint64
+	unsent atomic.Uint64
+}
+
+func (c *replayCounters) add(reason string) {
+	switch reason {
+	case wol.ReplayStale:
+		c.stale.Add(1)
+	case wol.ReplaySeen:
+		c.seen.Add(1)
+	case wol.ReplayFull:
+		c.unsent.Add(1)
+	}
+}
+
+// total is what /metrics needs: one counter for "the protection refused a packet".
+func (c *replayCounters) total() uint64 {
+	return c.stale.Load() + c.seen.Load() + c.unsent.Load()
+}
+
+// reasons is the per-reason breakdown; it stays nil while nothing has been refused, so the
+// status view does not carry a map of zeroes.
+func (c *replayCounters) reasons() map[string]uint64 {
+	if c.total() == 0 {
+		return nil
+	}
+
+	return map[string]uint64{
+		wol.ReplayStale: c.stale.Load(),
+		wol.ReplaySeen:  c.seen.Load(),
+		wol.ReplayFull:  c.unsent.Load(),
+	}
+}
+
 func (b *Builder) statusFunc(svc *app.ListenService) func() httpapi.Status {
 	return func() httpapi.Status {
 		stats := svc.Stats()
@@ -483,18 +528,20 @@ func (b *Builder) statusFunc(svc *app.ListenService) func() httpapi.Status {
 		}
 
 		status := httpapi.Status{
-			Uptime:      uptime.Truncate(time.Second).String(),
-			UptimeSecs:  uptime.Seconds(),
-			Packets:     stats.Packets,
-			Matched:     stats.Matched,
-			Suppressed:  stats.Suppressed,
-			RateLimited: stats.RateLimited,
-			Actions:     stats.Actions,
-			Rules:       len(svc.Rules()),
-			Interfaces:  names,
-			DryRun:      b.cfg.DryRun,
-			AuthType:    b.cfg.HTTP.AuthType,
-			HTTPAddress: b.cfg.HTTP.Listen,
+			Uptime:        uptime.Truncate(time.Second).String(),
+			UptimeSecs:    uptime.Seconds(),
+			Packets:       stats.Packets,
+			Matched:       stats.Matched,
+			Suppressed:    stats.Suppressed,
+			RateLimited:   stats.RateLimited,
+			Replayed:      b.rejections.total(),
+			ReplayReasons: b.rejections.reasons(),
+			Actions:       stats.Actions,
+			Rules:         len(svc.Rules()),
+			Interfaces:    names,
+			DryRun:        b.cfg.DryRun,
+			AuthType:      b.cfg.HTTP.AuthType,
+			HTTPAddress:   b.cfg.HTTP.Listen,
 		}
 
 		if rate, burst := svc.RateLimit(); rate > 0 {

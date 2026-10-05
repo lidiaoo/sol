@@ -222,8 +222,10 @@ tag, and the stamp is inside the tag's coverage, so it cannot be edited.
 The receiver accepts a stamp no older (and no newer) than the window, and accepts each tag only
 once inside it — a captured packet sent a second time is refused as a replay, and one kept for
 longer than the window is refused as stale. Both refusals are logged with their reason
-(`authenticated packet refused reason=replay|stale`), and the seen-tag cache is bounded: when it
-is full, new packets are refused rather than evicting an entry that could still be replayed. Both
+(`authenticated packet refused reason=replay|stale`), counted in `/v1/status` (`replayed`, with a
+`replay_reasons` breakdown) and exported as `sol_replayed_total` on `/metrics`, and the seen-tag
+cache is bounded: when it is full, new packets are refused rather than evicting an entry that
+could still be replayed. Both
 ends must agree: a receiver with a window refuses the plain tag-only layout, and `wol.send` emits
 the stamp when its own instance sets `window` too (it needs the key and the window, not a rule).
 A reload starts with an empty cache, so a packet seen just before a reload could be replayed once

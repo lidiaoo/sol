@@ -57,20 +57,24 @@ type RateLimitView struct {
 
 // Status is the /v1/status payload.
 type Status struct {
-	Uptime      string            `json:"uptime"`
-	UptimeSecs  float64           `json:"uptime_seconds"`
-	Packets     uint64            `json:"packets"`
-	Matched     uint64            `json:"matched"`
-	Suppressed  uint64            `json:"suppressed"`
-	RateLimited uint64            `json:"rate_limited"`
-	RateLimit   *RateLimitView    `json:"rate_limit,omitempty"`
-	Actions     map[string]uint64 `json:"actions"`
-	Rules       int               `json:"rules"`
-	Interfaces  []string          `json:"interfaces"`
-	LastEvent   *Event            `json:"last_event,omitempty"`
-	DryRun      bool              `json:"dry_run"`
-	AuthType    string            `json:"auth_type"`
-	HTTPAddress string            `json:"http_listen"`
+	Uptime      string  `json:"uptime"`
+	UptimeSecs  float64 `json:"uptime_seconds"`
+	Packets     uint64  `json:"packets"`
+	Matched     uint64  `json:"matched"`
+	Suppressed  uint64  `json:"suppressed"`
+	RateLimited uint64  `json:"rate_limited"`
+	// Replayed counts the authenticated packets refused as stale or as a replay (§19.16);
+	// ReplayReasons breaks that down and stays absent while the count is zero.
+	Replayed      uint64            `json:"replayed"`
+	ReplayReasons map[string]uint64 `json:"replay_reasons,omitempty"`
+	RateLimit     *RateLimitView    `json:"rate_limit,omitempty"`
+	Actions       map[string]uint64 `json:"actions"`
+	Rules         int               `json:"rules"`
+	Interfaces    []string          `json:"interfaces"`
+	LastEvent     *Event            `json:"last_event,omitempty"`
+	DryRun        bool              `json:"dry_run"`
+	AuthType      string            `json:"auth_type"`
+	HTTPAddress   string            `json:"http_listen"`
 }
 
 // Deps are the read-only views and callbacks the control plane needs.
@@ -473,6 +477,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "# TYPE sol_matched_total counter\nsol_matched_total %d\n", st.Matched)
 	fmt.Fprintf(w, "# TYPE sol_suppressed_total counter\nsol_suppressed_total %d\n", st.Suppressed)
 	fmt.Fprintf(w, "# TYPE sol_rate_limited_total counter\nsol_rate_limited_total %d\n", st.RateLimited)
+	fmt.Fprintf(w, "# TYPE sol_replayed_total counter\nsol_replayed_total %d\n", st.Replayed)
+
+	for _, reason := range slices.Sorted(maps.Keys(st.ReplayReasons)) {
+		fmt.Fprintf(w, "sol_replayed_total{reason=%q} %d\n", reason, st.ReplayReasons[reason])
+	}
+
 	fmt.Fprintf(w, "# TYPE sol_rules gauge\nsol_rules %d\n", st.Rules)
 	fmt.Fprintf(w, "# TYPE sol_uptime_seconds gauge\nsol_uptime_seconds %.3f\n", st.UptimeSecs)
 	fmt.Fprintf(w, "# TYPE sol_actions_total counter\n")

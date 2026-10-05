@@ -72,7 +72,9 @@ tagged release.
   with their stamp; when it is full new packets are refused instead of evicting one that could
   still be replayed. Both ends have to agree: a windowed receiver refuses the tag-only layout, and
   `wol.send` emits the stamp once its own instance sets the window. A reload starts with an empty
-  cache.
+  cache. Refusals are counted: `/v1/status` reports `replayed` with a `replay_reasons` breakdown
+  and `/metrics` exports `sol_replayed_total` (plus a line per reason), so a channel under replay
+  is visible without scraping logs.
 - **Raw shell channel (`security.allow_raw_shell`, off by default)**: an opt-in that lets a remote
   sender run an arbitrary shell command through `/bin/sh -c`, over UDP
   (`[magic packet][secure_on?][command][HMAC tag]`) or `POST /v1/exec` on the control plane. It
