@@ -23,9 +23,10 @@ const maxSeenTags = 4096
 // pruneInterval limits how often expired entries are collected.
 const pruneInterval = time.Second
 
-// replayGuard remembers the tags accepted inside the window and refuses them a second time. A
+// ReplayGuard remembers the tags accepted inside the window and refuses them a second time. A
 // window of zero disables it, which leaves the plain §19.14 behaviour (a valid tag is enough).
-type replayGuard struct {
+// The same guard protects the remote command channel's stamped segments (§21.3).
+type ReplayGuard struct {
 	mu       sync.Mutex
 	seen     map[[PacketSignatureLen]byte]int64
 	window   time.Duration
@@ -33,21 +34,25 @@ type replayGuard struct {
 	onReject func(reason string)
 }
 
-func newReplayGuard(window time.Duration, onReject func(reason string)) *replayGuard {
+// NewReplayGuard builds a guard for a window; a window of zero or less returns nil, which means
+// "no replay protection" and is safe to call on: a nil guard is never constructed at all, so
+// callers test for nil rather than for a flag.
+func NewReplayGuard(window time.Duration, onReject func(reason string)) *ReplayGuard {
 	if window <= 0 {
 		return nil
 	}
 
-	return &replayGuard{
+	return &ReplayGuard{
 		seen:     make(map[[PacketSignatureLen]byte]int64),
 		window:   window,
 		onReject: onReject,
 	}
 }
 
-// accept reports whether a stamped packet may be processed: the stamp has to be fresh, and the
-// tag must not have been seen inside the window.
-func (g *replayGuard) accept(tag []byte, stamp int64, now time.Time) bool {
+// Accept reports whether a stamped payload may be processed: the stamp has to be fresh, and the
+// tag must not have been seen inside the window. The remote command channel (§21.3) and
+// authenticated packets (§19.16) share it.
+func (g *ReplayGuard) Accept(tag []byte, stamp int64, now time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -82,7 +87,7 @@ func (g *replayGuard) accept(tag []byte, stamp int64, now time.Time) bool {
 }
 
 // collect drops the entries whose stamp can no longer be replayed.
-func (g *replayGuard) collect(now time.Time) {
+func (g *ReplayGuard) collect(now time.Time) {
 	if now.Before(g.nextGC) {
 		return
 	}
@@ -96,7 +101,7 @@ func (g *replayGuard) collect(now time.Time) {
 	}
 }
 
-func (g *replayGuard) reject(reason string) {
+func (g *ReplayGuard) reject(reason string) {
 	if g.onReject != nil {
 		g.onReject(reason)
 	}

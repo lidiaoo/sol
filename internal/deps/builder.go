@@ -162,8 +162,16 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 			b.cfg.DryRun,
 		).WithCooldowns(b.cfg.Cooldown, cooldownWindows(b.cfg.ActionCooldowns)).
 			WithRateLimit(b.cfg.RateLimit, b.cfg.RateBurst).
-			WithRemoteCommands(b.cfg.Remote.Commands, b.cfg.Remote.Ports, b.cfg.Remote.HMACKey).
-			WithRawShell(rawShellSettings(b.cfg.Remote.RawShell))
+			WithRemoteCommands(app.RemoteSettings{
+				Commands: b.cfg.Remote.Commands,
+				Ports:    b.cfg.Remote.Ports,
+				Key:      b.cfg.Remote.HMACKey,
+				Window:   b.cfg.Remote.Window,
+				OnReject: func(reason string) { b.reportRefusal(reason, "command") },
+			}).
+			WithRawShell(rawShellSettings(b.cfg.Remote.RawShell, func(reason string) {
+				b.reportRefusal(reason, "raw_shell")
+			}))
 
 		b.warnRawShell()
 	})
@@ -188,22 +196,23 @@ func (b *Builder) ReloadOptions() (app.ReloadOptions, error) {
 	}
 
 	return app.ReloadOptions{
-		Policy:      policy,
-		Registry:    registry,
-		DryRun:      b.cfg.DryRun,
-		Cooldown:    b.cfg.Cooldown,
-		Cooldowns:   cooldownWindows(b.cfg.ActionCooldowns),
-		RateLimit:   b.cfg.RateLimit,
-		RateBurst:   b.cfg.RateBurst,
-		Commands:    b.cfg.Remote.Commands,
-		RemotePorts: b.cfg.Remote.Ports,
-		RemoteKey:   b.cfg.Remote.HMACKey,
+		Policy:       policy,
+		Registry:     registry,
+		DryRun:       b.cfg.DryRun,
+		Cooldown:     b.cfg.Cooldown,
+		Cooldowns:    cooldownWindows(b.cfg.ActionCooldowns),
+		RateLimit:    b.cfg.RateLimit,
+		RateBurst:    b.cfg.RateBurst,
+		Commands:     b.cfg.Remote.Commands,
+		RemotePorts:  b.cfg.Remote.Ports,
+		RemoteKey:    b.cfg.Remote.HMACKey,
+		RemoteWindow: b.cfg.Remote.Window,
 	}, nil
 }
 
 // rawShellSettings converts the resolved raw shell configuration into the form the listen
 // service takes.
-func rawShellSettings(cfg config.RawShell) app.RawShellSettings {
+func rawShellSettings(cfg config.RawShell, onReject func(string)) app.RawShellSettings {
 	return app.RawShellSettings{
 		Enabled:   cfg.Enabled,
 		Ports:     cfg.Ports,
@@ -211,6 +220,8 @@ func rawShellSettings(cfg config.RawShell) app.RawShellSettings {
 		SrcNets:   cfg.SrcNets,
 		Allowlist: cfg.Allowlist,
 		Exec:      cfg.Exec,
+		Window:    cfg.Window,
+		OnReject:  onReject,
 	}
 }
 
@@ -397,8 +408,7 @@ func (b *Builder) buildRuntime() (*wol.Registry, *wol.RoutingPolicy, []wol.Iface
 		PacketKey:     b.cfg.PacketKey,
 		PacketWindow:  b.cfg.PacketWindow,
 		OnAuthRejected: func(reason string) {
-			b.rejections.add(reason)
-			slog.Warn("authenticated packet refused", "reason", reason)
+			b.reportRefusal(reason, "packet")
 		},
 	})
 	if err != nil {
@@ -485,6 +495,13 @@ type replayCounters struct {
 	stale  atomic.Uint64
 	seen   atomic.Uint64
 	unsent atomic.Uint64
+}
+
+// reportRefusal records one refused authenticated payload: the counter for the status view, and
+// a log line naming the reason and the channel it came from (a packet or a command segment).
+func (b *Builder) reportRefusal(reason string, channel string) {
+	b.rejections.add(reason)
+	slog.Warn("authenticated packet refused", "reason", reason, "channel", channel)
 }
 
 func (c *replayCounters) add(reason string) {

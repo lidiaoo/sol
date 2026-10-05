@@ -108,7 +108,7 @@ type RoutingPolicy struct {
 	ifaceByMAC    map[string]string
 	secureOn      []byte
 	packetKey     []byte
-	replay        *replayGuard
+	replay        *ReplayGuard
 	now           func() time.Time
 	reservedPorts map[int]bool
 	extraPorts    []int
@@ -132,7 +132,7 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 		secureOn:      opts.SecureOn,
 		packetKey:     opts.PacketKey,
 		now:           opts.Now,
-		replay:        newReplayGuard(opts.PacketWindow, opts.OnAuthRejected),
+		replay:        NewReplayGuard(opts.PacketWindow, opts.OnAuthRejected),
 		reservedPorts: reservedSet(opts.ReservedPorts),
 		extraPorts:    opts.ExtraPorts,
 		allowReserved: opts.AllowReserved,
@@ -322,7 +322,7 @@ func (p *RoutingPolicy) unwrapSignature(payload []byte) ([]byte, bool) {
 		return nil, false
 	}
 
-	if !p.replay.accept(tag, stamp, p.clock()) {
+	if !p.replay.Accept(tag, stamp, p.clock()) {
 		return nil, false
 	}
 

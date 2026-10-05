@@ -27,6 +27,11 @@ type RawShellSettings struct {
 	SrcNets   []*net.IPNet
 	Allowlist []*regexp.Regexp
 	Exec      wol.ExecParams
+	// Window, when positive, turns on replay protection for the channel (§21.3): commands then
+	// carry a stamp, and each tag is accepted once.
+	Window time.Duration
+	// OnReject reports a refused attempt with its reason; nil means "log nothing extra".
+	OnReject func(reason string)
 }
 
 // rawShellRunner carries the raw shell transport of §21.6: a dedicated port set, its own HMAC
@@ -34,6 +39,8 @@ type RawShellSettings struct {
 // the operator enabled the channel; accepts then always reports false.
 type rawShellRunner struct {
 	key       []byte
+	guard     *wol.ReplayGuard
+	now       func() time.Time
 	ports     map[int]bool
 	srcNets   []*net.IPNet
 	allowlist []*regexp.Regexp
@@ -41,7 +48,7 @@ type rawShellRunner struct {
 }
 
 func newRawShellRunner(enabled bool, ports []int, key []byte, srcNets []*net.IPNet,
-	allowlist []*regexp.Regexp, exec wol.ExecParams,
+	allowlist []*regexp.Regexp, exec wol.ExecParams, window time.Duration, onReject func(string),
 ) *rawShellRunner {
 	if !enabled || len(ports) == 0 {
 		return nil
@@ -49,6 +56,8 @@ func newRawShellRunner(enabled bool, ports []int, key []byte, srcNets []*net.IPN
 
 	runner := &rawShellRunner{
 		key:       key,
+		guard:     wol.NewReplayGuard(window, onReject),
+		now:       time.Now,
 		ports:     make(map[int]bool, len(ports)),
 		srcNets:   srcNets,
 		allowlist: allowlist,
@@ -62,6 +71,24 @@ func newRawShellRunner(enabled bool, ports []int, key []byte, srcNets []*net.IPN
 	return runner
 }
 
+// split verifies the command segment, and refuses a replayed one when the channel has a window.
+func (r *rawShellRunner) split(prefix []byte, content []byte) ([]byte, error) {
+	if r.guard == nil {
+		return wol.SplitRemoteContent(r.key, prefix, content)
+	}
+
+	segment, stamp, tag, err := wol.SplitTimestampedRemoteContent(r.key, prefix, content)
+	if err != nil {
+		return nil, err
+	}
+
+	if !r.guard.Accept(tag, stamp, r.now()) {
+		return nil, ErrRemoteReplay
+	}
+
+	return segment, nil
+}
+
 // accepts reports whether the port may carry a raw shell command.
 func (r *rawShellRunner) accepts(port int) bool {
 	return r != nil && r.ports[port]
@@ -70,7 +97,7 @@ func (r *rawShellRunner) accepts(port int) bool {
 // command turns a packet's content region into the shell command to run: the signature is
 // verified against the packet prefix and the command is checked against the allowlist.
 func (r *rawShellRunner) command(prefix []byte, content []byte) (string, error) {
-	segment, err := wol.SplitRemoteContent(r.key, prefix, content)
+	segment, err := r.split(prefix, content)
 	if err != nil {
 		return "", err
 	}

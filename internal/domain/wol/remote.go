@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -217,6 +218,36 @@ func signatureTag(key []byte, parts ...[]byte) []byte {
 	}
 
 	return mac.Sum(nil)[:RemoteSignatureLen]
+}
+
+// RemoteStampSignature returns the [stamp][tag] a command segment carries when the channel
+// bounds replays (§21.3). The tag covers prefix||segment||stamp, so the stamp is authenticated.
+func RemoteStampSignature(key []byte, prefix []byte, segment []byte, at time.Time) []byte {
+	stamp := TimestampBytes(at)
+
+	return append(stamp, signatureTag(key, prefix, segment, stamp)...)
+}
+
+// SplitTimestampedRemoteContent is SplitRemoteContent for a stamped channel: it returns the
+// segment, its stamp and its tag, so the caller can apply its own replay window before acting.
+func SplitTimestampedRemoteContent(key []byte, prefix []byte, content []byte) ([]byte, int64, []byte, error) {
+	if len(content) < TimestampLen+RemoteSignatureLen {
+		return nil, 0, nil, ErrRemoteSignature
+	}
+
+	segment := content[:len(content)-TimestampLen-RemoteSignatureLen]
+	raw := content[len(content)-TimestampLen-RemoteSignatureLen : len(content)-RemoteSignatureLen]
+	tag := content[len(content)-RemoteSignatureLen:]
+
+	if len(key) == 0 {
+		return segment, DecodeTimestamp(raw), tag, nil
+	}
+
+	if !hmac.Equal(signatureTag(key, prefix, segment, raw), tag) {
+		return nil, 0, nil, ErrRemoteSignature
+	}
+
+	return segment, DecodeTimestamp(raw), tag, nil
 }
 
 // SplitRemoteContent strips the trailing signature tag and, when a key is configured,

@@ -176,10 +176,11 @@ UDP (a magic packet followed by `<id>[:k=v,...]` and an HMAC-SHA256 tag) or HTTP
 an HMAC key is configured; the key never lives in YAML:
 
 ```yaml
+version: 1
 security:
   allow_remote_commands: true
-  remote_command_auth: { type: hmac, key_env: SOL_CMD_KEY }   # or key_file (0600)
-  remote_command_ports: [10014]                              # reserved ports refused
+  remote_command_auth: { type: hmac, key_env: SOL_CMD_KEY, window: 60s }   # key + replay window
+  remote_command_ports: [10014]                                            # reserved ports refused
 
 commands:
   - id: lock
@@ -236,8 +237,8 @@ it (including a `secure_on` password), the content matcher sees the payload with
 the audit log records `authenticated=true|false` for every match. A rule that requires
 authentication while no key is configured, a reserved port that requires it, and `sign: true`
 without a key are all refused at start-up instead of failing silently. It proves the packet came
-from someone holding the key; it does not stop a replay of a captured packet (cooldowns and the
-rate limit bound that).
+from someone holding the key. On its own it does not stop a replay of a captured packet: set
+`packet_auth.window` (below) or rely on cooldowns and the rate limit to bound that.
 
 ### Raw shell (off by default)
 
@@ -270,6 +271,12 @@ python3 -c 'import hashlib,hmac,socket; m=b"\xff"*6+bytes.fromhex("58:11:22:BC:7
 curl -X POST -H "Authorization: Bearer $SOL_TOKEN" -H 'Content-Type: application/json' \
   -d '{"cmd":"echo hi"}' http://127.0.0.1:8080/v1/exec
 ```
+
+Both channels can also refuse replays: `remote_command_auth.window` and
+`raw_shell_auth.window` (e.g. `60s`) make the sender stamp each command segment, the receiver
+accept a stamp only inside that window and each tag only once — the same code that guards
+authenticated packets (`security.packet_auth.window`). Off unless you set it, and both ends have
+to agree; `docs/routing-design.md` §21.3/§21.4 has the wire format and §19.17 the details.
 
 Every command is checked against `raw_shell_allowlist` when one is set (the whole command line
 must match, so `^echo .*$` cannot be reached by `id; echo hi`), the sender must be inside
@@ -462,7 +469,8 @@ valid magic packet. SoL therefore
 - matches strictly by default (a rule only fires on the payload content it names),
 - offers `src_cidrs` to restrict which networks may trigger a rule,
 - can require an HMAC tag over the whole packet (`security.packet_auth` + `match.auth: hmac`),
-  which proves the sender holds the key (it does not stop a replay),
+  which proves the sender holds the key, and can bound replays with its `window` (as can the
+  remote command and raw shell channels, each with their own window),
 - requires HMAC authentication, a strict command whitelist and per-argument validation for
   remote commands, and keeps that channel off by default,
 - keeps the control plane on localhost with mandatory authentication,

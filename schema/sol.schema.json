@@ -232,6 +232,10 @@
             "key_file": {
               "type": "string",
               "description": "0600 file holding the shared key (alternative to key_env)."
+            },
+            "window": {
+              "type": "string",
+              "description": "Bind the command channel to a time window (e.g. 60s): the sender appends an 8-byte unix-second stamp in front of the tag, the tag covers it, and the receiver accepts each tag once inside that window. Off by default; requires the key, and both ends must set it."
             }
           },
           "required": [
@@ -279,6 +283,10 @@
             "key_file": {
               "type": "string",
               "description": "0600 file holding the key."
+            },
+            "window": {
+              "type": "string",
+              "description": "Bind the raw shell channel to a time window, exactly as remote_command_auth.window does for the command channel. Off by default; requires the key, and both ends must set it."
             }
           }
         },

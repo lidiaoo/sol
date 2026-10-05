@@ -135,6 +135,9 @@ type remoteAuthConfig struct {
 	Type    string `yaml:"type"`
 	KeyEnv  string `yaml:"key_env"`
 	KeyFile string `yaml:"key_file"`
+	// Window, when set, turns on replay protection for the channel this key belongs to: the
+	// remote command segment becomes [stamp][tag] and each tag is accepted once (§21.3).
+	Window string `yaml:"window"`
 }
 
 // packetAuthConfig is security.packet_auth: the shared key that authenticates whole packets

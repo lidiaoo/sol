@@ -44,11 +44,11 @@ func remoteService(t *testing.T, key []byte) (*ListenService, *executorMock) {
 	registry.RegisterAction(wol.ActionDef{Name: cmd.Action(), Type: wol.ActionTypeExec, Exec: &cmd.Exec})
 
 	svc := NewListenService(&factoryMock{}, registry, policy, ifaces, false).
-		WithRemoteCommands(
-			map[string]wol.RemoteCommand{"backup": remoteTestCommand()},
-			[]int{remoteTestPort},
-			key,
-		)
+		WithRemoteCommands(RemoteSettings{
+			Commands: map[string]wol.RemoteCommand{"backup": remoteTestCommand()},
+			Ports:    []int{remoteTestPort},
+			Key:      key,
+		})
 
 	return svc, executor
 }
@@ -64,7 +64,7 @@ func sendRemote(svc *ListenService, payload []byte) {
 func TestRemoteRunnerDisabledWithoutPorts(t *testing.T) {
 	t.Parallel()
 
-	runner := newRemoteRunner(map[string]wol.RemoteCommand{"backup": remoteTestCommand()}, nil, []byte("k"))
+	runner := newRemoteRunner(RemoteSettings{Commands: map[string]wol.RemoteCommand{"backup": remoteTestCommand()}, Key: []byte("k")})
 
 	require.Nil(t, runner)
 	require.False(t, runner.accepts(remoteTestPort))

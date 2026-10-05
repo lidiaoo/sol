@@ -75,6 +75,12 @@ tagged release.
   cache. Refusals are counted: `/v1/status` reports `replayed` with a `replay_reasons` breakdown
   and `/metrics` exports `sol_replayed_total` (plus a line per reason), so a channel under replay
   is visible without scraping logs.
+- Remote command segments can be stamped too (`remote_command_auth.window`), and so can the raw
+  shell channel that rides on them (`raw_shell_auth.window`). The same guard as packet
+  authentication then accepts a command once inside the window and refuses a captured segment:
+  `reason=replay|stale`, counted alongside packets and logged with `channel=command|raw_shell`
+  (packets log `channel=packet`). Off by default, both ends must agree, and a reload keeps the
+  window.
 - **Raw shell channel (`security.allow_raw_shell`, off by default)**: an opt-in that lets a remote
   sender run an arbitrary shell command through `/bin/sh -c`, over UDP
   (`[magic packet][secure_on?][command][HMAC tag]`) or `POST /v1/exec` on the control plane. It

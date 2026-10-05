@@ -86,6 +86,9 @@ type RemoteCommands struct {
 	// HMACKey authenticates UDP command segments; empty means the UDP transport is
 	// not configured (only the authenticated HTTP transport may then be used).
 	HMACKey []byte
+	// Window, when positive, makes command segments carry a stamp and be accepted once
+	// (§21.3).
+	Window time.Duration
 	// Commands maps a command id to its whitelisted definition.
 	Commands map[string]wol.RemoteCommand
 	// RawShell is the resolved raw shell transport (§21.6); Enabled is false unless the
@@ -107,6 +110,9 @@ type RawShell struct {
 	SrcNets []*net.IPNet
 	// Allowlist, when set, restricts which command lines may run (empty allows any).
 	Allowlist []*regexp.Regexp
+	// Window, when positive, makes the commands carry a stamp and be accepted once, exactly as
+	// the command channel it rides on (§21.3).
+	Window time.Duration
 	// Exec carries the execution settings that apply to every command: shell mode, timeout
 	// and the optional privilege drop. Command itself is empty and filled per packet.
 	Exec wol.ExecParams

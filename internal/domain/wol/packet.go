@@ -77,14 +77,21 @@ func SplitTimestampedSignature(key []byte, payload []byte) ([]byte, int64, []byt
 		return payload, 0, nil, false
 	}
 
-	// A stamp that does not fit a signed second is nonsense; it comes back as zero, which no
-	// window accepts.
-	var stamp int64
-	if value := binary.BigEndian.Uint64(raw); value <= math.MaxInt64 {
-		stamp = int64(value)
+	return data, DecodeTimestamp(raw), tag, true
+}
+
+// DecodeTimestamp reads a stamp. One that does not fit a signed second is nonsense and comes
+// back as zero, which no window accepts.
+func DecodeTimestamp(raw []byte) int64 {
+	if len(raw) < TimestampLen {
+		return 0
 	}
 
-	return data, stamp, tag, true
+	if value := binary.BigEndian.Uint64(raw[:TimestampLen]); value <= math.MaxInt64 {
+		return int64(value)
+	}
+
+	return 0
 }
 
 // TimestampBytes renders a time as the 8 big-endian bytes of its unix second. A time before 1970

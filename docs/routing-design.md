@@ -747,13 +747,13 @@ security.cooldowns.<动作名>  可选，按动作覆盖全局 cooldown
 security.rate_limit         可选，全局令牌桶：跨所有动作与触发源的执行速率上限（10/s、600/m、3600/h，裸数字 = 每秒；空或 0 = 关闭，§19.12）
 security.rate_burst         可选，桶容量（吸收瞬时突发；0 = 一秒的 rate_limit；只写 burst 不写 rate 启动即报错）
 commands[].id / type / command / args{type,enum,pattern,required} / timeout / workdir / env / user / group   远端白名单命令（§21 / §19.7），type 暂只支持 exec；user/group 复用 exec 的降权
-security.allow_remote_commands / remote_command_auth{type,key_env,key_file} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）
+security.allow_remote_commands / remote_command_auth{type,key_env,key_file,window} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）。配了 window（如 60s）后命令段变成 [stamp 8B][tag 8B]，同一个 tag 只接受一次（§21.3 / §19.17）
 security.packet_auth{type,key_env,key_file,window}   整包认证（默认关闭，§19.14）+ 重放防护窗口（§19.16）：配上 window（如 60s）后包尾变成 [stamp 8B][tag 8B]，stamp 也在 tag 覆盖内；接收方只收窗口内的 stamp，且同一个 tag 只接受一次（缓存 4096 条，满了拒绝而非淘汰）；两端要么都配 window、要么都不配，混用不支持
 security.packet_auth{type:hmac,key_env,key_file}   整包认证（默认关闭，§19.14）：配了它，`match.auth: hmac` 的规则才只接受带 tag（截断 HMAC-SHA256，8 字节）的包；密钥不入 YAML
 match.auth                  可选，`hmac` = 只匹配认证过的包（§19.14）；保留端口不能要求认证；配了它却没配 packet_auth 启动即报错
 security.allow_raw_shell    可选，默认 false；裸 shell 通道的开关（§21.6 / §19.15）。它是远端命令通道的子开关：开启要求 security.allow_remote_commands
 security.raw_shell_ports    开启时必填；专用 UDP 端口，非保留、且不得与 remote_command_ports 重叠（这类包在规则匹配前被消费）
-security.raw_shell_auth     开启时必填；{type: hmac, key_env/key_file}，与 remote_command_auth 分开的两把 key（命令 id 通道泄漏≠交出 shell）
+security.raw_shell_auth     开启时必填；{type: hmac, key_env/key_file, window}——与 remote_command_auth 分开的两把 key（命令 id 通道泄漏≠交出 shell），window 给裸 shell 通道同样的重放防护（§21.3 / §19.17）
 security.raw_shell_allowlist 可选；命令白名单，条目两端锚定（`^echo .*$` 照旧生效；裸写 `echo` 只匹配该整串）；空 = 放行一切
 security.raw_shell_src_cidrs 可选；非空时只放行这些来源（UDP 按发包源 IP，HTTP 按 RemoteAddr，回环网段要显式写上）
 security.raw_shell_timeout / raw_shell_user / raw_shell_group   可选；复用 exec 的解析与降权（用户/组启动期解析，需 root）
@@ -1612,6 +1612,20 @@ noop/记日志  <  wol.send 唤醒别处  <  power.sleep/lock  <  power.shutdown
 
 ---
 
+### 19.17 命令段的重放防护（`remote_command_auth.window` / `raw_shell_auth.window`）
+
+§19.16 解决的是"包认证了但可以被重放"，同一问题在 §21 的命令通道上一模一样：命令段的 HMAC 只证明"这段命令来自持有密钥的人"，抓包重放就能再执行一次。裸 shell 通道（§21.6）尤其不能留这个口子——那里重放一次就是再执行一条任意命令。
+
+- **实现与 §19.16 共用一套原语**：`wol.ReplayGuard`（±window 新鲜度 + 一次性 tag 缓存 + 懒修剪 + 满了拒绝不淘汰）、`TimestampBytes` / `DecodeTimestamp`、`signatureTag`。区别只是被保护的对象从"整包"变成"命令段"，且每个通道有自己的密钥与窗口。
+- **线格式**：`[magic][secureon?]<命令段>[stamp 8B][tag 8B]`，tag 覆盖其前全部字节（含 stamp）——见 §21.4。
+- **两个开关**：`security.remote_command_auth.window` 管命令 id 通道，`security.raw_shell_auth.window` 管裸 shell 通道（各自独立，因为它们的密钥本来就分开）。默认都不配 = 保持 §21 原行为（只有 tag），增量上线。
+- **拒绝都计数**：命令段被拒同样计入 `/v1/status` 的 `replayed` / `replay_reasons` 与 `/metrics` 的 `sol_replayed_total`，日志行是 `authenticated packet refused reason=... channel=command|raw_shell`（包级是 `channel=packet`）。`channel` 字段让运维能分清"是有人在重放唤醒包"还是"有人在重放命令"。
+- **拒绝早于白名单**：`split()` 在 `Accept` 失败时直接返回，命令既不进 allowlist 检查也不进执行器；冒烟用 marker 文件的计数（而不是只看 exit code）证明"确实没跑"。
+- **配置校验**：window 必须有密钥、必须是正数、必须能被 `time.ParseDuration` 解析，否则启动即报错；`raw_shell_auth.window` 在裸 shell 未开启时属于"多余的伴生键"，同样报错（不静默忽略）。
+- **reload 保留窗口**：`ReloadOptions.RemoteWindow` 带着它走，否则第一次 SIGHUP 就会静默把 §21.3 关掉。计数器与上报回调挂在 service 上，reload 不重置（缓存会重建，与 §19.16 同）。
+- **冒烟**：`s22`（真机，16/16）——新鲜命令执行一次；**同一份字节再发一次不执行**（`replay`）；-600s 的段不执行（`stale`）；旧布局两种长度都不执行；裸 shell 通道同样一次；两个通道的拒绝都出现在 `replayed` 与日志的 `channel` 字段里；`s20`（无窗口的裸 shell，27/27）与 `s21`（包级，16/16）复跑确认没有回归。
+- **仍不防**：能主动压制/延迟包的网络位置仍可在窗口内抢在原件之前重放一次（没有顺序保证），窗口就是那个上界；命令通道的 HTTP 传输（`POST /v1/commands/{id}`）不走这条路（它由控制面认证，没有"段"可重放）。
+
 ## 21. 远端命令通道（发送方指定要执行的命令）
 
 定位：允许发送端不只是"触发预定义动作"，而是携带"命令 id + 参数"，由 sol 在**白名单**中解析并执行。这是 §4.3 exec 的动态版本。
@@ -1643,7 +1657,7 @@ server:
   interfaces: [eth0]
 security:
   allow_remote_commands: false
-  remote_command_auth: { type: hmac, key_env: SOL_CMD_KEY }
+  remote_command_auth: { type: hmac, key_env: SOL_CMD_KEY, window: 60s }
   remote_command_ports: [14]          # 非保留端口
 commands:                              # 可被远端调用的白名单
   - id: lock
@@ -1664,7 +1678,15 @@ commands:                              # 可被远端调用的白名单
 [magic 102B] [secureon 6B?] "backup:target=home"   -> 调 id=backup, arg target=home
 ```
 
-HMAC：命令段前/后附 8 字节截断 `HMAC-SHA256(magic+命令段+key)`；校验失败即丢弃并记日志。
+HMAC：命令段后附 8 字节截断 `HMAC-SHA256(magic+命令段+key)`；校验失败即丢弃并记日志。
+
+配了 `window` 之后（§21.3 的推荐做法）线格式多一个 stamp：
+
+```
+[magic 102B] [secureon 6B?] <命令段> [stamp 8B] [tag 8B]
+```
+
+`stamp` = 大端 unix 秒，`tag` = 截断 HMAC-SHA256 覆盖"tag 之前的全部字节"（**含 stamp**）。接收方只接受窗口内的 stamp，并且同一个 tag 只接受一次；两者的实现与包级认证共用同一段代码（§19.16 / §19.17）。**datalen 太短的旧布局**（连 stamp+tag 都装不下）会被当成格式错误直接丢弃，长一点的旧布局则会验签通过但 stamp 位是垃圾 → 判 `stale`；两种情况都不会执行，区别只在日志里的 reason。
 
 ### 21.5 与现有模型的关系
 

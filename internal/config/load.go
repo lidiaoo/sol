@@ -871,6 +871,30 @@ func buildRemote(f *fileConfig) (RemoteCommands, error) {
 	return remote, nil
 }
 
+// buildAuthWindow reads the replay window of one authenticated channel (§21.3). A window needs
+// the key it belongs to, and a zero or negative one is refused: it would read like protection
+// while accepting every stamp.
+func buildAuthWindow(auth remoteAuthConfig, key []byte, label string, sentinel error) (time.Duration, error) {
+	if auth.Window == "" {
+		return 0, nil
+	}
+
+	if len(key) == 0 {
+		return 0, fmt.Errorf("%w: %s.window requires a key", sentinel, label)
+	}
+
+	window, err := time.ParseDuration(auth.Window)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s.window: %q: %w", sentinel, label, auth.Window, err)
+	}
+
+	if window <= 0 {
+		return 0, fmt.Errorf("%w: %s.window must be positive, got %s", sentinel, label, auth.Window)
+	}
+
+	return window, nil
+}
+
 // buildRawShell resolves security.allow_raw_shell and its companion keys (§21.6). Enabling it
 // requires the remote channel to be on, a dedicated non-reserved port set and its own HMAC key;
 // a companion key without allow_raw_shell is a mistake, not a no-op.
@@ -907,6 +931,11 @@ func buildRawShell(cfg securityConfig, remote RemoteCommands) (RawShell, error) 
 		return RawShell{}, err
 	}
 
+	window, err := buildAuthWindow(cfg.RawShellAuth, []byte(key), "raw_shell_auth", ErrRawShell)
+	if err != nil {
+		return RawShell{}, err
+	}
+
 	exec, err := buildRawShellExec(cfg)
 	if err != nil {
 		return RawShell{}, fmt.Errorf("%w: %w", ErrRawShell, err)
@@ -914,6 +943,7 @@ func buildRawShell(cfg securityConfig, remote RemoteCommands) (RawShell, error) 
 
 	return RawShell{
 		Enabled:   true,
+		Window:    window,
 		Ports:     ports,
 		Key:       []byte(key),
 		SrcNets:   srcNets,
@@ -928,7 +958,7 @@ func buildRawShell(cfg securityConfig, remote RemoteCommands) (RawShell, error) 
 func rejectRawShellKeys(cfg securityConfig) error {
 	configured := len(cfg.RawShellPorts) > 0 || cfg.RawShellAuth.Type != "" ||
 		cfg.RawShellAuth.KeyEnv != "" || cfg.RawShellAuth.KeyFile != "" ||
-		len(cfg.RawShellAllowlist) > 0 || len(cfg.RawShellSrcCIDRs) > 0
+		len(cfg.RawShellAllowlist) > 0 || len(cfg.RawShellSrcCIDRs) > 0 || cfg.RawShellAuth.Window != ""
 
 	if configured {
 		return fmt.Errorf("%w: raw_shell_* keys are set without security.allow_raw_shell", ErrRawShell)
@@ -1000,6 +1030,22 @@ func buildRawShellExec(cfg securityConfig) (wol.ExecParams, error) {
 	return *def.Exec, nil
 }
 
+// remoteChannelKey resolves the command channel's HMAC key and its optional replay window. They
+// are read together because a window is meaningless without the key it binds (§21.3).
+func remoteChannelKey(cfg securityConfig) (string, time.Duration, error) {
+	key, err := resolveSecret(cfg.RemoteCommandAuth.KeyEnv, cfg.RemoteCommandAuth.KeyFile, "remote_command_auth.key")
+	if err != nil {
+		return "", 0, fmt.Errorf("%w: %w", ErrRemoteAuth, err)
+	}
+
+	window, err := buildAuthWindow(cfg.RemoteCommandAuth, []byte(key), "remote_command_auth", ErrRemoteAuth)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return key, window, nil
+}
+
 // buildRemoteCommands resolves the §21 remote command channel: the whitelisted
 // commands, the UDP ports allowed to carry command segments and the shared HMAC key.
 func buildRemoteCommands(cfg securityConfig, entries []commandConfig) (RemoteCommands, error) {
@@ -1030,14 +1076,16 @@ func buildRemoteCommands(cfg securityConfig, entries []commandConfig) (RemoteCom
 		return RemoteCommands{}, fmt.Errorf("%w: remote_command_auth.type must be %q", ErrRemoteAuth, authTypeHMAC)
 	}
 
-	key, err := resolveSecret(cfg.RemoteCommandAuth.KeyEnv, cfg.RemoteCommandAuth.KeyFile, "remote_command_auth.key")
+	key, window, err := remoteChannelKey(cfg)
 	if err != nil {
-		return RemoteCommands{}, fmt.Errorf("%w: %w", ErrRemoteAuth, err)
+		return RemoteCommands{}, err
 	}
 
 	if err := requireCommands(cfg, remote.Commands); err != nil {
 		return RemoteCommands{}, err
 	}
+
+	remote.Window = window
 
 	ports, err := remoteCommandPorts(cfg.RemoteCommandPorts, cfg.ReservedPorts)
 	if err != nil {

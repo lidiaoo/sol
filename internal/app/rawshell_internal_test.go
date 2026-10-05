@@ -55,7 +55,7 @@ func sendShell(svc *ListenService, payload []byte, src net.IP) {
 func TestRawShellRunnerDisabledWithoutSettings(t *testing.T) {
 	t.Parallel()
 
-	require.Nil(t, newRawShellRunner(false, []int{rawShellTestPort}, []byte("k"), nil, nil, wol.ExecParams{}))
+	require.Nil(t, newRawShellRunner(false, []int{rawShellTestPort}, []byte("k"), nil, nil, wol.ExecParams{}, 0, nil))
 
 	svc, executor := shellService(t, RawShellSettings{Enabled: true, Key: []byte("k")}, false)
 

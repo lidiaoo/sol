@@ -91,7 +91,10 @@ type ListenService struct {
 	cooldowns *cooldowns
 	limiter   *rateLimiter
 	remote    *remoteRunner
-	rawShell  *rawShellRunner
+	// onReject reports a refused remote segment to the same place the policy reports refused
+	// packets (§19.16). It lives on the service so a reload keeps the counters.
+	onReject func(reason string)
+	rawShell *rawShellRunner
 }
 
 // routingSnapshot is the state a single packet is routed with. It is taken once per
@@ -149,11 +152,12 @@ func (s *ListenService) WithRateLimit(rate float64, burst int) *ListenService {
 
 // WithRemoteCommands enables the whitelisted remote command channel (§21). Without
 // ports the channel stays disabled.
-func (s *ListenService) WithRemoteCommands(commands map[string]wol.RemoteCommand, ports []int, key []byte) *ListenService {
+func (s *ListenService) WithRemoteCommands(settings RemoteSettings) *ListenService {
 	s.rtMu.Lock()
 	defer s.rtMu.Unlock()
 
-	s.remote = newRemoteRunner(commands, ports, key)
+	s.onReject = settings.OnReject
+	s.remote = newRemoteRunner(settings)
 
 	return s
 }
@@ -165,8 +169,12 @@ func (s *ListenService) WithRawShell(settings RawShellSettings) *ListenService {
 	s.rtMu.Lock()
 	defer s.rtMu.Unlock()
 
+	if settings.OnReject != nil {
+		s.onReject = settings.OnReject
+	}
+
 	s.rawShell = newRawShellRunner(settings.Enabled, settings.Ports, settings.Key,
-		settings.SrcNets, settings.Allowlist, settings.Exec)
+		settings.SrcNets, settings.Allowlist, settings.Exec, settings.Window, settings.OnReject)
 
 	return s
 }

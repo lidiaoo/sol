@@ -31,6 +31,10 @@ type ReloadOptions struct {
 	Commands    map[string]wol.RemoteCommand
 	RemotePorts []int
 	RemoteKey   []byte
+	// RemoteWindow carries the command channel's replay window across a reload: dropping it
+	// here would quietly undo §21.3 on the first SIGHUP. The reporter is not part of the
+	// options -- it belongs to the service, so the counters survive.
+	RemoteWindow time.Duration
 }
 
 // Reload swaps the routing state. It is atomic: a packet already being handled keeps
@@ -63,7 +67,13 @@ func (s *ListenService) Reload(opts ReloadOptions) error {
 	s.policy = opts.Policy
 	s.registry = opts.Registry
 	s.dryRun = opts.DryRun
-	s.remote = newRemoteRunner(opts.Commands, opts.RemotePorts, opts.RemoteKey)
+	s.remote = newRemoteRunner(RemoteSettings{
+		Commands: opts.Commands,
+		Ports:    opts.RemotePorts,
+		Key:      opts.RemoteKey,
+		Window:   opts.RemoteWindow,
+		OnReject: s.onReject,
+	})
 
 	return nil
 }
