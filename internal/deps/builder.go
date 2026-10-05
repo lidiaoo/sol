@@ -16,6 +16,7 @@ import (
 	"github.com/bavix/sol/internal/infra/exec"
 	"github.com/bavix/sol/internal/infra/httpapi"
 	"github.com/bavix/sol/internal/infra/network"
+	"github.com/bavix/sol/internal/infra/outbound"
 	"github.com/bavix/sol/internal/infra/system"
 )
 
@@ -38,6 +39,9 @@ type Builder struct {
 
 	execOnce sync.Once
 	executor *exec.Executor
+
+	outboundOnce sync.Once
+	outbound     *outbound.Executor
 
 	listenOnce sync.Once
 	listen     *app.ListenService
@@ -88,6 +92,7 @@ func (b *Builder) Registry() *wol.Registry {
 			wol.ActionTypeSleep,
 		)
 		registry.Register(b.ExecExecutor(), wol.ActionTypeExec)
+		registry.Register(b.HTTPExecutor(), wol.ActionTypeHTTP)
 
 		// Named actions from the configuration (built-in names carry identical definitions).
 		for _, def := range b.cfg.Actions {
@@ -125,7 +130,7 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 
 		registry := b.Registry()
 
-		if err := b.validateExecActions(registry); err != nil {
+		if err := b.validateActions(registry); err != nil {
 			buildErr = err
 
 			return
@@ -257,17 +262,32 @@ func remoteArgError(err error) bool {
 	return false
 }
 
-// validateExecActions statically checks every configured exec action at startup.
-func (b *Builder) validateExecActions(registry *wol.Registry) error {
+// HTTPExecutor returns the outbound HTTP executor, restricted by security.url_allowlist.
+func (b *Builder) HTTPExecutor() *outbound.Executor {
+	b.outboundOnce.Do(func() {
+		b.outbound = outbound.NewExecutor(b.cfg.URLAllowlist)
+	})
+
+	return b.outbound
+}
+
+// validateActions statically checks every configured exec/http action at startup.
+func (b *Builder) validateActions(registry *wol.Registry) error {
 	executor := b.ExecExecutor()
+	outboundExecutor := b.HTTPExecutor()
 
 	for _, def := range registry.Actions() {
-		if def.Type != wol.ActionTypeExec {
-			continue
-		}
-
-		if err := executor.Validate(def); err != nil {
-			return fmt.Errorf("exec action %s: %w", def.Name, err)
+		switch def.Type {
+		case wol.ActionTypeExec:
+			if err := executor.Validate(def); err != nil {
+				return fmt.Errorf("exec action %s: %w", def.Name, err)
+			}
+		case wol.ActionTypeHTTP:
+			if err := outboundExecutor.Validate(def); err != nil {
+				return fmt.Errorf("http action %s: %w", def.Name, err)
+			}
+		case wol.ActionTypeNoop, wol.ActionTypeSleep, wol.ActionTypeShutdown, wol.ActionTypeReboot:
+			// built-in power actions carry no parameters to validate
 		}
 	}
 

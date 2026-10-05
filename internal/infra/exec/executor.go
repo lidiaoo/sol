@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/bavix/sol/internal/domain/wol"
@@ -179,61 +178,16 @@ func (e *Executor) checkAllowlist(path string) (string, error) {
 	return "", fmt.Errorf("%w: %s", ErrCommandNotAllowed, path)
 }
 
-// Vars are the values an exec command may interpolate; anything else is rejected (§4.3).
-type Vars struct {
-	Action    string
-	SrcIP     string
-	SrcPort   int
-	DstPort   int
-	Interface string
-	MAC       string
-	Time      string
-	// Arg holds the validated arguments of a remote command ({{\.Arg.<name>}}, §21).
-	Arg map[string]string
-}
-
+// Vars and the interpolation helpers live in the domain package so that every
+// action type renders the same whitelisted values (§4.3).
 func interpolate(args []string, action wol.Action, ev wol.Event) ([]string, error) {
-	values := Vars{
-		Action:    string(action),
-		SrcIP:     ipString(ev.SrcIP),
-		SrcPort:   ev.SrcPort,
-		DstPort:   ev.DstPort,
-		Interface: ev.Interface,
-		MAC:       ev.TargetMAC.String(),
-		Time:      time.Now().Format(time.RFC3339),
-		Arg:       ev.Args,
-	}
-
-	out := make([]string, 0, len(args))
-
-	for _, arg := range args {
-		tmpl, err := template.New("arg").Option("missingkey=error").Parse(arg)
-		if err != nil {
-			return nil, fmt.Errorf("invalid template %q: %w", arg, err)
-		}
-
-		var buf strings.Builder
-
-		if execErr := tmpl.Execute(&buf, values); execErr != nil {
-			return nil, fmt.Errorf("interpolate %q: %w", arg, execErr)
-		}
-
-		out = append(out, buf.String())
-	}
-
-	return out, nil
+	return wol.EventVars(action, ev).InterpolateAll(args)
 }
 
 // parseTemplates parses the argv templates at startup so that syntax errors fail fast
 // instead of at trigger time.
 func parseTemplates(args []string) error {
-	for _, arg := range args {
-		if _, err := template.New("arg").Option("missingkey=error").Parse(arg); err != nil {
-			return fmt.Errorf("invalid template %q: %w", arg, err)
-		}
-	}
-
-	return nil
+	return wol.ParseTemplates(args)
 }
 
 func shellCommand(ctx context.Context, line string) *osexec.Cmd {

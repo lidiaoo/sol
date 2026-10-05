@@ -233,8 +233,20 @@ func TestLoadActionErrors(t *testing.T) {
 			match: ErrDuplicateAction,
 		},
 		"unknown type": {
-			body:  "version: 1\nactions:\n  - { name: lock, type: http }\n",
+			body:  "version: 1\nactions:\n  - { name: lock, type: sequence }\n",
 			match: ErrUnknownActionType,
+		},
+		"http action without url": {
+			body:  "version: 1\nactions:\n  - { name: notify, type: http }\n",
+			match: ErrHTTPURLRequired,
+		},
+		"http action with exec params": {
+			body:  "version: 1\nactions:\n  - { name: notify, type: http, url: https://example.com, command: [ls] }\n",
+			match: ErrActionParams,
+		},
+		"exec action with http params": {
+			body:  "version: 1\nactions:\n  - { name: hook, type: exec, command: [ls], url: https://example.com }\n",
+			match: ErrActionParams,
 		},
 		"unknown action reference": {
 			body:  "version: 1\nrules:\n  - { match: { ports: [8] }, action: nope }\n",

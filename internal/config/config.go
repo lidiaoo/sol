@@ -53,6 +53,8 @@ type Config struct {
 	Actions map[wol.Action]wol.ActionDef
 	// Logging holds the raw logging settings; empty values mean the defaults.
 	Logging Logging
+	// URLAllowlist, when set, restricts outbound HTTP actions (§18.2).
+	URLAllowlist []string
 	// Remote holds the resolved remote command channel (§21).
 	Remote RemoteCommands
 	// HTTP holds the resolved control-plane settings.

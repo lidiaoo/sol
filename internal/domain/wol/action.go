@@ -34,6 +34,7 @@ const (
 	ActionTypeShutdown ActionType = "power.shutdown"
 	ActionTypeReboot   ActionType = "power.reboot"
 	ActionTypeExec     ActionType = "exec"
+	ActionTypeHTTP     ActionType = "http"
 )
 
 // ExecParams describes a custom command action (type: exec).
@@ -50,12 +51,30 @@ type ExecParams struct {
 	Shell bool
 }
 
+// HTTPParams describes an outbound HTTP action (type: http, §18.2).
+type HTTPParams struct {
+	// Method is the HTTP method; empty means POST.
+	Method string
+	// URL is the destination; it may interpolate the whitelisted event values.
+	URL string
+	// Headers are extra request headers; values may interpolate the same values.
+	Headers map[string]string
+	// Body is the request body template; empty sends no body.
+	Body string
+	// Timeout bounds one attempt; zero selects the executor default.
+	Timeout time.Duration
+	// Retries is the number of extra attempts after a failure.
+	Retries int
+}
+
 // ActionDef is a named action together with its type and parameters.
 type ActionDef struct {
 	Name Action
 	Type ActionType
 	// Exec carries the parameters of an exec action (nil for the built-in power actions).
 	Exec *ExecParams
+	// HTTP carries the parameters of an outbound HTTP action.
+	HTTP *HTTPParams
 }
 
 // BuiltinActions returns the built-in action definitions.

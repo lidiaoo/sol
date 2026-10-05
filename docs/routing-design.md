@@ -733,8 +733,10 @@ security.dry_run            可选，默认 false
 security.reserved_ports     可选，默认 [7, 9]
 security.allow_reserved_port_actions  可选，默认 false
 actions[].name              动作名，唯一
-actions[].type              noop | power.shutdown | power.reboot | power.sleep | exec（http / sequence 见 P4）
+actions[].type              noop | power.shutdown | power.reboot | power.sleep | exec | http（sequence 见 P4）
 actions[].command / timeout / workdir / env / shell   exec 用：argv 数组（非 shell）；shell: true 走 /bin/sh -c（逃生舱）；user/group 未实现
+actions[].method / url / headers / body / timeout / retries   http 出站动作用（§19.8）；url/headers/body 支持 {{.Action}} 等白名单插值
+security.url_allowlist      可选，出站 http 动作的目标前缀白名单（SSRF 防护，§19.8）
 security.exec_allowlist     可选，限 exec 的绝对路径命令只能落在这些目录下（§19.4）
 security.cooldown           可选，同一动作两次执行的最小间隔（如 5s；空 = 关闭，§19.6）
 security.cooldowns.<动作名>  可选，按动作覆盖全局 cooldown
@@ -1358,6 +1360,22 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 失败语义：远端端口上"带命令段"的包一律被消费（不落入规则匹配），避免畸形命令包意外触发破坏性规则。
 - 冒烟（真机，`remote_command_ports: [10014]`，命令 `touch`/`lock`）：签名 `touch:name=alpha` 执行成功（`/usr/bin/touch /tmp/sol-remote-alpha.marker`，exit 0）；错 key / enum 越界 / 空段被拒并记 WARN；普通魔法包判 non-matching；HTTP `{"name":"beta"}` -> 202 且 marker 生成、`{"name":"gamma"}` -> 400（信息含 enum 列表）、未知 id -> 404、无 token -> 401；`/v1/status` 显示 `actions.remote:touch=2`、`rules: 0`。
 - 未做：`type: http`（HTTP 出站动作）、`sequence`、命令级 `user`/`group` 降权、覆盖整包的包级 HMAC（当前只认证命令段）、全局速率限制（令牌桶）、`allow_raw_shell` 原始命令。
+
+---
+
+### 19.8 P4 部分落地（HTTP 出站动作 `type: http`）
+
+代码位置：`internal/domain/wol/{action,interpolate}.go`（`HTTPParams` + 统一插值 `Vars`/`Interpolate`/`ParseTemplates`）、`internal/config/load.go`（`buildHTTPDef`）、`internal/infra/outbound/http_action.go`（执行器）、`internal/deps/builder.go`（注册 `ActionTypeHTTP` + 启动期校验）。
+
+- 参数：`actions[].{method, url, headers, body, timeout, retries}`。`method` 缺省 POST，允许 GET/POST/PUT/PATCH/DELETE/HEAD；`timeout` 上限 1m；`retries` 0..5（默认 0）。非 http 类型写这些字段、或 http 类型写 exec 字段 -> `ErrActionParams`；http 动作缺 `url` -> `ErrHTTPURLRequired`。
+- 插值：url/headers/body 与 exec 共用同一套白名单变量（`{{.Action}} {{.SrcIP}} {{.SrcPort}} {{.DstPort}} {{.Interface}} {{.MAC}} {{.Time}} {{.Arg.<name>}}`），`missingkey=error`；启动期先 parse（`wol.ParseTemplates`），模板语法错 fail fast。exec 的 `Vars`/插值已从 `internal/infra/exec` 上移到 domain，两个执行器共用一份实现。
+- SSRF 防护：`security.url_allowlist`（**前缀匹配**，建议写成 `https://hooks.example.com/` 这种带路径边界的形式）。启动校验只取 url 中第一个 `{{` 之前的静态前缀——scheme+host 必须字面量（整段写成 `{{.X}}` 会被拒）；运行时每次尝试前再校验一遍完整 URL。
+- 传输安全：默认校验 TLS；**不跟随重定向**（`CheckRedirect` 返回 `ErrUseLastResponse`），避免 3xx 跳到 allowlist 之外；每次尝试 `context.WithTimeout`；响应体最多读 64 KiB 后丢弃。
+- 重试：只有 transport 失败 / 429 / 5xx 才重试（4xx 立即失败），间隔 `200ms × 第几次`；重试与最终失败各打一条结构化日志。
+- 审计：成功与失败都记 `action` / `method` / `url` / `status` / `duration`；**headers 从不打印**（可能含 token）。
+- dry-run / cooldown / 手动触发复用：http 动作就是普通动作，规则命中走同一条 `runDecision` 路径，`POST /v1/actions/<name>` 也能手动触发。
+- 冒烟（真机，本地 webhook 探针 `127.0.0.1:18090`，端口 10041 -> `notify-ok`、10042 -> `notify-fail`）：探针收到 `POST /hook/notify-ok`，`Authorization: Bearer ***`（来自 `${HOOK_TOKEN}`），body `{"action":"notify-ok","src":"127.0.0.1","port":10041,"mac":"58:11:22:bc:78:66"}`；`/fail` 收到 **2** 次请求（1 次 + 1 次重试），sol 日志有 `http action retrying` 与最终 `status=500` + `action failed`；把 url 换成 allowlist 之外的 `https://evil.example/oops` 时启动直接 `exit 1`（`url is not in security.url_allowlist`）。
+- 未做：allowlist 的精确/正则匹配（当前前缀匹配）、`sequence`（一串动作）、请求级代理配置、响应体内容过滤。
 
 ---
 

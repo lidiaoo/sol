@@ -90,10 +90,11 @@
 - [x] HTTP 控制面（bearer/basic/mTLS、默认 127.0.0.1、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`/v1/actions/{name}`、`/metrics`、`/healthz`、审计）——实现对照见设计 §19.5
 - [ ] `/v1/reload` 热重载（当前显式 501）
 - [ ] mTLS 端到端冒烟（配置已支持 + 启动加载证书）
-- [ ] HTTP 出站动作（webhook、`url_allowlist`、超时 / 重试）
+- [x] HTTP 出站动作（webhook、`url_allowlist`、超时 / 重试、不跟随重定向、headers 不落日志）——见设计 §19.8
+- [ ] `sequence`（一个动作串多个动作）
+- [ ] 出站 allowlist 的精确 / 正则匹配（当前前缀匹配）
 - [x] 远端命令通道（`commands[].id` 白名单 + HMAC + 参数校验 + UDP/HTTP 双传输；`remote:<id>` 注册为普通动作，复用 cooldown / dry-run / 审计）——见设计 §19.7
 - [ ] 远端命令的 `user`/`group` 降权
-- [ ] 远端 `type: http` 出站动作与 `sequence`
 - [ ] 覆盖整包的包级 HMAC（当前只认证命令段）
 - [ ] 远端原始命令（`allow_raw_shell` 默认关 + `/bin/sh -c` + 认证 / 端口 / allowlist + 启动告警）
 - [ ] `wol.send`（预留，唤醒别的机器）

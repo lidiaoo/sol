@@ -42,6 +42,7 @@ var (
 	ErrRemoteAuth           = errors.New("remote command authorization is required")
 	ErrRemotePorts          = errors.New("invalid security.remote_command_ports")
 	ErrRemotePort           = errors.New("remote command port must not be a reserved port")
+	ErrHTTPURLRequired      = errors.New("http action requires url")
 )
 
 const (
@@ -269,6 +270,7 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		ReservedPorts:        f.Security.ReservedPorts,
 		SecureOn:             secureOnBytes(f.Security.SecureOn),
 		ExecAllowlist:        f.Security.ExecAllowlist,
+		URLAllowlist:         f.Security.URLAllowlist,
 		Cooldown:             cooldown,
 		ActionCooldowns:      actionCooldowns,
 		Remote:               remote,
@@ -339,12 +341,52 @@ func buildActions(entries []actionConfig) (map[wol.Action]wol.ActionDef, error) 
 func buildActionDef(entry actionConfig, actionType wol.ActionType) (wol.ActionDef, error) {
 	def := wol.ActionDef{Name: wol.Action(entry.Name), Type: actionType}
 
-	if actionType == wol.ActionTypeExec {
+	switch actionType {
+	case wol.ActionTypeExec:
+		if hasHTTPParams(entry) {
+			return wol.ActionDef{}, fmt.Errorf("%w: http parameters on an exec action", ErrActionParams)
+		}
+
 		return buildExecDef(entry, def)
+	case wol.ActionTypeHTTP:
+		if hasActorParams(entry) {
+			return wol.ActionDef{}, fmt.Errorf("%w: exec parameters on an http action", ErrActionParams)
+		}
+
+		return buildHTTPDef(entry, def)
+	case wol.ActionTypeNoop, wol.ActionTypeSleep, wol.ActionTypeShutdown, wol.ActionTypeReboot:
+		if hasExecParams(entry) {
+			return wol.ActionDef{}, fmt.Errorf("%w: exec parameters on a %s action", ErrActionParams, actionType)
+		}
+
+		if hasHTTPParams(entry) {
+			return wol.ActionDef{}, fmt.Errorf("%w: http parameters on a %s action", ErrActionParams, actionType)
+		}
+
+		return def, nil
 	}
 
-	if hasExecParams(entry) {
-		return wol.ActionDef{}, fmt.Errorf("%w: exec parameters on a %s action", ErrActionParams, actionType)
+	return def, nil
+}
+
+// buildHTTPDef builds an outbound HTTP action (§18.2).
+func buildHTTPDef(entry actionConfig, def wol.ActionDef) (wol.ActionDef, error) {
+	if entry.URL == "" {
+		return wol.ActionDef{}, ErrHTTPURLRequired
+	}
+
+	timeout, err := parseTimeout(entry.Timeout)
+	if err != nil {
+		return wol.ActionDef{}, err
+	}
+
+	def.HTTP = &wol.HTTPParams{
+		Method:  entry.Method,
+		URL:     entry.URL,
+		Headers: entry.Headers,
+		Body:    entry.Body,
+		Timeout: timeout,
+		Retries: entry.Retries,
 	}
 
 	return def, nil
@@ -378,6 +420,19 @@ func buildExecDef(entry actionConfig, def wol.ActionDef) (wol.ActionDef, error) 
 func hasExecParams(entry actionConfig) bool {
 	return len(entry.Command) > 0 || entry.Timeout != "" || entry.Workdir != "" ||
 		len(entry.Env) > 0 || entry.Shell || entry.User != "" || entry.Group != ""
+}
+
+// hasActorParams reports the exec-only parameters of an entry whose timeout is shared
+// with the http action type.
+func hasActorParams(entry actionConfig) bool {
+	return len(entry.Command) > 0 || entry.Workdir != "" || len(entry.Env) > 0 ||
+		entry.Shell || entry.User != "" || entry.Group != ""
+}
+
+// hasHTTPParams reports the outbound HTTP parameters of an entry.
+func hasHTTPParams(entry actionConfig) bool {
+	return entry.URL != "" || entry.Method != "" || len(entry.Headers) > 0 ||
+		entry.Body != "" || entry.Retries != 0
 }
 
 func parseTimeout(value string) (time.Duration, error) {
@@ -747,10 +802,11 @@ func readSecretFile(name string, label string) (string, error) {
 
 func parseActionType(value string) (wol.ActionType, error) {
 	switch wol.ActionType(value) {
-	case wol.ActionTypeNoop, wol.ActionTypeShutdown, wol.ActionTypeReboot, wol.ActionTypeSleep, wol.ActionTypeExec:
+	case wol.ActionTypeNoop, wol.ActionTypeShutdown, wol.ActionTypeReboot, wol.ActionTypeSleep,
+		wol.ActionTypeExec, wol.ActionTypeHTTP:
 		return wol.ActionType(value), nil
 	default:
-		return "", fmt.Errorf("%w: %q (http actions land in P4)", ErrUnknownActionType, value)
+		return "", fmt.Errorf("%w: %q", ErrUnknownActionType, value)
 	}
 }
 

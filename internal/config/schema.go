@@ -112,6 +112,7 @@ type securityConfig struct {
 	AllowRemoteCommands      bool              `yaml:"allow_remote_commands"`
 	RemoteCommandAuth        remoteAuthConfig  `yaml:"remote_command_auth"`
 	RemoteCommandPorts       []int             `yaml:"remote_command_ports"`
+	URLAllowlist             []string          `yaml:"url_allowlist"`
 }
 
 // remoteAuthConfig is security.remote_command_auth: the shared key authenticating UDP
@@ -142,15 +143,20 @@ type argConfig struct {
 }
 
 type actionConfig struct {
-	Name    string   `yaml:"name"`
-	Type    string   `yaml:"type"`
-	Command []string `yaml:"command"`
-	Timeout string   `yaml:"timeout"`
-	Workdir string   `yaml:"workdir"`
-	Env     []string `yaml:"env"`
-	User    string   `yaml:"user"`
-	Group   string   `yaml:"group"`
-	Shell   bool     `yaml:"shell"`
+	Name    string            `yaml:"name"`
+	Type    string            `yaml:"type"`
+	Command []string          `yaml:"command"`
+	Timeout string            `yaml:"timeout"`
+	Workdir string            `yaml:"workdir"`
+	Env     []string          `yaml:"env"`
+	User    string            `yaml:"user"`
+	Group   string            `yaml:"group"`
+	Shell   bool              `yaml:"shell"`
+	Method  string            `yaml:"method"`
+	URL     string            `yaml:"url"`
+	Headers map[string]string `yaml:"headers"`
+	Body    string            `yaml:"body"`
+	Retries int               `yaml:"retries"`
 }
 
 type ruleConfig struct {
