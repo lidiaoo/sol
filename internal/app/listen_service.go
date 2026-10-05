@@ -212,6 +212,8 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 	slog.Info("magic packet matched",
 		"src", addrString(pkt.src),
 		"port", pkt.port,
+		"interface", decision.Interface,
+		"target_mac", decision.TargetMAC.String(),
 		"action", string(decision.Action),
 		"trigger", trigger,
 	)
@@ -220,7 +222,11 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 		return
 	}
 
-	if dispatchErr := s.registry.Dispatch(ctx, decision.Action, ev); dispatchErr != nil {
+	dispatchEv := ev
+	dispatchEv.Interface = decision.Interface
+	dispatchEv.TargetMAC = decision.TargetMAC
+
+	if dispatchErr := s.registry.Dispatch(ctx, decision.Action, dispatchEv); dispatchErr != nil {
 		slog.Error("action failed", "action", string(decision.Action), "error", dispatchErr)
 	}
 }

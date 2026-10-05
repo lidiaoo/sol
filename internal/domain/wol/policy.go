@@ -28,12 +28,16 @@ const (
 	scorePort    = 1
 )
 
-// Event is a single received UDP datagram.
+// Event is a received packet plus the context the listeners know about it.
 type Event struct {
 	Payload []byte
 	SrcIP   net.IP
 	SrcPort int
 	DstPort int
+	// Interface is the listener interface owning the packet's target MAC, when known.
+	Interface string
+	// TargetMAC is the MAC carried by the magic packet, when known.
+	TargetMAC net.HardwareAddr
 }
 
 // IfaceInfo describes a local interface that rules can match against.
@@ -80,6 +84,7 @@ type compiledRule struct {
 type RoutingPolicy struct {
 	rules         []compiledRule
 	actions       map[Action]ActionDef
+	ifaceByMAC    map[string]string
 	secureOn      []byte
 	reservedPorts map[int]bool
 	allowReserved bool
@@ -98,6 +103,7 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 
 	policy := &RoutingPolicy{
 		actions:       actionsOrDefault(opts.Actions),
+		ifaceByMAC:    macIndex(ifaces),
 		secureOn:      opts.SecureOn,
 		reservedPorts: reservedSet(opts.ReservedPorts),
 		allowReserved: opts.AllowReserved,
@@ -127,6 +133,10 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 type Decision struct {
 	Action Action
 	DryRun bool
+	// Interface names the listener interface that owns the packet's target MAC, when known.
+	Interface string
+	// TargetMAC is the MAC carried by the magic packet.
+	TargetMAC net.HardwareAddr
 }
 
 // Resolve returns the decision for a received packet.
@@ -139,8 +149,10 @@ func (p *RoutingPolicy) Resolve(ev Event) (Decision, bool) {
 	for i := range p.rules {
 		if p.rules[i].matches(ev, parsed) {
 			return Decision{
-				Action: p.rules[i].rule.Action,
-				DryRun: p.rules[i].rule.DryRun,
+				Action:    p.rules[i].rule.Action,
+				DryRun:    p.rules[i].rule.DryRun,
+				Interface: p.ifaceByMAC[parsed.MAC.String()],
+				TargetMAC: parsed.MAC,
 			}, true
 		}
 	}
@@ -355,6 +367,17 @@ func parseCIDRs(cidrs []string) ([]*net.IPNet, error) {
 	}
 
 	return nets, nil
+}
+
+// macIndex maps a target MAC to the interface that owns it.
+func macIndex(ifaces []IfaceInfo) map[string]string {
+	index := make(map[string]string, len(ifaces))
+
+	for _, iface := range ifaces {
+		index[iface.MAC.String()] = iface.Name
+	}
+
+	return index
 }
 
 func indexIfaces(ifaces []IfaceInfo) (map[string]net.HardwareAddr, []net.HardwareAddr, error) {

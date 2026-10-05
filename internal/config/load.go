@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -22,6 +23,10 @@ var (
 	ErrInterfaceDryRun      = errors.New("dry_run on an interface block requires block-level rules")
 	ErrActionNameRequired   = errors.New("actions[] entry requires a name")
 	ErrPerInterfaceSecureOn = errors.New("per-interface secure_on is not implemented yet")
+	ErrExecCommandRequired  = errors.New("exec action requires command")
+	ErrExecTimeout          = errors.New("invalid exec timeout")
+	ErrExecUserUnsupported  = errors.New("exec user/group privilege drop is not implemented yet")
+	ErrActionParams         = errors.New("action parameters do not match its type")
 )
 
 // systemConfigPath is the system-wide configuration location.
@@ -234,6 +239,7 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		AllowReservedActions: f.Security.AllowReservedPortActions,
 		ReservedPorts:        f.Security.ReservedPorts,
 		SecureOn:             secureOnBytes(f.Security.SecureOn),
+		ExecAllowlist:        f.Security.ExecAllowlist,
 		Actions:              actions,
 		Logging:              Logging{Level: f.Logging.Level, Format: f.Logging.Format},
 		Rules:                append(global, scoped...),
@@ -273,21 +279,84 @@ func buildActions(entries []actionConfig) (map[wol.Action]wol.ActionDef, error) 
 			return nil, fmt.Errorf("actions[%d] (%s): %w", i, entry.Name, err)
 		}
 
-		actions[wol.Action(entry.Name)] = wol.ActionDef{
-			Name: wol.Action(entry.Name),
-			Type: actionType,
+		def, err := buildActionDef(entry, actionType)
+		if err != nil {
+			return nil, fmt.Errorf("actions[%d] (%s): %w", i, entry.Name, err)
 		}
+
+		actions[wol.Action(entry.Name)] = def
 	}
 
 	return actions, nil
 }
 
+func buildActionDef(entry actionConfig, actionType wol.ActionType) (wol.ActionDef, error) {
+	def := wol.ActionDef{Name: wol.Action(entry.Name), Type: actionType}
+
+	if actionType == wol.ActionTypeExec {
+		return buildExecDef(entry, def)
+	}
+
+	if hasExecParams(entry) {
+		return wol.ActionDef{}, fmt.Errorf("%w: exec parameters on a %s action", ErrActionParams, actionType)
+	}
+
+	return def, nil
+}
+
+func buildExecDef(entry actionConfig, def wol.ActionDef) (wol.ActionDef, error) {
+	if len(entry.Command) == 0 {
+		return wol.ActionDef{}, ErrExecCommandRequired
+	}
+
+	if entry.User != "" || entry.Group != "" {
+		return wol.ActionDef{}, ErrExecUserUnsupported
+	}
+
+	timeout, err := parseTimeout(entry.Timeout)
+	if err != nil {
+		return wol.ActionDef{}, err
+	}
+
+	def.Exec = &wol.ExecParams{
+		Command: entry.Command,
+		Timeout: timeout,
+		Workdir: entry.Workdir,
+		Env:     entry.Env,
+		Shell:   entry.Shell,
+	}
+
+	return def, nil
+}
+
+func hasExecParams(entry actionConfig) bool {
+	return len(entry.Command) > 0 || entry.Timeout != "" || entry.Workdir != "" ||
+		len(entry.Env) > 0 || entry.Shell || entry.User != "" || entry.Group != ""
+}
+
+func parseTimeout(value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+
+	timeout, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %q: %w", ErrExecTimeout, value, err)
+	}
+
+	if timeout <= 0 {
+		return 0, fmt.Errorf("%w: %q", ErrExecTimeout, value)
+	}
+
+	return timeout, nil
+}
+
 func parseActionType(value string) (wol.ActionType, error) {
 	switch wol.ActionType(value) {
-	case wol.ActionTypeNoop, wol.ActionTypeShutdown, wol.ActionTypeReboot, wol.ActionTypeSleep:
+	case wol.ActionTypeNoop, wol.ActionTypeShutdown, wol.ActionTypeReboot, wol.ActionTypeSleep, wol.ActionTypeExec:
 		return wol.ActionType(value), nil
 	default:
-		return "", fmt.Errorf("%w: %q (exec and http actions land in P4)", ErrUnknownActionType, value)
+		return "", fmt.Errorf("%w: %q (http actions land in P4)", ErrUnknownActionType, value)
 	}
 }
 

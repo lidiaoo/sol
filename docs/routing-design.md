@@ -719,7 +719,7 @@ rules:
     action: run-backup
 ```
 
-（阶段：`exec` 属 P4，见 [TODO.md](../TODO.md)；本示例为设计示意。）
+（阶段：`exec` 已在 P4 落地，见 §19.4；示例里的 `user: backup` 降权尚未实现，写上会在启动期报错。）
 
 字段速查：
 
@@ -733,8 +733,9 @@ security.dry_run            可选，默认 false
 security.reserved_ports     可选，默认 [7, 9]
 security.allow_reserved_port_actions  可选，默认 false
 actions[].name              动作名，唯一
-actions[].type              noop | power.shutdown | power.reboot | power.sleep（exec / http 见 P4）
-actions[].command           exec 用：argv 数组（非 shell）；另有 timeout / workdir / env / user / group / shell
+actions[].type              noop | power.shutdown | power.reboot | power.sleep | exec（http / sequence 见 P4）
+actions[].command / timeout / workdir / env / shell   exec 用：argv 数组（非 shell）；shell: true 走 /bin/sh -c（逃生舱）；user/group 未实现
+security.exec_allowlist     可选，限 exec 的绝对路径命令只能落在这些目录下（§19.4）
 commands[].id / type / command / args        远端白名单命令（§21）
 server.http.{enabled,listen,auth,tls}        控制面（§18）
 security.allow_remote_commands / allow_raw_shell / remote_command_ports / raw_shell_ports   远端命令（§21）
@@ -1300,7 +1301,17 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 
 ---
 
-## 20. 安全模型总览（汇总）
+### 19.4 P4 已落地部分（exec 自定义命令）
+
+- 动作模型扩到 `exec`：`ActionDef` 的参数从 `Params map[string]any` 改为随类型携带的强类型字段 `Exec *ExecParams{Command, Timeout, Workdir, Env, Shell}`——`map` 会让每个执行器各自解析、丢掉编译期校验；后续 `http`/`sequence` 走同一方式。
+- 配置：`actions[]` 增 `command`（argv 数组）/ `timeout`（`5s`、`5m`）/ `workdir` / `env` / `shell`；新增 `security.exec_allowlist`（绝对路径命令必须落在列出的目录内，空 = 不限制）。
+- 执行器 `internal/infra/exec.Executor`：默认 argv 直执（不经 shell），`context.WithTimeout`（默认 10s，超时即杀），`workdir` + 继承环境 + 追加 `env`，合并捕获 stdout/stderr；`shell: true` 才走 `/bin/sh -c`（Windows 用 `cmd /C`），启动时打 WARN。
+- 启动期静态校验（fail fast）：`command` 必填；绝对路径须存在、非目录、带执行位，且配了 allowlist 时须在允许目录内；裸命令名走 `PATH` 查找；`user`/`group` 降权未实现 -> 写进配置直接报错 `ErrExecUserUnsupported`。
+- 变量插值（白名单，§4.3）：`{{.Action}}` `{{.SrcIP}}` `{{.SrcPort}}` `{{.DstPort}}` `{{.Interface}}` `{{.MAC}}` `{{.Time}}`，用 `text/template` + `missingkey=error`（写错模板名在解析期就报错）。为此 `Decision` 增 `Interface`/`TargetMAC`（由包内目标 MAC 反查合格网卡），监听侧把上下文带进下发事件。
+- 审计：执行前后 `slog` 记录动作名、argv、来源 IP、网卡、耗时、退出码与输出；非零退出/超时按错误上报。
+- dry-run：`security.dry_run` 或规则级 `dry_run` 命中时只记日志（`trigger=DRY-RUN`），不执行。
+- 冒烟（真机 enp6s0 + enp9s0f3u1，端口 10031）：按 allowlist 执行脚本，插值出 `mark=enp6s0 src=127.0.0.1 port=10031 mac=58:11:22:bc:78:66`，`env` 生效、审计行含 `exit_code=0`；allowlist 越界与命令不存在都在启动期 exit 1；dry-run 下目标文件不增长。
+- 未做（继续留 P4）：`user`/`group` 降权、cooldown / 速率限制、HTTP 控制面与出站动作、远端命令通道。
 
 分层信任（风险从低到高）：
 

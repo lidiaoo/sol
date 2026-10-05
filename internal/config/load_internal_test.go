@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -231,7 +232,7 @@ func TestLoadActionErrors(t *testing.T) {
 			match: ErrDuplicateAction,
 		},
 		"unknown type": {
-			body:  "version: 1\nactions:\n  - { name: lock, type: exec }\n",
+			body:  "version: 1\nactions:\n  - { name: lock, type: http }\n",
 			match: ErrUnknownActionType,
 		},
 		"unknown action reference": {
@@ -393,6 +394,73 @@ server:
 	require.Equal(t, []string{"eth0"}, cfg.Rules[0].Match.MAC.Ifaces)
 }
 
+func TestLoadExecAction(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+security:
+  exec_allowlist: [/opt/sol/bin]
+actions:
+  - name: lock-screen
+    type: exec
+    command: [loginctl, lock-session]
+    timeout: 5s
+    workdir: /opt/sol
+    env: [SOL_EVENT=hit]
+rules:
+  - match: { ports: [10], content: { kind: suffix, value: "lock" } }
+    action: lock-screen
+`)
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Equal(t, []string{"/opt/sol/bin"}, cfg.ExecAllowlist)
+
+	def, ok := cfg.Actions["lock-screen"]
+	require.True(t, ok)
+	require.Equal(t, wol.ActionTypeExec, def.Type)
+	require.NotNil(t, def.Exec)
+	require.Equal(t, []string{"loginctl", "lock-session"}, def.Exec.Command)
+	require.Equal(t, 5*time.Second, def.Exec.Timeout)
+	require.Equal(t, "/opt/sol", def.Exec.Workdir)
+	require.Equal(t, []string{"SOL_EVENT=hit"}, def.Exec.Env)
+	require.False(t, def.Exec.Shell)
+
+	decision, matched := newTestPolicy(t, cfg)
+	require.True(t, matched)
+	require.Equal(t, wol.Action("lock-screen"), decision.Action)
+}
+
+func TestLoadExecActionErrors(t *testing.T) {
+	tests := map[string]struct {
+		body  string
+		match error
+	}{
+		"missing command": {
+			body:  "version: 1\nactions:\n  - { name: lock, type: exec }\n",
+			match: ErrExecCommandRequired,
+		},
+		"privilege drop unsupported": {
+			body:  "version: 1\nactions:\n  - { name: lock, type: exec, command: [loginctl], user: nobody }\n",
+			match: ErrExecUserUnsupported,
+		},
+		"bad timeout": {
+			body:  "version: 1\nactions:\n  - { name: lock, type: exec, command: [loginctl], timeout: soon }\n",
+			match: ErrExecTimeout,
+		},
+		"exec params on a builtin action": {
+			body:  "version: 1\nactions:\n  - { name: fast-shutdown, type: power.shutdown, command: [/bin/true] }\n",
+			match: ErrActionParams,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, tt.body))
+			require.ErrorIs(t, err, tt.match)
+		})
+	}
+}
+
 func TestLoadGlobalAndBlockRuleConflict(t *testing.T) {
 	path := writeConfig(t, `
 version: 1
@@ -414,4 +482,25 @@ server:
 
 	_, err = wol.NewRoutingPolicy(cfg.Rules, ifaces, wol.PolicyOptions{Actions: cfg.Actions})
 	require.ErrorIs(t, err, wol.ErrRuleConflict)
+}
+
+// newTestPolicy builds a policy from a loaded config against a fake eth0 and resolves a
+// magic packet for port 10.
+func newTestPolicy(t *testing.T, cfg *Config) (wol.Decision, bool) {
+	t.Helper()
+
+	mac := net.HardwareAddr{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	ifaces := []wol.IfaceInfo{{Name: "eth0", MAC: mac}}
+
+	policy, err := wol.NewRoutingPolicy(cfg.Rules, ifaces, wol.PolicyOptions{
+		ReservedPorts: cfg.ReservedPorts,
+		AllowReserved: cfg.AllowReservedActions,
+		SecureOn:      cfg.SecureOn,
+		Actions:       cfg.Actions,
+	})
+	require.NoError(t, err)
+
+	payload := append(wol.BuildMagicPacket(mac), []byte("lock")...)
+
+	return policy.Resolve(wol.Event{Payload: payload, DstPort: 10})
 }

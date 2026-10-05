@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 )
 
 var (
@@ -32,13 +33,29 @@ const (
 	ActionTypeSleep    ActionType = "power.sleep"
 	ActionTypeShutdown ActionType = "power.shutdown"
 	ActionTypeReboot   ActionType = "power.reboot"
+	ActionTypeExec     ActionType = "exec"
 )
+
+// ExecParams describes a custom command action (type: exec).
+type ExecParams struct {
+	// Command is the argv executed directly; with Shell set it is joined and handed to a shell.
+	Command []string
+	// Timeout bounds the execution; zero selects the executor default.
+	Timeout time.Duration
+	// Workdir is the working directory; empty means inherit the parent's.
+	Workdir string
+	// Env holds extra "KEY=value" entries appended to the inherited environment.
+	Env []string
+	// Shell runs Command through a shell instead of exec'ing argv (escape hatch, off by default).
+	Shell bool
+}
 
 // ActionDef is a named action together with its type and parameters.
 type ActionDef struct {
-	Name   Action
-	Type   ActionType
-	Params map[string]any
+	Name Action
+	Type ActionType
+	// Exec carries the parameters of an exec action (nil for the built-in power actions).
+	Exec *ExecParams
 }
 
 // BuiltinActions returns the built-in action definitions.

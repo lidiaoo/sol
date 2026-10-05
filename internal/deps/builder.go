@@ -7,6 +7,7 @@ import (
 	"github.com/bavix/sol/internal/app"
 	"github.com/bavix/sol/internal/config"
 	"github.com/bavix/sol/internal/domain/wol"
+	"github.com/bavix/sol/internal/infra/exec"
 	"github.com/bavix/sol/internal/infra/network"
 	"github.com/bavix/sol/internal/infra/system"
 )
@@ -22,6 +23,9 @@ type Builder struct {
 
 	registryOnce sync.Once
 	registry     *wol.Registry
+
+	execOnce sync.Once
+	executor *exec.Executor
 
 	listenOnce sync.Once
 	listen     *app.ListenService
@@ -47,6 +51,15 @@ func (b *Builder) PacketListenerFactory() app.PacketListenerFactory { //nolint:i
 	return b.factory
 }
 
+// ExecExecutor returns the custom-command executor, configured with the allowlist.
+func (b *Builder) ExecExecutor() *exec.Executor {
+	b.execOnce.Do(func() {
+		b.executor = exec.NewExecutor(b.cfg.ExecAllowlist)
+	})
+
+	return b.executor
+}
+
 // Registry builds the action registry with the built-in executors.
 func (b *Builder) Registry() *wol.Registry {
 	b.registryOnce.Do(func() {
@@ -58,6 +71,7 @@ func (b *Builder) Registry() *wol.Registry {
 			wol.ActionTypeReboot,
 			wol.ActionTypeSleep,
 		)
+		registry.Register(b.ExecExecutor(), wol.ActionTypeExec)
 
 		// Named actions from the configuration (built-in names carry identical definitions).
 		for _, def := range b.cfg.Actions {
@@ -83,6 +97,12 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 
 		registry := b.Registry()
 
+		if err := b.validateExecActions(registry); err != nil {
+			buildErr = err
+
+			return
+		}
+
 		policy, err := wol.NewRoutingPolicy(b.cfg.Rules, ifaces, wol.PolicyOptions{
 			ReservedPorts: b.cfg.ReservedPorts,
 			AllowReserved: b.cfg.AllowReservedActions,
@@ -105,4 +125,21 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 	})
 
 	return b.listen, buildErr
+}
+
+// validateExecActions statically checks every configured exec action at startup.
+func (b *Builder) validateExecActions(registry *wol.Registry) error {
+	executor := b.ExecExecutor()
+
+	for _, def := range registry.Actions() {
+		if def.Type != wol.ActionTypeExec {
+			continue
+		}
+
+		if err := executor.Validate(def); err != nil {
+			return fmt.Errorf("exec action %s: %w", def.Name, err)
+		}
+	}
+
+	return nil
 }

@@ -271,6 +271,26 @@ func TestRoutingPolicyResolveExplicitMAC(t *testing.T) {
 	require.Equal(t, wol.ActionNoop, act.Action)
 }
 
+func TestRoutingPolicyResolveDecisionContext(t *testing.T) {
+	t.Parallel()
+
+	policy, err := wol.NewRoutingPolicy(
+		[]wol.Rule{scopedRule(plainRule(10, wol.ActionSleep), "eth0")},
+		testIfacesTwo(),
+		wol.PolicyOptions{},
+	)
+	require.NoError(t, err)
+
+	decision, matched := policy.Resolve(wol.Event{
+		Payload: wol.BuildMagicPacket(testMAC()),
+		DstPort: 10,
+	})
+
+	require.True(t, matched)
+	require.Equal(t, "eth0", decision.Interface)
+	require.Equal(t, testMAC().String(), decision.TargetMAC.String())
+}
+
 func testIfacesTwo() []wol.IfaceInfo {
 	return []wol.IfaceInfo{
 		{Name: "eth0", MAC: testMAC()},

@@ -78,15 +78,23 @@ func (i *ifaceConfig) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type securityConfig struct {
-	DryRun                   bool   `yaml:"dry_run"`
-	ReservedPorts            []int  `yaml:"reserved_ports"`
-	AllowReservedPortActions bool   `yaml:"allow_reserved_port_actions"`
-	SecureOn                 string `yaml:"secure_on"`
+	DryRun                   bool     `yaml:"dry_run"`
+	ReservedPorts            []int    `yaml:"reserved_ports"`
+	AllowReservedPortActions bool     `yaml:"allow_reserved_port_actions"`
+	SecureOn                 string   `yaml:"secure_on"`
+	ExecAllowlist            []string `yaml:"exec_allowlist"`
 }
 
 type actionConfig struct {
-	Name string `yaml:"name"`
-	Type string `yaml:"type"`
+	Name    string   `yaml:"name"`
+	Type    string   `yaml:"type"`
+	Command []string `yaml:"command"`
+	Timeout string   `yaml:"timeout"`
+	Workdir string   `yaml:"workdir"`
+	Env     []string `yaml:"env"`
+	User    string   `yaml:"user"`
+	Group   string   `yaml:"group"`
+	Shell   bool     `yaml:"shell"`
 }
 
 type ruleConfig struct {

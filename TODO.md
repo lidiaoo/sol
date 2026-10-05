@@ -79,12 +79,14 @@
 - [ ] 热重载（可选，等价 SIGHUP）
 - [ ] 附 JSON Schema（编辑器补全）
 
-## P4 自定义命令 + HTTP + 远端命令（§4.3、§18、§21）
+## P4 自定义命令 + HTTP + 远端命令（§4.3、§18、§21）进行中
 
 完成标准：默认全部关闭；显式开启后按安全约束生效。
+实现对照见设计 §19.4。
 
-- [ ] `exec` 动作（argv 非 shell、timeout、workdir/env/user/group、审计）
-- [ ] `exec` 启动期静态校验（可执行存在 / allowlist 目录）
+- [x] `exec` 动作（argv 非 shell、timeout、workdir/env、审计日志、变量插值白名单）
+- [x] `exec` 启动期静态校验（可执行存在 / 非目录 / 有执行位 / `security.exec_allowlist` 目录）
+- [ ] `exec` 的 `user`/`group` 降权（配置里写了会在启动期报错 `ErrExecUserUnsupported`）
 - [ ] HTTP 控制面（bearer/basic/mTLS、默认 127.0.0.1、`/v1/*`、审计）
 - [ ] HTTP 出站动作（webhook、`url_allowlist`、超时 / 重试）
 - [ ] 远端命令通道（`commands[].id` 白名单 + args 校验 + HMAC）

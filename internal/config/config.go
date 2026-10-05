@@ -16,6 +16,8 @@ type Config struct {
 	ReservedPorts []int
 	// SecureOn is the optional SecureOn password expected after the magic packet.
 	SecureOn []byte
+	// ExecAllowlist restricts absolute exec commands to these directories; empty allows any.
+	ExecAllowlist []string
 	// Actions are the known named actions; empty means the built-in set.
 	Actions map[wol.Action]wol.ActionDef
 	// Logging holds the raw logging settings; empty values mean the defaults.
