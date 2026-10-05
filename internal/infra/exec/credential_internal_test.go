@@ -20,16 +20,17 @@ func TestResolveCredentialInheritsWhenUnset(t *testing.T) {
 	require.True(t, cred.isZero(), "no user/group configured means sol keeps its own identity")
 }
 
+//nolint:gosec // G115: os.Getuid/Getgid fit in uint32 on every platform sol supports
 func TestResolveCredentialFromIDsAndName(t *testing.T) {
 	cred, err := resolveCredential(strconv.Itoa(os.Getuid()), "")
 	require.NoError(t, err)
-	require.EqualValues(t, os.Getuid(), cred.uid)
-	require.EqualValues(t, os.Getgid(), cred.gid, "a user without an explicit group keeps its primary group")
+	require.Equal(t, uint32(os.Getuid()), cred.uid)
+	require.Equal(t, uint32(os.Getgid()), cred.gid, "a user without an explicit group keeps its primary group")
 
 	cred, err = resolveCredential("", strconv.Itoa(os.Getgid()))
 	require.NoError(t, err)
 	require.Zero(t, cred.uid)
-	require.EqualValues(t, os.Getgid(), cred.gid)
+	require.Equal(t, uint32(os.Getgid()), cred.gid)
 }
 
 func TestResolveCredentialRejectsUnknownEntries(t *testing.T) {

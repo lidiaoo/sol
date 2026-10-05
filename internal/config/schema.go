@@ -132,6 +132,8 @@ type commandConfig struct {
 	Timeout string               `yaml:"timeout"`
 	Workdir string               `yaml:"workdir"`
 	Env     []string             `yaml:"env"`
+	User    string               `yaml:"user"`
+	Group   string               `yaml:"group"`
 }
 
 // argConfig constrains one remote command argument.

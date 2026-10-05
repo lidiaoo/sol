@@ -719,7 +719,7 @@ rules:
     action: run-backup
 ```
 
-（阶段：`exec` 已在 P4 落地，见 §19.4；示例里的 `user: backup` 降权尚未实现，写上会在启动期报错。）
+（阶段：`exec` 已在 P4 落地，见 §19.4；示例里的 `user: backup` 降权同样已落地——需 sol 以 root 跑，否则启动期报 `ErrNotRoot`。）
 
 字段速查：
 
@@ -742,7 +742,7 @@ security.url_allowlist      可选，出站 http 动作的目标前缀白名单�
 security.exec_allowlist     可选，限 exec 的绝对路径命令只能落在这些目录下（§19.4）
 security.cooldown           可选，同一动作两次执行的最小间隔（如 5s；空 = 关闭，§19.6）
 security.cooldowns.<动作名>  可选，按动作覆盖全局 cooldown
-commands[].id / type / command / args{type,enum,pattern,required} / timeout / workdir / env   远端白名单命令（§21 / §19.7），type 暂只支持 exec
+commands[].id / type / command / args{type,enum,pattern,required} / timeout / workdir / env / user / group   远端白名单命令（§21 / §19.7），type 暂只支持 exec；user/group 复用 exec 的降权
 security.allow_remote_commands / remote_command_auth{type,key_env,key_file} / remote_command_ports   远端命令通道（默认关闭；开启必须 hmac 密钥 + 非保留端口）
 server.http.{enabled,listen,auth,tls}        控制面（§18 / §19.5）：auth.type = bearer|basic|mtls（默认 bearer，无 none）
 server.http.auth.token_env / token_file      bearer 密钥来源（二选一；文件必须 600 权限）
@@ -1368,6 +1368,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 参数校验：`commands[].args.<name>` 支持 `type: string|int|bool`（缺省 string）、`enum`、`pattern`（正则）、`required`（默认 true）。多传/漏传/类型或取值不符一律拒绝（`ErrRemoteUnknownArg` / `ErrRemoteMissingArg` / `ErrRemoteArgType` / `ErrRemoteArgValue`）；spec 自身非法（未知类型、enum 值与类型不符、非法参数名）启动即报 `ErrRemoteArgSpec`。
 - 插值：argv 里写 `{{.Arg.<name>}}`，复用 exec 的 `missingkey=error` 模板（启动期先 parse 一遍，语法错 fail fast）。参数只做白名单插值，绝不拼成 shell 字符串。
 - 动作映射：每个命令注册为普通动作 `remote:<id>`，于是 cooldown（`security.cooldowns` 里可写 `remote:lock`）、dry-run、审计日志、`POST /v1/actions/remote:<id>` 手动触发全部复用。
+- 最小权限：`commands[].user` / `commands[].group` 复用 exec 的降权（§19.4）——远端通道是风险最高的触发入口，所以这里也支持让命令以低权限账户跑。实现上只是把这两个字段透传进 `RemoteCommand.Exec`（exec 的 `ExecParams`），于是启动期解析用户/组、要求 root、`setgroups` 清掉 sol 自己的附加组这套逻辑**零改动继承**：非 root 跑 + 配了降权 -> 启动即 `exec action remote:whoami: exec user/group requires root`；未知用户 -> `unknown exec user: sol-no-such-user-xyz`；审计行会带 `run_as=nobody`。
 - 端口：`security.remote_command_ports` 会被绑定但**不参与规则匹配**（`PolicyOptions.ExtraPorts`）；端口上没有规则也能启动（`no rules configured` 只在既无规则又无远端端口时报）。该端口收到"空内容"的普通魔法包仍走规则（无规则即 non-matching）。
 - 失败语义：远端端口上"带命令段"的包一律被消费（不落入规则匹配），避免畸形命令包意外触发破坏性规则。
 - 冒烟（真机，`remote_command_ports: [10014]`，命令 `touch`/`lock`）：签名 `touch:name=alpha` 执行成功（`/usr/bin/touch /tmp/sol-remote-alpha.marker`，exit 0）；错 key / enum 越界 / 空段被拒并记 WARN；普通魔法包判 non-matching；HTTP `{"name":"beta"}` -> 202 且 marker 生成、`{"name":"gamma"}` -> 400（信息含 enum 列表）、未知 id -> 404、无 token -> 401；`/v1/status` 显示 `actions.remote:touch=2`、`rules: 0`。
@@ -1456,6 +1457,7 @@ noop/记日志  <  power.sleep/lock  <  power.shutdown/reboot  <  exec 自定义
 - 白名单：只有 `commands[].id` 注册过的才能被调用。
 - 参数校验：每个命令声明 `args` 及类型/enum/正则，校验通过才拼进 argv。
 - 非 shell：一律 argv，参数只做白名单插值，绝不拼接成 shell 字符串。
+- 最小权限：可选 `commands[].user` / `group` 降权（复用 §19.4；要求 sol 以 root 跑，否则启动报错）。
 - 专用端口：只能绑非保留端口（不得 7/9）。
 - 护栏：timeout、cooldown、速率限制、降权、审计、dry-run。
 

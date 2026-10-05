@@ -97,7 +97,7 @@
 - [x] `sequence`（一个动作串多个动作：按序执行、失败不中断后续、`errors.Join` 汇总、不许嵌套 / 自引用；护栏按组合名算）——见设计 §19.10
 - [ ] 出站 allowlist 的精确 / 正则匹配（当前前缀匹配）
 - [x] 远端命令通道（`commands[].id` 白名单 + HMAC + 参数校验 + UDP/HTTP 双传输；`remote:<id>` 注册为普通动作，复用 cooldown / dry-run / 审计）——见设计 §19.7
-- [ ] 远端命令的 `user`/`group` 降权（可直接复用 §19.4 的 credential 代码）
+- [x] 远端命令的 `user`/`group` 降权（复用 §19.4 的 credential 代码：`commands[].user/group` 透传进 `ExecParams`，启动期校验与 setgroups 零改动继承；实测 `output=65534 run_as=nobody`、非 root 启动报 `ErrNotRoot`、未知用户报 `ErrUnknownUser`）
 - [ ] 覆盖整包的包级 HMAC（当前只认证命令段）
 - [ ] 远端原始命令（`allow_raw_shell` 默认关 + `/bin/sh -c` + 认证 / 端口 / allowlist + 启动告警）
 - [ ] `wol.send`（预留，唤醒别的机器）

@@ -577,6 +577,8 @@ func buildRemoteCommand(entry commandConfig) (wol.RemoteCommand, error) {
 		Timeout: entry.Timeout,
 		Workdir: entry.Workdir,
 		Env:     entry.Env,
+		User:    entry.User,
+		Group:   entry.Group,
 	}, wol.ActionTypeExec)
 	if err != nil {
 		return wol.RemoteCommand{}, fmt.Errorf("commands[%s]: %w", entry.ID, err)
