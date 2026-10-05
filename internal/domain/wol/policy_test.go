@@ -298,10 +298,75 @@ func testIfacesTwo() []wol.IfaceInfo {
 	}
 }
 
+func srcRule(cidr string, action wol.Action) wol.Rule {
+	rule := plainRule(8, action)
+	rule.Match.SrcCIDRs = []string{cidr}
+
+	return rule
+}
+
 func scopedRule(rule wol.Rule, ifaces ...string) wol.Rule {
 	rule.Match.MAC = wol.MACSelector{Kind: wol.MACInterface, Ifaces: ifaces}
 
 	return rule
+}
+
+func TestRoutingPolicySourceFilterConflicts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("source filters that overlap in the same scope", func(t *testing.T) {
+		t.Parallel()
+
+		// Both rules are self-scoped and score the same, and 10.1.2.3 is inside both filters,
+		// so nothing decides which one runs: the same set of conditions used to be required
+		// for the error, which let this one through.
+		rules := []wol.Rule{srcRule("10.0.0.0/8", wol.ActionShutdown), srcRule("10.1.0.0/16", wol.ActionReboot)}
+
+		_, err := wol.NewRoutingPolicy(rules, testIfaces(), wol.PolicyOptions{})
+		require.ErrorIs(t, err, wol.ErrAmbiguousRule)
+	})
+
+	t.Run("source filters that do not overlap", func(t *testing.T) {
+		t.Parallel()
+
+		rules := []wol.Rule{srcRule("10.0.0.0/8", wol.ActionShutdown), srcRule("192.168.0.0/16", wol.ActionReboot)}
+
+		_, err := wol.NewRoutingPolicy(rules, testIfaces(), wol.PolicyOptions{})
+		require.NoError(t, err)
+	})
+
+	t.Run("source filters of different families", func(t *testing.T) {
+		t.Parallel()
+
+		rules := []wol.Rule{srcRule("10.0.0.0/8", wol.ActionShutdown), srcRule("fd00::/8", wol.ActionReboot)}
+
+		_, err := wol.NewRoutingPolicy(rules, testIfaces(), wol.PolicyOptions{})
+		require.NoError(t, err)
+	})
+
+	t.Run("overlapping source filters across scopes", func(t *testing.T) {
+		t.Parallel()
+
+		rules := []wol.Rule{
+			scopedRule(srcRule("10.1.0.0/16", wol.ActionShutdown), "eth0"),
+			srcRule("10.0.0.0/8", wol.ActionNoop),
+		}
+
+		_, err := wol.NewRoutingPolicy(rules, testIfacesTwo(), wol.PolicyOptions{})
+		require.ErrorIs(t, err, wol.ErrRuleConflict)
+	})
+
+	t.Run("disjoint source filters are not a cross-scope conflict", func(t *testing.T) {
+		t.Parallel()
+
+		rules := []wol.Rule{
+			scopedRule(srcRule("10.1.0.0/16", wol.ActionShutdown), "eth0"),
+			srcRule("192.168.0.0/16", wol.ActionNoop),
+		}
+
+		_, err := wol.NewRoutingPolicy(rules, testIfacesTwo(), wol.PolicyOptions{})
+		require.NoError(t, err)
+	})
 }
 
 func TestRoutingPolicyRuleConflict(t *testing.T) {

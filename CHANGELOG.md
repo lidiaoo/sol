@@ -82,6 +82,13 @@ tagged release.
   invocations of one action never suppress each other. It needs no configuration, counts as
   `inflight` (plus `suppressed`) in `/v1/status` and as `sol_inflight_total` in `/metrics`, and
   answers 429 on `/v1/actions/{name}`, `/v1/commands/{id}` and `/v1/exec`.
+- The rule conflict check compares source filters by intersection rather than by equality: two
+  rules that can both match one address - `10.0.0.0/8` and `10.1.0.0/16` on the same port with
+  the same content and scope - are now refused instead of being resolved by whichever rule happens
+  to be listed first. Nothing else orders them, since `src_cidrs` contributes a fixed specificity
+  bump and not the prefix length. To cover a subnet and leave the rest alone, leave out the
+  catch-all rule: an unmatched packet runs nothing. Configs that relied on the old silence are
+  rejected at startup with `overlapping rule scopes with matching conditions`.
 - Fixed: a remote command refused by a cooldown or the rate limit answered 500 on
   `POST /v1/commands/{id}` instead of 429, and a raw shell command refused by a guardrail answered
   202 on `POST /v1/exec` without running anything.

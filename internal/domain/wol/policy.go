@@ -17,7 +17,7 @@ var (
 	ErrUnknownActionRef   = errors.New("unknown action reference")
 	ErrDuplicateInterface = errors.New("duplicate interface")
 	ErrSecureOnLength     = errors.New("secure_on must be exactly 6 bytes")
-	ErrRuleConflict       = errors.New("overlapping rule scopes with identical conditions")
+	ErrRuleConflict       = errors.New("overlapping rule scopes with matching conditions")
 )
 
 const (
@@ -431,22 +431,24 @@ func sameScopeConflict(a compiledRule, b compiledRule) error {
 		return nil
 	}
 
-	if a.content.key() == b.content.key() && samePorts(a.ports, b.ports) {
+	if a.content.key() == b.content.key() && samePorts(a.ports, b.ports) && sameSRC(a.srcNets, b.srcNets) {
 		return fmt.Errorf("%w: ports %v", ErrDuplicatePort, a.ports)
 	}
 
 	return fmt.Errorf("%w: ports %v", ErrAmbiguousRule, a.ports)
 }
 
-// crossScopeConflict rejects rules whose scopes overlap without being identical while
-// every other condition matches: the overlap has to be made explicit instead of being
-// resolved silently by preferring the more specific rule (§8, §17.9).
+// crossScopeConflict rejects rules whose scopes overlap without being identical while every
+// other condition can match the same packet: the overlap has to be made explicit instead of
+// being resolved silently by preferring the more specific rule (§8, §17.9). Conditions overlap
+// when their source filters intersect - two different filters that share an address are not a
+// way to tell two rules apart, since nothing orders one above the other for that address.
 func crossScopeConflict(a compiledRule, b compiledRule) error {
 	if a.mac.scopeKey() == b.mac.scopeKey() || !macsOverlap(a.mac, b.mac) || a.auth != b.auth {
 		return nil
 	}
 
-	if !samePorts(a.ports, b.ports) || a.content.key() != b.content.key() || !sameSRC(a.srcNets, b.srcNets) {
+	if !samePorts(a.ports, b.ports) || a.content.key() != b.content.key() || !srcOverlap(a.srcNets, b.srcNets) {
 		return nil
 	}
 
@@ -609,12 +611,32 @@ func samePorts(a []int, b []int) bool {
 	return true
 }
 
+// srcOverlap reports whether two source filters can accept the same address. An absent filter
+// accepts everything, so it overlaps any filter; two filters overlap when any of their networks
+// share an address. Comparing the sets for equality instead would let "10.0.0.0/8 and
+// 10.1.0.0/16 on the same port" through, and a packet from 10.1.2.3 would then be resolved by
+// which rule happens to be listed first (§8).
 func srcOverlap(a []*net.IPNet, b []*net.IPNet) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return true
 	}
 
-	return sameSRC(a, b)
+	for _, left := range a {
+		for _, right := range b {
+			if netsIntersect(left, right) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// netsIntersect reports whether two networks share an address. Two properly masked prefixes
+// intersect exactly when one network's base address falls inside the other, which also answers
+// false for a v4/v6 pair.
+func netsIntersect(a, b *net.IPNet) bool {
+	return a.Contains(b.IP) || b.Contains(a.IP)
 }
 
 func sameSRC(a []*net.IPNet, b []*net.IPNet) bool {

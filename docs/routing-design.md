@@ -359,7 +359,7 @@ Resolve（伪代码）：
 - `fallback` 字段不再需要（默认规则就是含 `ContentNone` 的普通规则）
 - 新增 `actions` 与 `PolicyOptions`
 - 新增 `IfaceInfo` 接口表：`MACSelf` 用 MAC 全集，`MACInterface` 按网卡名解析（每网卡独立规则）
-- 规则来源：全局规则（`server.rules`，或顶层 `rules` 简写）+ `server.interfaces[].rules`（块内规则在加载期展开为带 interface 作用域的规则；作用域重叠且条件相同 -> `ErrRuleConflict`）
+- 规则来源：全局规则（`server.rules`，或顶层 `rules` 简写）+ `server.interfaces[].rules`（块内规则在加载期展开为带 interface 作用域的规则；作用域重叠且条件相同 -> `ErrRuleConflict`；`src_cidrs` 相交即算相同，见 §17.9）
 
 ---
 
@@ -373,6 +373,8 @@ Resolve（伪代码）：
 - 同名网卡在 `server.interfaces` 出现多次 -> `ErrDuplicateInterface`
 - 块内 `match.interfaces` 不为空且不等于块名 -> `ErrInterfaceScopeConflict`
 - 合并后两条规则作用域相交、且其余匹配条件（ports/content/mac/src_cidrs）相同 -> `ErrRuleConflict`（要求显式去重，不做静默覆盖）
+  - 判"相同"时 **`src_cidrs` 只要相交就算**，不要求集合一模一样：`10.0.0.0/8` 与 `10.1.0.0/16` 都命中 `10.1.2.3`，而两条规则的分数一样（§8 的 `src_cidr` 只加一个固定 +10，**不看前缀长度**），没有任何东西能决定谁赢。想给"某网段一个动作、其余不动"时不要写兜底规则（未匹配即无动作，本来就不需要兜底）；确实要给两段不同动作，就让 `src_cidrs` 互不相交（显式列举）。
+  - 顺带的限制（开放项）：前缀长度不是特异性信号。想做"10.1/16 关机、10/8 其余只记日志"这种更细的划分，现在只能靠不相交的网段列举，或分开端口；"最长前缀优先"没有实现（见 TODO 开放问题）。
 - 内容长度超出读缓冲（`BufferSize`）-> `ErrContentTooLarge`
 - 端口号非法（<1 或 >65535）-> 沿用现有解析错误
 
@@ -1065,7 +1067,7 @@ rules:
 
 - `match.interfaces` 与 `match.mac` 互斥；两者都不写 = 全部网卡（`MACSelf`）。
 - 配置里出现的网卡名必须在监听集合（`server.interfaces` 或 auto 结果）内，否则构造期 `ErrUnknownInterface`。
-- 同一端口按网卡区分动作时，必须让作用域不重叠：每条规则都显式限定网卡（穷举），或让全局规则避开与网卡规则同端口/同内容。作用域重叠且条件相同 -> `ErrRuleConflict`（不做静默覆盖，见第 6/8 节）。
+- 同一端口按网卡区分动作时，必须让作用域不重叠：每条规则都显式限定网卡（穷举），或让全局规则避开与网卡规则同端口/同内容。作用域重叠且条件相同 -> `ErrRuleConflict`（不做静默覆盖，见第 6/8 节）。条件里的 `src_cidrs` 相交即算相同，所以"全局 `10.0.0.0/8` + 块内 `10.1.0.0/16`"这种写法会被拒：两条都对 `10.1.2.3` 成立且分数相同，没有优先级可言。
 - 物理含义：魔法包里的目标 MAC 决定"发给哪张网卡"，据此分流。
 
 ### 17.9 server 多 interfaces 块（全局规则 + 每网卡专属）

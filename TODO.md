@@ -38,7 +38,7 @@
 
 遗留（不阻塞 P1）
 - [x] `ErrRuleConflict` / `ErrInterfaceScopeConflict`：已在 P3 落地（跨作用域冲突检测 + 块作用域校验，见设计 §19.3）
-- [ ] 歧义判定仍偏保守（`src_cidrs` 需完全相同才算同一作用域；重叠但不相同的 CIDR 集合不报错）
+- [x] 歧义判定不再偏保守：`src_cidrs` **相交**即算条件相同（`netsIntersect`：`a.Contains(b.IP) || b.Contains(a.IP)`，v4/v6 互不相交），同作用域 -> `ErrAmbiguousRule`、跨作用域 -> `ErrRuleConflict`；顺带把 `ErrDuplicatePort` 收窄成"连 src 也完全相同"，消息不再误导。单测 `srcfilter_internal_test.go` + 冲突用例 5 条。剩余开放项：前缀长度不是特异性信号（"最长前缀优先"未实现）
 
 ## P2 动作模型与 CLI（§4、§10、§16、§17）✅
 
