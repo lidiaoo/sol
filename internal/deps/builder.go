@@ -137,10 +137,21 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 			policy,
 			ifaces,
 			b.cfg.DryRun,
-		)
+		).WithCooldowns(b.cfg.Cooldown, cooldownWindows(b.cfg.ActionCooldowns))
 	})
 
 	return b.listen, buildErr
+}
+
+// cooldownWindows converts the per-action cooldown overrides into plain strings.
+func cooldownWindows(perAction map[wol.Action]time.Duration) map[string]time.Duration {
+	windows := make(map[string]time.Duration, len(perAction))
+
+	for action, window := range perAction {
+		windows[string(action)] = window
+	}
+
+	return windows
 }
 
 // BuildHTTPServer builds the optional control plane; it returns nil when disabled.
@@ -178,7 +189,12 @@ func (b *Builder) BuildHTTPServer() (*httpapi.Server, error) {
 				Rules:      listenSvc.Rules,
 				Interfaces: listenSvc.Interfaces,
 				Dispatch: func(ctx context.Context, action wol.Action) error {
-					return listenSvc.Dispatch(ctx, action, wol.Event{})
+					err := listenSvc.Dispatch(ctx, action, wol.Event{})
+					if errors.Is(err, app.ErrActionSuppressed) {
+						return fmt.Errorf("%w: %s", httpapi.ErrSuppressed, action)
+					}
+
+					return err
 				},
 			},
 		)
@@ -219,6 +235,7 @@ func (b *Builder) statusFunc(svc *app.ListenService) func() httpapi.Status {
 			UptimeSecs:  uptime.Seconds(),
 			Packets:     stats.Packets,
 			Matched:     stats.Matched,
+			Suppressed:  stats.Suppressed,
 			Actions:     stats.Actions,
 			Rules:       len(svc.Rules()),
 			Interfaces:  names,

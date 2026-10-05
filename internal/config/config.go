@@ -1,6 +1,10 @@
 package config
 
-import "github.com/bavix/sol/internal/domain/wol"
+import (
+	"time"
+
+	"github.com/bavix/sol/internal/domain/wol"
+)
 
 // Control-plane auth types accepted by server.http.auth.type (§18.1).
 const (
@@ -41,6 +45,10 @@ type Config struct {
 	SecureOn []byte
 	// ExecAllowlist restricts absolute exec commands to these directories; empty allows any.
 	ExecAllowlist []string
+	// Cooldown is the minimum interval between two executions of the same action; zero disables it.
+	Cooldown time.Duration
+	// ActionCooldowns overrides Cooldown per action name.
+	ActionCooldowns map[wol.Action]time.Duration
 	// Actions are the known named actions; empty means the built-in set.
 	Actions map[wol.Action]wol.ActionDef
 	// Logging holds the raw logging settings; empty values mean the defaults.

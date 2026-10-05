@@ -193,6 +193,23 @@ func TestReloadIsNotImplemented(t *testing.T) {
 	require.Equal(t, http.StatusNotImplemented, rec.Code)
 }
 
+func TestActionSuppressedReturns429(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps()
+	deps.Dispatch = func(_ context.Context, action wol.Action) error {
+		return fmt.Errorf("%w: %s", httpapi.ErrSuppressed, action)
+	}
+
+	srv := httpapi.New(
+		httpapi.Config{Listen: "127.0.0.1:0", Auth: httpapi.BearerAuth(testToken)},
+		deps,
+	)
+
+	rec := do(t, srv, http.MethodPost, "/v1/actions/noop", testToken)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+}
+
 func TestMetricsExposition(t *testing.T) {
 	t.Parallel()
 

@@ -26,6 +26,9 @@ const (
 	actionTimeout     = 30 * time.Second
 )
 
+// ErrSuppressed reports that an action was rate-limited by its cooldown.
+var ErrSuppressed = errors.New("action suppressed by cooldown")
+
 // Event is the most recent matched packet, as exposed by /v1/status.
 type Event struct {
 	Time      time.Time `json:"time"`
@@ -43,6 +46,7 @@ type Status struct {
 	UptimeSecs  float64           `json:"uptime_seconds"`
 	Packets     uint64            `json:"packets"`
 	Matched     uint64            `json:"matched"`
+	Suppressed  uint64            `json:"suppressed"`
 	Actions     map[string]uint64 `json:"actions"`
 	Rules       int               `json:"rules"`
 	Interfaces  []string          `json:"interfaces"`
@@ -218,8 +222,12 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("http action failed", "remote", r.RemoteAddr, "action", string(name), "error", err)
 
 		status := http.StatusInternalServerError
-		if errors.Is(err, wol.ErrUnknownActionRef) {
+
+		switch {
+		case errors.Is(err, wol.ErrUnknownActionRef):
 			status = http.StatusNotFound
+		case errors.Is(err, ErrSuppressed):
+			status = http.StatusTooManyRequests
 		}
 
 		writeError(w, status, err.Error())
@@ -245,6 +253,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 
 	fmt.Fprintf(w, "# TYPE sol_packets_total counter\nsol_packets_total %d\n", st.Packets)
 	fmt.Fprintf(w, "# TYPE sol_matched_total counter\nsol_matched_total %d\n", st.Matched)
+	fmt.Fprintf(w, "# TYPE sol_suppressed_total counter\nsol_suppressed_total %d\n", st.Suppressed)
 	fmt.Fprintf(w, "# TYPE sol_rules gauge\nsol_rules %d\n", st.Rules)
 	fmt.Fprintf(w, "# TYPE sol_uptime_seconds gauge\nsol_uptime_seconds %.3f\n", st.UptimeSecs)
 	fmt.Fprintf(w, "# TYPE sol_actions_total counter\n")

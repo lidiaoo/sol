@@ -101,11 +101,13 @@ type tlsConfig struct {
 }
 
 type securityConfig struct {
-	DryRun                   bool     `yaml:"dry_run"`
-	ReservedPorts            []int    `yaml:"reserved_ports"`
-	AllowReservedPortActions bool     `yaml:"allow_reserved_port_actions"`
-	SecureOn                 string   `yaml:"secure_on"`
-	ExecAllowlist            []string `yaml:"exec_allowlist"`
+	DryRun                   bool              `yaml:"dry_run"`
+	ReservedPorts            []int             `yaml:"reserved_ports"`
+	AllowReservedPortActions bool              `yaml:"allow_reserved_port_actions"`
+	SecureOn                 string            `yaml:"secure_on"`
+	ExecAllowlist            []string          `yaml:"exec_allowlist"`
+	Cooldown                 string            `yaml:"cooldown"`
+	Cooldowns                map[string]string `yaml:"cooldowns"`
 }
 
 type actionConfig struct {

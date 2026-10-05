@@ -736,6 +736,8 @@ actions[].name              动作名，唯一
 actions[].type              noop | power.shutdown | power.reboot | power.sleep | exec（http / sequence 见 P4）
 actions[].command / timeout / workdir / env / shell   exec 用：argv 数组（非 shell）；shell: true 走 /bin/sh -c（逃生舱）；user/group 未实现
 security.exec_allowlist     可选，限 exec 的绝对路径命令只能落在这些目录下（§19.4）
+security.cooldown           可选，同一动作两次执行的最小间隔（如 5s；空 = 关闭，§19.6）
+security.cooldowns.<动作名>  可选，按动作覆盖全局 cooldown
 commands[].id / type / command / args        远端白名单命令（§21）
 server.http.{enabled,listen,auth,tls}        控制面（§18 / §19.5）：auth.type = bearer|basic|mtls（默认 bearer，无 none）
 server.http.auth.token_env / token_file      bearer 密钥来源（二选一；文件必须 600 权限）
@@ -1326,6 +1328,17 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 手动触发走 `ListenService.Dispatch`：实例处于 dry-run 时只记日志不执行；成功后计入 `sol_actions_total`。
 - 冒烟（真机，`127.0.0.1:18080`，token 来自环境变量）：`/healthz` 免认证 200；无 token / 错 token 401；带 token 的 `/v1/status` 显示 `packets=1 matched=1 last_event={port:10040, interface:enp6s0, action:noop}`；`/v1/rules` 回 `{ports:[10040], mac:self, content:none, action:noop}`；`POST /v1/actions/noop` -> 202，未知动作 -> 404，`/v1/reload` -> 501。
 - 未做（留后续）：热重载、`/v1/commands/{id}` 与 `/v1/exec`（随远端命令通道）、出站 `type: http` 动作、`/v1/status` 的版本号（需构建期注入）、mTLS 端到端冒烟。
+
+---
+
+### 19.6 P4 部分落地（cooldown 护栏）
+
+- 配置：`security.cooldown`（全局最小执行间隔，Go duration，默认空 = 关闭）+ `security.cooldowns.<动作名>`（按动作覆盖）。解析失败或负值 -> `ErrCooldown`；键不是已知动作名 -> `wol.ErrUnknownActionRef`；按动作窗口必须为正。
+- 语义：同一动作在一次**真实执行**后的窗口内再次触发则被抑制——不执行、不计入 `sol_actions_total`，计入 `sol_suppressed_total`，日志带剩余时间。dry-run 命中不占用窗口（本来就没执行）。
+- 覆盖面：包触发与 HTTP 手动触发（`POST /v1/actions/{name}`）共用同一护栏；手动触发被抑制返回 429（`httpapi.ErrSuppressed`，deps 从 `app.ErrActionSuppressed` 转译），包触发只记日志。
+- 启动日志打印默认窗口与每个按动作窗口。
+- 冒烟（真机，`security.cooldown: 60s`，端口 10041 -> noop，连发 3 个魔法包）：`matched=3, suppressed=2, actions.noop=1`；`/metrics` 出现 `sol_suppressed_total 2`；窗口内 `POST /v1/actions/noop` 得 429 + `action suppressed by cooldown: noop`；日志 3 条抑制告警带 `remaining`。
+- 未做：全局速率限制（令牌桶 / 每秒上限）只有按动作 cooldown；执行中再次触发的合并（singleflight）语义未定义。
 
 ---
 

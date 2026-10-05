@@ -484,6 +484,55 @@ func TestLoadHTTPErrors(t *testing.T) {
 	}
 }
 
+func TestLoadCooldowns(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `
+version: 1
+security:
+  cooldown: 5s
+  cooldowns:
+    power.shutdown: 30s
+rules:
+  - { match: { ports: [8] }, action: noop }
+`))
+
+	require.NoError(t, err)
+	require.Equal(t, 5*time.Second, cfg.Cooldown)
+	require.Equal(t, 30*time.Second, cfg.ActionCooldowns[wol.ActionShutdown])
+}
+
+func TestLoadCooldownErrors(t *testing.T) {
+	defaults := "version: 1\nrules:\n  - { match: { ports: [8] }, action: noop }\n"
+
+	tests := map[string]struct {
+		security string
+		match    error
+	}{
+		"malformed duration": {
+			security: "security:\n  cooldown: soon\n",
+			match:    ErrCooldown,
+		},
+		"negative duration": {
+			security: "security:\n  cooldown: -5s\n",
+			match:    ErrCooldown,
+		},
+		"unknown action": {
+			security: "security:\n  cooldowns: { nope: 5s }\n",
+			match:    wol.ErrUnknownActionRef,
+		},
+		"zero per-action window": {
+			security: "security:\n  cooldowns: { noop: 0s }\n",
+			match:    ErrCooldown,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, defaults+tt.security))
+			require.ErrorIs(t, err, tt.match)
+		})
+	}
+}
+
 func TestLoadUnknownLoggingFieldIsRejected(t *testing.T) {
 	_, err := Load(writeConfig(t, "version: 1\nlogging:\n  level: info\n  colour: true\n"))
 	require.Error(t, err)

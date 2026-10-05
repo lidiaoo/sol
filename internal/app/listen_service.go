@@ -14,7 +14,11 @@ import (
 	"github.com/bavix/sol/internal/domain/wol"
 )
 
-var errNilListener = errors.New("nil listener")
+var (
+	errNilListener = errors.New("nil listener")
+	// ErrActionSuppressed reports that an action was rate-limited by its cooldown.
+	ErrActionSuppressed = errors.New("action suppressed by cooldown")
+)
 
 const packetChannelSize = 2
 
@@ -52,11 +56,12 @@ type EventRecord struct {
 
 // Stats is a snapshot of the listener counters, used by the control plane.
 type Stats struct {
-	StartedAt time.Time
-	Packets   uint64
-	Matched   uint64
-	Actions   map[string]uint64
-	LastEvent *EventRecord
+	StartedAt  time.Time
+	Packets    uint64
+	Matched    uint64
+	Suppressed uint64
+	Actions    map[string]uint64
+	LastEvent  *EventRecord
 }
 
 type ListenService struct {
@@ -69,10 +74,13 @@ type ListenService struct {
 	startedAt time.Time
 	packets   atomic.Uint64
 	matched   atomic.Uint64
+	blocked   atomic.Uint64
 
 	mu       sync.Mutex
 	actions  map[string]uint64
 	lastSeen *EventRecord
+
+	cooldowns *cooldowns
 }
 
 func NewListenService(
@@ -90,7 +98,15 @@ func NewListenService(
 		dryRun:    dryRun,
 		startedAt: time.Now(),
 		actions:   make(map[string]uint64),
+		cooldowns: newCooldowns(0, nil),
 	}
+}
+
+// WithCooldowns installs the per-action execution windows; zero disables the guard.
+func (s *ListenService) WithCooldowns(global time.Duration, perAction map[string]time.Duration) *ListenService {
+	s.cooldowns = newCooldowns(global, perAction)
+
+	return s
 }
 
 // Stats returns a snapshot of the counters for the control plane.
@@ -102,11 +118,12 @@ func (s *ListenService) Stats() Stats {
 	maps.Copy(actions, s.actions)
 
 	return Stats{
-		StartedAt: s.startedAt,
-		Packets:   s.packets.Load(),
-		Matched:   s.matched.Load(),
-		Actions:   actions,
-		LastEvent: s.lastSeen,
+		StartedAt:  s.startedAt,
+		Packets:    s.packets.Load(),
+		Matched:    s.matched.Load(),
+		Suppressed: s.blocked.Load(),
+		Actions:    actions,
+		LastEvent:  s.lastSeen,
 	}
 }
 
@@ -128,6 +145,10 @@ func (s *ListenService) Dispatch(ctx context.Context, action wol.Action, ev wol.
 		return nil
 	}
 
+	if !s.allowAction(action) {
+		return fmt.Errorf("%w: %s", ErrActionSuppressed, action)
+	}
+
 	if err := s.registry.Dispatch(ctx, action, ev); err != nil {
 		return err
 	}
@@ -140,6 +161,7 @@ func (s *ListenService) Dispatch(ctx context.Context, action wol.Action, ev wol.
 func (s *ListenService) Run(ctx context.Context) error {
 	s.logIfaces()
 	s.logRules()
+	s.logCooldowns()
 
 	listeners, err := s.createListeners()
 	if err != nil {
@@ -187,6 +209,17 @@ func (s *ListenService) logRules() {
 			"action", string(rule.Action),
 			"dry_run", rule.DryRun,
 		)
+	}
+}
+
+// logCooldowns reports the configured execution windows at startup.
+func (s *ListenService) logCooldowns() {
+	if s.cooldowns.global > 0 {
+		slog.Info("action cooldown", "scope", "default", "window", s.cooldowns.global.String())
+	}
+
+	for action, window := range s.cooldowns.perAction {
+		slog.Info("action cooldown", "action", action, "window", window.String())
 	}
 }
 
@@ -301,7 +334,11 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 	}
 
 	s.matched.Add(1)
+	s.runDecision(ctx, pkt, ev, decision)
+}
 
+// runDecision logs the match and triggers the action, honouring dry-run and cooldowns.
+func (s *ListenService) runDecision(ctx context.Context, pkt packet, ev wol.Event, decision wol.Decision) {
 	logOnly := s.dryRun || decision.DryRun
 	trigger := ternary(logOnly, "DRY-RUN", string(decision.Action))
 
@@ -325,6 +362,10 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 	)
 
 	if logOnly {
+		return
+	}
+
+	if !s.allowAction(decision.Action) {
 		return
 	}
 
@@ -359,4 +400,21 @@ func ternary(cond bool, a string, b string) string {
 	}
 
 	return b
+}
+
+// allowAction applies the cooldown guard, counting and logging a suppressed run.
+func (s *ListenService) allowAction(action wol.Action) bool {
+	remaining, allowed := s.cooldowns.allow(string(action))
+	if allowed {
+		return true
+	}
+
+	s.blocked.Add(1)
+
+	slog.Warn("action suppressed by cooldown",
+		"action", string(action),
+		"remaining", remaining.Truncate(time.Millisecond).String(),
+	)
+
+	return false
 }

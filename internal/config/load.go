@@ -33,6 +33,7 @@ var (
 	ErrHTTPSecret           = errors.New("cannot resolve the http auth secret")
 	ErrHTTPUser             = errors.New("server.http.auth.user is required for basic auth")
 	ErrHTTPTLS              = errors.New("invalid server.http.tls configuration")
+	ErrCooldown             = errors.New("invalid security.cooldown")
 )
 
 const (
@@ -236,17 +237,17 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		return nil, err
 	}
 
-	global, err := buildRules(globalRules(f), nil, false, actions)
-	if err != nil {
-		return nil, err
-	}
-
-	scoped, err := buildInterfaceRules(f.Server.Interfaces, actions)
+	rules, err := buildAllRules(f, actions)
 	if err != nil {
 		return nil, err
 	}
 
 	httpCfg, err := buildHTTP(f.Server.HTTP)
+	if err != nil {
+		return nil, err
+	}
+
+	cooldown, actionCooldowns, err := buildCooldowns(f.Security, actions)
 	if err != nil {
 		return nil, err
 	}
@@ -258,10 +259,12 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		ReservedPorts:        f.Security.ReservedPorts,
 		SecureOn:             secureOnBytes(f.Security.SecureOn),
 		ExecAllowlist:        f.Security.ExecAllowlist,
+		Cooldown:             cooldown,
+		ActionCooldowns:      actionCooldowns,
 		Actions:              actions,
 		Logging:              Logging{Level: f.Logging.Level, Format: f.Logging.Format},
 		HTTP:                 httpCfg,
-		Rules:                append(global, scoped...),
+		Rules:                rules,
 	}, nil
 }
 
@@ -368,6 +371,73 @@ func parseTimeout(value string) (time.Duration, error) {
 	}
 
 	return timeout, nil
+}
+
+// buildAllRules expands the global rules and every interface block into one ordered list.
+func buildAllRules(f *fileConfig, actions map[wol.Action]wol.ActionDef) ([]wol.Rule, error) {
+	global, err := buildRules(globalRules(f), nil, false, actions)
+	if err != nil {
+		return nil, err
+	}
+
+	scoped, err := buildInterfaceRules(f.Server.Interfaces, actions)
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.Concat(global, scoped), nil
+}
+
+// buildCooldowns resolves security.cooldown and its per-action overrides.
+func buildCooldowns(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (time.Duration, map[wol.Action]time.Duration, error) {
+	global, err := parseCooldown(cfg.Cooldown, "security.cooldown")
+	if err != nil {
+		return 0, nil, err
+	}
+
+	if len(cfg.Cooldowns) == 0 {
+		return global, nil, nil
+	}
+
+	perAction := make(map[wol.Action]time.Duration, len(cfg.Cooldowns))
+
+	for name, value := range cfg.Cooldowns {
+		action := wol.Action(name)
+
+		if _, ok := actions[action]; !ok {
+			return 0, nil, fmt.Errorf("security.cooldowns: %w: %s", wol.ErrUnknownActionRef, name)
+		}
+
+		window, parseErr := parseCooldown(value, "security.cooldowns."+name)
+		if parseErr != nil {
+			return 0, nil, parseErr
+		}
+
+		if window <= 0 {
+			return 0, nil, fmt.Errorf("%w: security.cooldowns.%s: must be positive", ErrCooldown, name)
+		}
+
+		perAction[action] = window
+	}
+
+	return global, perAction, nil
+}
+
+func parseCooldown(value string, field string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+
+	window, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s: %q: %w", ErrCooldown, field, value, err)
+	}
+
+	if window < 0 {
+		return 0, fmt.Errorf("%w: %s: %q", ErrCooldown, field, value)
+	}
+
+	return window, nil
 }
 
 func buildHTTP(cfg httpConfig) (HTTP, error) {
