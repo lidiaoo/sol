@@ -1252,6 +1252,23 @@ P4  自定义命令 + HTTP
 
 CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并打印 WARNING（`cmd/listen.go`），其余端口行为不变。
 
+### 19.2 P2 已落地（实现对照）
+
+代码位置：`internal/domain/wol/action.go`（ActionType / ActionDef / Executor / Registry / `power.sleep`）、`internal/infra/system/{power_controller,noop_executor}.go`（Executor 实现）、`internal/infra/network/{ifaces,interface_resolver}.go`（`List` / `Select` / 合格判定）、`internal/app/listen_service.go`（Resolve -> Dispatch、启动打印网卡集合）、`internal/deps/builder.go`（装配 registry + 网卡选择）、`cmd/{listen,ifaces}.go`。
+
+实现要点（与本文的对齐 / 差异）：
+
+- `Executor` 接口为 `Execute(ctx, ActionDef, Event) error`；**去掉了设计里的 `Type() ActionType`**——一个执行器可服务多个类型，注册改为 `Registry.Register(executor, types...)`（`PowerController` 一次注册 shutdown/reboot/sleep，`NoopExecutor` 注册 noop）。
+- `ActionDef{Name, Type, Params}`；`BuiltinActions()` 四个内置动作的名字与类型名相同（`noop` / `power.shutdown` / `power.reboot` / `power.sleep`）。
+- 分发入口有两个：`Dispatch(ctx, name, ev)`（服务侧：按名字取定义 -> 按类型找执行器 -> 执行）与 `Registry.Actions()`（交给策略做构造期校验）。`RoutingPolicy.Resolve` 仍返回**动作名**而非 `ActionDef`，与 §4.2 的示意略有差异（P1 测试与 P3 命名动作都需要名字这一层）。
+- `PolicyOptions.Actions` 是策略的动作白名单来源，默认 `BuiltinActions()`；P3 的 `actions` 段届时注入这里，`ErrUnknownActionRef` 天然覆盖"引用了未定义动作"。
+- 网卡：`network.List()` 返回全部网卡（含 `Up/Loopback/Virtual/Eligible` 标志），`network.Select(names)` 显式名字优先、空则取全部合格网卡；合格 = `Up` + 非 loopback + 有 MAC + 名字不以 `docker*/veth*/virbr*/br-*/vnet/vmnet/tun/tap/tailscale/wg/zt/podman/cni/flannel` 开头。无合格网卡 -> `ErrNoEligibleInterface`；显式名字未知 / 重复 / 无 MAC -> `ErrUnknownInterface` / `ErrDuplicateInterface` / `ErrNoMACAddress`。
+- `IfaceInfo` 扩为 `{Name, MAC, IPs, Up, Loopback, Virtual, Eligible}` + `IPv4()`；`MACSelf` 即"全部选中网卡的 MAC 集合"，这就是"多网卡监听"的落地形式（socket 仍绑 `0.0.0.0`）。
+- CLI：`--iface` 可重复、省略即 auto；`--port` 可重复且支持 `port:action`；新增 `--default-action`（默认 `shutdown`）、`--allow-reserved-actions`；新增子命令 `sol ifaces [--json]`（NAME/TYPE/STATUS/MAC/IPV4/AUTO）。
+- **`--config` 未随 P2 落地**：P2 不暴露这个 flag，避免出现"加了但用不了"的假接口，随 P3 的加载器一起加。
+- 保留端口：`--port 9`（无动作或显式非 noop 动作）在 CLI 层降级为 `noop` 并打 WARNING，除非 `--allow-reserved-actions`；策略层仍对"保留端口 + 内容规则 / 非 noop"报 `ErrReservedPortAction`（fail fast）。
+- 冒烟（真机 `enp6s0` + `enp9s0f3u1`）：`sol ifaces` 把 `docker0/br-*/veth*` 标为 virtual 且 `AUTO=no`、`wlp5s0`（down）`AUTO=no`；auto 模式启动打印两张网卡与规则列表；`--port 10010:sleep --port 10011:shutdown` 分别命中 sleep/shutdown；显式 `--iface enp9s0f3u1` 时 `enp6s0` 的魔法包被判为不匹配。
+
 ---
 
 ## 20. 安全模型总览（汇总）

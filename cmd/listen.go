@@ -20,8 +20,9 @@ const portPartsCount = 2
 
 var listenCmd = &cobra.Command{
 	Use:   "listen",
-	Short: "Listen for magic packets and trigger power action",
-	Long:  "Listen for Wake-on-LAN magic packets on the specified network interface and trigger power action (shutdown/reboot) when received.",
+	Short: "Listen for magic packets and trigger an action",
+	Long: "Listen for Wake-on-LAN magic packets on the given interfaces (or every eligible\n" +
+		"interface by default) and trigger an action when a packet matches a rule.",
 	RunE: func(command *cobra.Command, _ []string) error {
 		parsedRules, err := parsePorts()
 		if err != nil {
@@ -29,9 +30,10 @@ var listenCmd = &cobra.Command{
 		}
 
 		cfg := &config.Config{
-			InterfaceName: interfaceName,
-			DryRun:        dryRun,
-			Rules:         parsedRules,
+			InterfaceNames:       interfaceNames,
+			DryRun:               dryRun,
+			AllowReservedActions: allowReservedActions,
+			Rules:                parsedRules,
 		}
 
 		builder := deps.NewBuilder(cfg)
@@ -41,26 +43,33 @@ var listenCmd = &cobra.Command{
 			return buildErr
 		}
 
-		return application.Run(command.Context(), cfg.InterfaceName)
+		return application.Run(command.Context())
 	},
 }
 
 var (
-	interfaceName string
-	dryRun        bool
-	portStrings   []string
+	interfaceNames       []string
+	dryRun               bool
+	portStrings          []string
+	defaultActionName    string
+	allowReservedActions bool
 )
 
 func init() {
 	rootCmd.AddCommand(listenCmd)
 
-	listenCmd.Flags().StringVar(&interfaceName, "iface", "", "Network interface name to bind to (required)")
-	listenCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Log when a matching packet is received instead of executing the power action")
+	listenCmd.Flags().StringArrayVar(&interfaceNames, "iface", nil,
+		"Network interface to match on; repeatable (--iface eth0 --iface wlan0). "+
+			"Omit to auto-select every eligible interface")
+	listenCmd.Flags().BoolVar(&dryRun, "dry-run", false,
+		"Log when a matching packet is received instead of executing the action")
 	listenCmd.Flags().StringArrayVar(&portStrings, "port", nil,
 		"UDP port to listen on, optionally with action (e.g. '8' for shutdown, '8:reboot'). "+
 			"Ports 7 and 9 are reserved for plain WOL and always map to noop. Can be specified multiple times")
-
-	_ = listenCmd.MarkFlagRequired("iface")
+	listenCmd.Flags().StringVar(&defaultActionName, "default-action", "shutdown",
+		"Action for ports given without an explicit action (noop|sleep|shutdown|reboot)")
+	listenCmd.Flags().BoolVar(&allowReservedActions, "allow-reserved-actions", false,
+		"Allow non-noop actions on the reserved ports 7 and 9 (reverts to the old behaviour)")
 }
 
 func parsePorts() ([]wol.Rule, error) {
@@ -68,26 +77,31 @@ func parsePorts() ([]wol.Rule, error) {
 		return nil, errNoPorts
 	}
 
+	defaultAction, err := wol.ParseAction(defaultActionName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --default-action: %w", err)
+	}
+
 	rules := make([]wol.Rule, 0, len(portStrings))
 
 	for _, spec := range portStrings {
-		port, action, err := parsePortSpec(spec)
-		if err != nil {
-			return nil, err
+		port, action, specErr := parsePortSpec(spec, defaultAction)
+		if specErr != nil {
+			return nil, specErr
 		}
 
 		rules = append(rules, wol.Rule{
 			Match:  wol.Match{Ports: []int{port}, MAC: wol.MACSelector{Kind: wol.MACSelf}},
-			Action: guardReservedPort(port, action),
+			Action: guardReservedPort(port, action, allowReservedActions),
 		})
 	}
 
 	return rules, nil
 }
 
-func parsePortSpec(spec string) (int, wol.Action, error) {
+func parsePortSpec(spec string, defaultAction wol.Action) (int, wol.Action, error) {
 	parts := strings.Split(spec, ":")
-	action := wol.ActionShutdown
+	action := defaultAction
 
 	if len(parts) == portPartsCount {
 		parsed, err := wol.ParseAction(parts[1])
@@ -107,8 +121,8 @@ func parsePortSpec(spec string) (int, wol.Action, error) {
 }
 
 // guardReservedPort forces reserved WOL ports to noop and warns about the behaviour change.
-func guardReservedPort(port int, action wol.Action) wol.Action {
-	if action == wol.ActionNoop || !slices.Contains(wol.DefaultReservedPorts(), port) {
+func guardReservedPort(port int, action wol.Action, allow bool) wol.Action {
+	if allow || action == wol.ActionNoop || !slices.Contains(wol.DefaultReservedPorts(), port) {
 		return action
 	}
 

@@ -2,7 +2,6 @@ package deps
 
 import (
 	"fmt"
-	"net"
 	"sync"
 
 	"github.com/bavix/sol/internal/app"
@@ -21,8 +20,8 @@ type Builder struct {
 	factoryOnce sync.Once
 	factory     app.PacketListenerFactory
 
-	powerOnce sync.Once
-	power     wol.PowerController
+	registryOnce sync.Once
+	registry     *wol.Registry
 
 	listenOnce sync.Once
 	listen     *app.ListenService
@@ -48,32 +47,41 @@ func (b *Builder) PacketListenerFactory() app.PacketListenerFactory { //nolint:i
 	return b.factory
 }
 
-func (b *Builder) PowerController() wol.PowerController { //nolint:ireturn
-	b.powerOnce.Do(func() {
-		b.power = system.NewPowerController()
+// Registry builds the action registry with the built-in executors.
+func (b *Builder) Registry() *wol.Registry {
+	b.registryOnce.Do(func() {
+		registry := wol.NewRegistry()
+		registry.Register(system.NewNoopExecutor(), wol.ActionTypeNoop)
+		registry.Register(
+			system.NewPowerController(),
+			wol.ActionTypeShutdown,
+			wol.ActionTypeReboot,
+			wol.ActionTypeSleep,
+		)
+
+		b.registry = registry
 	})
 
-	return b.power
+	return b.registry
 }
 
 func (b *Builder) BuildListenService() (*app.ListenService, error) {
 	var buildErr error
 
 	b.listenOnce.Do(func() {
-		ifaceIP, ifaceMAC, err := b.InterfaceResolver().Resolve(b.cfg.InterfaceName)
+		ifaces, err := b.InterfaceResolver().Select(b.cfg.InterfaceNames)
 		if err != nil {
-			buildErr = fmt.Errorf("failed to get IP/MAC for interface %q: %w", b.cfg.InterfaceName, err)
+			buildErr = fmt.Errorf("failed to select interfaces: %w", err)
 
 			return
 		}
 
-		ifaces := []wol.IfaceInfo{{
-			Name: b.cfg.InterfaceName,
-			MAC:  ifaceMAC,
-			IPs:  []net.IP{ifaceIP},
-		}}
+		registry := b.Registry()
 
-		policy, err := wol.NewRoutingPolicy(b.cfg.Rules, ifaces, wol.PolicyOptions{})
+		policy, err := wol.NewRoutingPolicy(b.cfg.Rules, ifaces, wol.PolicyOptions{
+			AllowReserved: b.cfg.AllowReservedActions,
+			Actions:       registry.Actions(),
+		})
 		if err != nil {
 			buildErr = err
 
@@ -81,12 +89,10 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 		}
 
 		b.listen = app.NewListenService(
-			b.InterfaceResolver(),
 			b.PacketListenerFactory(),
-			b.PowerController(),
+			registry,
 			policy,
-			ifaceMAC,
-			ifaceIP,
+			ifaces,
 			b.cfg.DryRun,
 		)
 	})

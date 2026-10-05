@@ -3,6 +3,8 @@ package network
 import (
 	"errors"
 	"net"
+
+	"github.com/bavix/sol/internal/domain/wol"
 )
 
 var (
@@ -46,4 +48,9 @@ func (r *InterfaceResolver) Resolve(name string) (net.IP, net.HardwareAddr, erro
 	}
 
 	return nil, nil, ErrNoSuitableIPv4
+}
+
+// Select returns the named interfaces, or every eligible interface when names is empty.
+func (r *InterfaceResolver) Select(names []string) ([]wol.IfaceInfo, error) {
+	return Select(names)
 }

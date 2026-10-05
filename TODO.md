@@ -7,16 +7,16 @@
 
 - 项目：sol（bavix/sol）—— 监听 Wake-on-LAN 魔法包，触发本机电源动作（反向 WoL）。
 - 本次目标：从"单端口 × 单网卡 × 单动作"扩成"多端口 × 多网卡 × 包内容匹配 × 具名动作"，并用**保留端口 {7,9}** 把标准 WOL 端口变成安全边界；HTTP、自定义命令、远端命令列为后续阶段。
-- 现状：**设计定稿**（docs/routing-design.md，21 节 + 背景）；**P1（domain 模型与匹配）已落地**，其余阶段待开发。
+- 现状：**设计定稿**（docs/routing-design.md，21 节 + 背景）；**P1（domain 模型与匹配）、P2（动作模型与 CLI）已落地**，其余阶段待开发。
 - 怎么读：设计文档讲"为什么这么做 / 具体怎么做"；本文件讲"做到哪了 / 下一步"。
-- 阶段：P1 模型 -> P2 动作与 CLI -> P3 配置文件 -> P4 自定义命令 + HTTP + 远端命令。
+- 阶段：P1 模型 ✅ -> P2 动作与 CLI ✅ -> P3 配置文件 -> P4 自定义命令 + HTTP + 远端命令。
 
 ---
 
-## P1 domain 模型与匹配（§3、§5、§6、§7、§8）
+## P1 domain 模型与匹配（§3、§5、§6、§7、§8）✅
 
 完成标准：新模型单测全绿；对现有行为零破坏（除新增"内容匹配 + 保留端口"两条规则）。
-落地位置：`internal/domain/wol/{packet,match,policy}.go`（+ `action.go` 扩展 `noop`）。
+落地位置：`internal/domain/wol/{packet,match,policy}.go`（+ `action.go` 扩展 `noop`）。实现对照见设计 §19.1。
 
 包解析
 - [x] `Event`（Payload / SrcIP / SrcPort / DstPort）
@@ -40,35 +40,38 @@
 - [ ] `ErrRuleConflict` / `ErrInterfaceScopeConflict`：等 P3 的块级作用域（`server.interfaces[].rules` vs 全局）落地后再加；P1 用 `ErrDuplicatePort` / `ErrAmbiguousRule` 覆盖同作用域冲突
 - [ ] 歧义判定目前保守（`src_cidrs` 集合需完全一致才算同一作用域）
 
-## P2 动作模型与 CLI（§4、§10、§16、§17）
+## P2 动作模型与 CLI（§4、§10、§16、§17）✅
 
 完成标准：`sol listen` 多端口多动作可跑；`sol ifaces` 可用；`--port 9` 打 warning。
+实现对照见设计 §19.2。
 
-- [ ] `Executor` 接口 + `Registry`（按 ActionType 分发）
-- [ ] 内置动作 `noop` / `power.shutdown` / `power.reboot` / `power.sleep`
-- [ ] `PowerController` 改造为实现 `Executor`；补 sleep 各平台命令
-- [ ] `ListenService.handlePacket` -> `policy.Resolve` + `registry.Dispatch`
-- [ ] 网卡枚举 `List()/ListAll()`（Up / 非 loopback / 有 MAC / 排虚拟）
-- [ ] CLI：`--port` 可重复带动作；`--iface` 可重复 / 省略即 auto
-- [ ] CLI：`--allow-reserved-actions`、`--default-action`、`--config`
-- [ ] 子命令 `sol ifaces`（NAME/TYPE/STATUS/MAC/IPV4/AUTO，`--json`）
-- [ ] 启动日志打印选中网卡集合
-- [ ] `--port 9` 行为改为 `noop` + 启动 warning（breaking）
+- [x] `Executor` 接口 + `Registry`（按 ActionType 分发；`Register(executor, types...)`）
+- [x] 内置动作 `noop` / `power.shutdown` / `power.reboot` / `power.sleep`（`BuiltinActions()`）
+- [x] `PowerController` 改造为实现 `Executor`（+ `NoopExecutor`）；补 sleep 各平台命令
+- [x] `ListenService.handlePacket` -> `policy.Resolve` + `registry.Dispatch`
+- [x] 网卡枚举 `List()` / `Select()`（Up / 非 loopback / 有 MAC / 排虚拟）
+- [x] CLI：`--port` 可重复带动作；`--iface` 可重复 / 省略即 auto
+- [x] CLI：`--allow-reserved-actions`、`--default-action`
+- [x] 子命令 `sol ifaces`（NAME/TYPE/STATUS/MAC/IPV4/AUTO，`--json`）
+- [x] 启动日志打印选中网卡集合 + 规则列表
+- [x] `--port 9` 行为改为 `noop` + 启动 warning（breaking）
+- [x] `PolicyOptions.Actions` 动作白名单（P3 的 `actions` 段从这里注入）
 
 ## P3 配置文件（§9、§13、§17.3/17.9）
 
 完成标准：同一套规则能用 YAML 表达并入参；严格解码；优先级正确。
 
 - [ ] 引入 YAML 库（`gopkg.in/yaml.v3`）+ 严格解码（未知字段报错）
-- [ ] 配置发现顺序：`--config` > `/etc/sol/sol.yaml` > `~/.config/sol/sol.yaml`
+- [ ] `--config` flag + 配置发现顺序：`--config` > `/etc/sol/sol.yaml` > `~/.config/sol/sol.yaml`
 - [ ] 优先级：默认 < 文件 < 环境变量 < flag
 - [ ] 环境变量插值 `${VAR}`
 - [ ] 全局规则 `server.rules` + 顶层 `rules` 简写（同现报错）
 - [ ] `server.interfaces`：字符串简写 + 块 `{name, dry_run?, secure_on?, rules?}`
 - [ ] 块内规则展开为 interface 作用域
 - [ ] `match.src_cidrs` 接线
+- [ ] `secure_on` 接线（`wol.SecureOn`）
 - [ ] 冲突检测 `ErrRuleConflict` / 同名网卡 / 块作用域校验
-- [ ] `actions` 段 + 命名动作引用
+- [ ] `actions` 段 + 命名动作引用（注入 `PolicyOptions.Actions`）
 - [ ] 热重载（可选，等价 SIGHUP）
 - [ ] 附 JSON Schema（编辑器补全）
 
@@ -88,6 +91,7 @@
 ## 文档 / 发布
 
 - [ ] README：`--port 9` 行为变更；systemd 示例改非保留端口；`sol ifaces` 说明
+- [ ] README：<1024 端口（7/9/8）需 root 或 `CAP_NET_BIND_SERVICE`
 - [ ] CHANGELOG：标注 breaking（`--port 9` shutdown -> noop）
 - [ ] 设计文档 §19 与本文件保持同步
 

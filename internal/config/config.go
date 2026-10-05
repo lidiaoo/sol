@@ -4,7 +4,8 @@ import "github.com/bavix/sol/internal/domain/wol"
 
 // Config holds the application configuration.
 type Config struct {
-	InterfaceName string
-	DryRun        bool
-	Rules         []wol.Rule
+	InterfaceNames       []string
+	DryRun               bool
+	AllowReservedActions bool
+	Rules                []wol.Rule
 }

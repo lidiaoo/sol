@@ -20,8 +20,10 @@ type packet struct {
 	port    int
 }
 
+// InterfaceResolver resolves local interfaces, either by explicit name or automatically.
 type InterfaceResolver interface {
 	Resolve(name string) (net.IP, net.HardwareAddr, error)
+	Select(names []string) ([]wol.IfaceInfo, error)
 }
 
 type PacketListener interface {
@@ -34,37 +36,31 @@ type PacketListenerFactory interface {
 }
 
 type ListenService struct {
-	resolver InterfaceResolver
 	factory  PacketListenerFactory
-	power    wol.PowerController
+	registry *wol.Registry
 	policy   *wol.RoutingPolicy
-	ifaceMAC net.HardwareAddr
-	ifaceIP  net.IP
+	ifaces   []wol.IfaceInfo
 	dryRun   bool
 }
 
 func NewListenService(
-	resolver InterfaceResolver,
 	factory PacketListenerFactory,
-	power wol.PowerController,
+	registry *wol.Registry,
 	policy *wol.RoutingPolicy,
-	ifaceMAC net.HardwareAddr,
-	ifaceIP net.IP,
+	ifaces []wol.IfaceInfo,
 	dryRun bool,
 ) *ListenService {
 	return &ListenService{
-		resolver: resolver,
 		factory:  factory,
-		power:    power,
+		registry: registry,
 		policy:   policy,
-		ifaceMAC: ifaceMAC,
-		ifaceIP:  ifaceIP,
+		ifaces:   ifaces,
 		dryRun:   dryRun,
 	}
 }
 
-func (s *ListenService) Run(ctx context.Context, interfaceName string) error {
-	log.Printf("Using interface %q: IP=%s, MAC=%s", interfaceName, s.ifaceIP, s.ifaceMAC)
+func (s *ListenService) Run(ctx context.Context) error {
+	s.logIfaces()
 	s.logRules()
 
 	listeners, err := s.createListeners()
@@ -78,6 +74,12 @@ func (s *ListenService) Run(ctx context.Context, interfaceName string) error {
 	s.eventLoop(ctx, pktCh, errCh)
 
 	return nil
+}
+
+func (s *ListenService) logIfaces() {
+	for _, iface := range s.ifaces {
+		log.Printf("Using interface %q: IP=%s, MAC=%s", iface.Name, iface.IPv4(), iface.MAC)
+	}
 }
 
 func (s *ListenService) logRules() {
@@ -199,8 +201,8 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 		return
 	}
 
-	if execErr := s.power.Execute(ctx, action); execErr != nil {
-		log.Printf("%s failed: %v", action, execErr)
+	if dispatchErr := s.registry.Dispatch(ctx, action, ev); dispatchErr != nil {
+		log.Printf("%s failed: %v", action, dispatchErr)
 	}
 }
 

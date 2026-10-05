@@ -35,9 +35,24 @@ type Event struct {
 
 // IfaceInfo describes a local interface that rules can match against.
 type IfaceInfo struct {
-	Name string
-	MAC  net.HardwareAddr
-	IPs  []net.IP
+	Name     string
+	MAC      net.HardwareAddr
+	IPs      []net.IP
+	Up       bool
+	Loopback bool
+	Virtual  bool
+	Eligible bool
+}
+
+// IPv4 returns the first IPv4 address of the interface, if any.
+func (i IfaceInfo) IPv4() net.IP {
+	for _, ip := range i.IPs {
+		if v4 := ip.To4(); v4 != nil {
+			return v4
+		}
+	}
+
+	return nil
 }
 
 // PolicyOptions tunes construction-time validation.
@@ -45,6 +60,8 @@ type PolicyOptions struct {
 	ReservedPorts []int
 	AllowReserved bool
 	SecureOn      []byte
+	// Actions maps known action names to their definitions; nil means BuiltinActions().
+	Actions map[Action]ActionDef
 }
 
 type compiledRule struct {
@@ -59,12 +76,13 @@ type compiledRule struct {
 // RoutingPolicy resolves an incoming packet to an action.
 type RoutingPolicy struct {
 	rules         []compiledRule
+	actions       map[Action]ActionDef
 	secureOn      []byte
 	reservedPorts map[int]bool
 	allowReserved bool
 }
 
-// NewRoutingPolicy validates rules against the known interfaces.
+// NewRoutingPolicy validates rules against the known interfaces and actions.
 func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*RoutingPolicy, error) {
 	ifaceMACs, allMACs, err := indexIfaces(ifaces)
 	if err != nil {
@@ -72,6 +90,7 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 	}
 
 	policy := &RoutingPolicy{
+		actions:       actionsOrDefault(opts.Actions),
 		secureOn:      opts.SecureOn,
 		reservedPorts: reservedSet(opts.ReservedPorts),
 		allowReserved: opts.AllowReserved,
@@ -97,7 +116,7 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 	return policy, nil
 }
 
-// Resolve returns the action for a received packet.
+// Resolve returns the action name for a received packet.
 func (p *RoutingPolicy) Resolve(ev Event) (Action, bool) {
 	parsed, ok := ParsePacket(ev.Payload, p.secureOn)
 	if !ok {
@@ -147,7 +166,8 @@ func (p *RoutingPolicy) compileRule(rule Rule, ifaceMACs map[string]net.Hardware
 		return compiledRule{}, err
 	}
 
-	if !rule.Action.Valid() {
+	def, ok := p.actions[rule.Action]
+	if !ok {
 		return compiledRule{}, fmt.Errorf("%w: %s", ErrUnknownActionRef, rule.Action)
 	}
 
@@ -170,7 +190,7 @@ func (p *RoutingPolicy) compileRule(rule Rule, ifaceMACs map[string]net.Hardware
 		return compiledRule{}, err
 	}
 
-	if err := p.checkReserved(rule, content); err != nil {
+	if err := p.checkReserved(rule.Match.Ports, def, content); err != nil {
 		return compiledRule{}, err
 	}
 
@@ -186,8 +206,8 @@ func (p *RoutingPolicy) compileRule(rule Rule, ifaceMACs map[string]net.Hardware
 	return compiled, nil
 }
 
-func (p *RoutingPolicy) checkReserved(rule Rule, content ContentMatcher) error {
-	for _, port := range rule.Match.Ports {
+func (p *RoutingPolicy) checkReserved(ports []int, def ActionDef, content ContentMatcher) error {
+	for _, port := range ports {
 		if !p.reservedPorts[port] {
 			continue
 		}
@@ -196,7 +216,7 @@ func (p *RoutingPolicy) checkReserved(rule Rule, content ContentMatcher) error {
 			return fmt.Errorf("%w: port %d requires an empty payload", ErrReservedPortAction, port)
 		}
 
-		if rule.Action != ActionNoop && !p.allowReserved {
+		if def.Type != ActionTypeNoop && !p.allowReserved {
 			return fmt.Errorf("%w: port %d only accepts noop", ErrReservedPortAction, port)
 		}
 	}
@@ -313,6 +333,14 @@ func indexIfaces(ifaces []IfaceInfo) (map[string]net.HardwareAddr, []net.Hardwar
 	}
 
 	return byName, all, nil
+}
+
+func actionsOrDefault(actions map[Action]ActionDef) map[Action]ActionDef {
+	if len(actions) == 0 {
+		return BuiltinActions()
+	}
+
+	return actions
 }
 
 func reservedSet(ports []int) map[int]bool {
