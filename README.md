@@ -1,5 +1,7 @@
 # SoL - Shutdown on LAN
 
+**English** | [简体中文](README.zh-CN.md)
+
 SoL is a service that listens for Wake-on-LAN magic packets and triggers an action when a
 packet matches a configured rule: shut down, reboot, sleep, run a command, call a webhook —
 or any ordered combination of those. It is the reverse of Wake-on-LAN: the packet is the

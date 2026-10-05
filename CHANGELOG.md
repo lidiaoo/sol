@@ -75,6 +75,11 @@ tagged release.
   cache. Refusals are counted: `/v1/status` reports `replayed` with a `replay_reasons` breakdown
   and `/metrics` exports `sol_replayed_total` (plus a line per reason), so a channel under replay
   is visible without scraping logs.
+- A Chinese README (`README.zh-CN.md`) alongside the English one, with a language switcher in
+  both. The code blocks are byte-identical by construction and a test fails when they drift -
+  the snippets are claims about the loader, so a translation must not become a second, quietly
+  different set of examples; every standalone example in both files is also loaded against the
+  real binary.
 - SecureOn can be set per interface block and per rule, not only globally: a rule inherits its
   block's password, the block inherits `security.secure_on`, and an explicitly empty
   `secure_on: ""` opts out of the default (it means "no password", which is not the same as

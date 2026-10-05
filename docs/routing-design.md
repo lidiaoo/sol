@@ -1482,6 +1482,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - `TestSchemaEnumsMatchTheDomain` 把 enum 与 domain 常量（`wol.ActionType*`、`wol.Content*`、`wol.MAC*`、`config.AuthType*`、`authTypeHMAC`、`logging.Format*`）比对。
   - 两条都验证过"有牙齿"：删掉 schema 里的 `watch` -> 前者失败；把 `exact` 加回 content kind -> 后者失败。
 - 这个 guard 立刻抓到一处真实错误：我手写的 schema 把 content kind 写成 `any|none|suffix|prefix|exact`，而 domain 只有 **any/none/suffix/prefix**（没有 `exact`）。已修正 schema + README + CHANGELOG，并顺手把设计文档 §19 路线图、TODO、README、CHANGELOG 四份文档交叉链接起来。
+- **中文 README（`README.zh-CN.md`，§19.18 之后新增）**：与英文 README 逐节对应，顶部双向语言切换。约定：**代码块必须与英文版逐字节一致**（prose 翻译、snippet 不翻译），由 `internal/config/readme_sync_internal_test.go` 的 `TestReadmeTranslationsAgree` 守护——它按行首反引号切出两边的 fenced block，比对语言标签与正文，数量或内容不一致就失败（prose 随便改，snippet 漂移立刻红）。真机侧由 `s26/readme_both.sh` 把**两份 README 里所有 `version: 1` 的 yaml 块**都抽出来真加载（10/10 通过；命令示例里的 `user: nobody` 按既有约定只要求 root）。
 - schema 的取值事实来自真机探针（`sol listen --config` 逐个试）：未知顶层/嵌套字段被拒、`version: 2` 被拒、rule 缺 `action` 被拒、action 缺 name/type 被拒、`kind: exact` 被拒、`kind: any` 合法、`level: warning` 与 `level: ""` 合法、`auth: {}` 等价 bearer（报错来自缺 token 而非类型）。
 
 ### 19.12 全局速率限制（令牌桶）

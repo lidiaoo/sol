@@ -115,6 +115,8 @@
 - [x] CHANGELOG：标注 breaking（`--port 9` shutdown -> noop；`--iface` 不再必填；默认严格匹配）+ 全部新增能力；新建 CHANGELOG.md
 - [x] 设计文档 §19 与本文件保持同步；并补齐四向交叉链接：README -> 设计/TODO/CHANGELOG、CHANGELOG -> 设计/TODO
 - [x] README 配置示例经真机验证：`sol listen --config` 加载无误、控制面 `/healthz` 200、自动选网卡、`/v1/rules` 回显两条规则、带 `lock` 后缀的包命中并执行成功
+- [x] 中文 README `README.zh-CN.md`：与英文版逐节对应 + 顶部双向语言切换；**代码块逐字节一致**由 `internal/config/readme_sync_internal_test.go`（`TestReadmeTranslationsAgree`，比对 fence 语言标签与正文）守护；真机侧 `s26/readme_both.sh` 把两份 README 的全部 `version: 1` yaml 块抽出真加载（10/10）
+- [x] 交叉链接补全：README.zh-CN -> README/设计/TODO/CHANGELOG
 
 ## 待确认 / 开放问题
 
