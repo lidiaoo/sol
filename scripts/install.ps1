@@ -332,6 +332,13 @@ function Invoke-Install {
 		}
 	}
 
+	# 别人的计划任务不覆盖：卸载那条"只删自己建的"规矩，安装这边同样成立。
+	if ($script:ServiceChosen -and ((Task-State) -eq 'installed') -and ($LedgerJson.service.created_unit -ne $true)) {
+		Die "已经有一份计划任务 $TaskName，但它不是这个脚本建的：我不覆盖别人的任务定义。
+要么手工清掉：schtasks /Delete /TN $TaskName /F
+要么换个名字装：`$env:SOL_UNIT_NAME='sol-mine'; .\install.ps1"
+	}
+
 	if (-not (Invoke-Precheck)) { Die '预检没通过，什么都没动。改完配置再运行一次。' }
 
 	# Windows 陷阱：正在运行的 exe 覆盖不了 → 先结束任务

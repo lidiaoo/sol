@@ -652,6 +652,13 @@ do_install() {
 	new_sha=$(sha256 "$LOCAL_BIN")
 	DEST_BIN="$BINDIR/sol"
 
+	# 别人的服务定义不覆盖：卸载那条"只删自己建的"规矩，安装这边同样成立。
+	if [ "$SERVICE_WANTED" = true ] && [ -f "$UNIT_PATH" ] && [ "$LEDGER_CREATED_UNIT" != true ]; then
+		die "已经有一份 $UNIT_NAME（$UNIT_PATH），但它不是这个脚本建的：我不覆盖别人的服务定义。
+要么手工清掉：sudo systemctl disable --now $UNIT_NAME && sudo rm $UNIT_PATH && sudo systemctl daemon-reload
+要么换个名字装：SOL_UNIT_NAME=sol-mine.service sh $0"
+	fi
+
 	# 你说"应用"，但确实没有任何变化 → 不折腾服务，也不写历史。
 	if [ "$LEDGER_EXISTS" = yes ] && [ "$new_sha" = "$LEDGER_SHA" ]; then
 		unit_same=yes
