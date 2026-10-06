@@ -1144,7 +1144,7 @@ server:
 - A. 控制面（入站，sol 当服务端）：起一个 HTTP server，对外提供状态查询、手动触发动作、热重载。对应 SR-G/sleep-on-lan 那套 REST API。
 - B. 出站动作（sol 当客户端）：规则命中后，动作类型 `http` 向某个 URL 发请求（webhook 通知/联动）。
 
-阶段：A（控制面）已在 P4 部分落地（见 §19.5）：`/healthz`、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`POST /v1/actions/{name}`、`POST /v1/reload`、`/metrics` 已实现；`/v1/commands/{id}` 随远端命令通道落地（见 §19.7）；`/v1/exec` 仍未做。B（出站动作）已落地 `type: http`（见 §19.8）。
+阶段：A（控制面）已在 P4 落地（见 §19.5）：`/healthz`、`/v1/status`（含构建身份 `version`/`revision`）、`/v1/rules`、`/v1/interfaces`、`POST /v1/actions/{name}`、`POST /v1/reload`、`/metrics` 已实现；`/v1/commands/{id}` 随远端命令通道落地（见 §19.7）；`/v1/exec` 随裸 shell 落地（见 §21.6）。B（出站动作）已落地 `type: http`（见 §19.8）。
 
 ### 18.1 A. 控制面（入站 REST API）
 
@@ -1152,7 +1152,7 @@ server:
 
 ```
 GET  /healthz                存活探针
-GET  /v1/status              运行时长、选中网卡、已加载规则、最近事件
+GET  /v1/status              构建身份（version/revision）、运行时长、选中网卡、已加载规则、最近事件
 GET  /v1/rules               当前规则（脱敏）
 GET  /v1/interfaces          枚举网卡（等价 sol ifaces）
 POST /v1/actions/{name}      手动触发某个具名动作
@@ -1383,13 +1383,19 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 ### 19.5 P4 部分落地（HTTP 控制面）
 
 - 包 `internal/infra/httpapi`：纯 `net/http`（Go 1.22+ 方法模式路由），无框架依赖；配置段 `server.http.{enabled,listen,auth,tls}`，默认 `listen: 127.0.0.1:8080`、默认 `auth.type: bearer`。
-- 已实现端点：`GET /healthz`（免认证，只回 `{"status":"ok"}`）、`GET /v1/status`（uptime、计数器、最近命中事件、网卡、规则数、dry_run、auth 类型）、`GET /v1/rules`（脱敏视图：ports / mac / content / src_cidrs / action / dry_run）、`GET /v1/interfaces`、`POST /v1/actions/{name}`（手动触发 -> 202，未知动作 -> 404）、`GET /metrics`（`sol_packets_total` / `sol_matched_total` / `sol_actions_total{action=...}` / `sol_rules` / `sol_uptime_seconds`）；`POST /v1/reload`（重建配置并原子换入；200 `{"reloaded":true}`、配置非法 400、监听端口集合可热改（新增端口绑定失败才 409）、没装 reloader 时 501，见 §19.9）。
+- 已实现端点：`GET /healthz`（免认证，只回 `{"status":"ok"}`）、`GET /v1/status`（**构建身份（`version`/`revision`）**、uptime、计数器、最近命中事件、网卡、规则数、dry_run、auth 类型）、`GET /v1/rules`（脱敏视图：ports / mac / content / src_cidrs / action / dry_run）、`GET /v1/interfaces`、`POST /v1/actions/{name}`（手动触发 -> 202，未知动作 -> 404）、`GET /metrics`（`sol_packets_total` / `sol_matched_total` / `sol_actions_total{action=...}` / `sol_rules` / `sol_uptime_seconds` / `sol_build_info{version,revision}`）；`POST /v1/reload`（重建配置并原子换入；200 `{"reloaded":true}`、配置非法 400、监听端口集合可热改（新增端口绑定失败才 409）、没装 reloader 时 501，见 §19.9）。
 - 认证三选一，**没有 `none`**：`bearer`（`crypto/subtle` 常量时间比较）、`basic`（用户名在 YAML，口令走环境变量或 600 文件）、`mtls`（TLS 层 `RequireAndVerifyClientCert` + `client_ca_file`）；所有 `/v1/*` 与 `/metrics` 强制认证，401 带 `WWW-Authenticate`。
 - 密钥不落 YAML：只从 `*_env` 或 `*_file` 读；文件带 group/other 权限位直接启动报错（`ErrHTTPSecret`）。TLS 证书与客户端 CA 启动时加载，失败即失败。
 - 审计：认证拒绝、手动触发、触发失败、reload 请求都进 slog（带来源地址与动作名）。
 - 手动触发走 `ListenService.Dispatch`：实例处于 dry-run 时只记日志不执行；成功后计入 `sol_actions_total`。
 - 冒烟（真机，`127.0.0.1:18080`，token 来自环境变量）：`/healthz` 免认证 200；无 token / 错 token 401；带 token 的 `/v1/status` 显示 `packets=1 matched=1 last_event={port:10040, interface:enp6s0, action:noop}`；`/v1/rules` 回 `{ports:[10040], mac:self, content:none, action:noop}`；`POST /v1/actions/noop` -> 202，未知动作 -> 404，`/v1/reload` -> 501。
-- 未做（留后续）：`/v1/exec`、`/v1/status` 的版本号（需构建期注入）。热重载见 §19.9，mTLS 端到端冒烟见本节末尾。
+- **构建身份（`internal/buildinfo`）**：`/v1/status` 回 `version` + `revision`，`/metrics` 回 `sol_build_info{version="…",revision="…"} 1`（Prometheus 惯例），`sol --version` 走 cobra 的 `Version`（有提交号时打成 `v1.2.3 (fadb54ddefce-dirty)`）。
+  - 取值优先级：链接期打标 `-X github.com/bavix/sol/internal/buildinfo.version=…`（`make build` / `make build-static` 用 `git describe --tags --always --dirty` 注入，所以本地构建也能自报家门）> 工具链自己嵌入的元数据（checkout 构建 -> 伪版本 `v0.0.0-<时间戳>-<提交>[+dirty]`；`go install …@v1.2.3` -> 该 tag）> `dev`。
+  - 为什么不靠发版流水线：仓库的 release 走 `bavix/.github` 的共享 workflow（`go-release-action`，`ldflags: "-s -w"`，inputs 只声明了 `executable_compression`），**不注入版本号**，从这个仓库也塞不进 `ldflags`。Go 工具链的自动 VCS 打标免费给出提交号，共享 workflow 不用改；`-s -w -trimpath` 之后这些信息依然在（真机验证过：strip 后的二进制里找得到打标字节）。
+  - `revision` 取 `vcs.revision` 前 12 位，工作区脏时加 `-dirty`（诚实：别把脏树说成干净发布）。
+  - 单测：`internal/buildinfo/buildinfo_internal_test.go`（打标优先 / 绝不返回空 / revision 形状，形状而非值——它取决于测试二进制在哪构建）；`internal/infra/httpapi/server_test.go` 断言 `/v1/status` 的 `version`+`revision` 与 `/metrics` 的 `sol_build_info`。
+  - 冒烟 s28（真机 11/11）：plain 构建自报 `v0.0.0-20261006002016-fadb54ddefce+dirty (fadb54ddefce-dirty)`；`-X` 覆盖成 `v1.2.3-test`；`-s -w -trimpath` 后仍是 `v1.2.3-test (fadb54ddefce-dirty)`；`make build` 等于 `git describe`；`/v1/status` 与 `/metrics` 报出同一对值。脚本自带"跑完不许脏仓库"的自检（构建产物全部写在 scratch 目录）。
+- 未做（留后续）：无（`/v1/exec` 已在 §21.6 落地）。热重载见 §19.9，mTLS 端到端冒烟见本节末尾。
 
 ---
 
@@ -1484,6 +1490,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - 两条都验证过"有牙齿"：删掉 schema 里的 `watch` -> 前者失败；把 `exact` 加回 content kind -> 后者失败。
 - 这个 guard 立刻抓到一处真实错误：我手写的 schema 把 content kind 写成 `any|none|suffix|prefix|exact`，而 domain 只有 **any/none/suffix/prefix**（没有 `exact`）。已修正 schema + README + CHANGELOG，并顺手把设计文档 §19 路线图、TODO、README、CHANGELOG 四份文档交叉链接起来。
 - **中文 README（`README.zh-CN.md`，§19.18 之后新增）**：与英文 README 逐节对应，顶部双向语言切换。约定：**代码块必须与英文版逐字节一致**（prose 翻译、snippet 不翻译），由 `internal/config/readme_sync_internal_test.go` 的 `TestReadmeTranslationsAgree` 守护——它按行首反引号切出两边的 fenced block，比对语言标签与正文，数量或内容不一致就失败（prose 随便改，snippet 漂移立刻红）。真机侧由 `s26/readme_both.sh` 把**两份 README 里所有 `version: 1` 的 yaml 块**都抽出来真加载（10/10 通过；命令示例里的 `user: nobody` 按既有约定只要求 root）。
+- **构建身份的口径**（`sol --version` / `/v1/status` / `sol_build_info`，见 §19.5）：README 的 `Build from source` 与 `Verify Installation` 写清来源顺序（`-X` 打标 > 工具链自带伪版本/模块 tag > `dev`），中英文两份 README 的 bash 块逐字节一致（防漂移测试守着，改一处忘一处立刻红）。
 - schema 的取值事实来自真机探针（`sol listen --config` 逐个试）：未知顶层/嵌套字段被拒、`version: 2` 被拒、rule 缺 `action` 被拒、action 缺 name/type 被拒、`kind: exact` 被拒、`kind: any` 合法、`level: warning` 与 `level: ""` 合法、`auth: {}` 等价 bearer（报错来自缺 token 而非类型）。
 
 ### 19.12 全局速率限制（令牌桶）

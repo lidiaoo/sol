@@ -108,6 +108,8 @@
 - [x] 全局速率限制（令牌桶 / 每秒上限）：`security.rate_limit`（`10/s`、`600/m`、`3600/h`，裸数字 = 每秒；空/0 = 关闭）+ `security.rate_burst`（桶容量，0 = 一秒的 rate_limit；只写 burst 不写 rate 启动报错）。跨所有动作与触发源（包 / 手动 / 远端命令）计数；抑制计入 `sol_suppressed_total` 与新的 `sol_rate_limited_total`，手动触发 429；reload 时限额未变则保留已耗尽的桶；`/v1/status` 回显 `rate_limit{per_second,burst}` + `rate_limited`——见设计 §19.12
 - [x] 执行中的重入（in-flight 去重，替代"cooldown singleflight"）：语义定为**抑制**而非合并等待；身份 = 动作名 + 参数 / 裸 shell 命令行；无条件开启；计入 `suppressed` + `inflight`（`/metrics` 的 `sol_inflight_total`）；三条 HTTP 触发路径回 429。顺带修掉两个真缺陷（远端命令被护栏拒绝回 500、`/v1/exec` 被护栏拒绝回 202 却不执行）——见设计 §19.12.1，冒烟 s24 真机 16/16
 
+- [x] 构建身份（`internal/buildinfo`）：`sol --version` + `/v1/status` 的 `version`/`revision` + `/metrics` 的 `sol_build_info{version,revision} 1`；`make build`/`make build-static` 用 `git describe` 打标，未打标时回落到工具链自带的伪版本/模块 tag（`-s -w -trimpath` 之后仍在——发布流水线无需改动，它连 ldflags 都不暴露）；冒烟 s28 真机 11/11（含"跑完不许脏仓库"自检）——见设计 §19.5
+
 ## 文档 / 发布
 
 - [x] README：`--port 9` 行为变更；systemd 示例改非保留端口；`sol ifaces` 说明（README 已重写：新增动作表、配置文件示例、控制面、远端命令、reload、接口选择、迁移说明）
@@ -117,6 +119,7 @@
 - [x] README 配置示例经真机验证：`sol listen --config` 加载无误、控制面 `/healthz` 200、自动选网卡、`/v1/rules` 回显两条规则、带 `lock` 后缀的包命中并执行成功
 - [x] 中文 README `README.zh-CN.md`：与英文版逐节对应 + 顶部双向语言切换；**代码块逐字节一致**由 `internal/config/readme_sync_internal_test.go`（`TestReadmeTranslationsAgree`，比对 fence 语言标签与正文）守护；真机侧 `s26/readme_both.sh` 把两份 README 的全部 `version: 1` yaml 块抽出真加载（10/10）
 - [x] 交叉链接补全：README.zh-CN -> README/设计/TODO/CHANGELOG
+- [x] README 补 `sol --version` 与构建身份说明（`/v1/status` 的 `version`/`revision`、`/metrics` 的 `sol_build_info`），中英文同步（bash 块逐字节一致）
 
 ## 待确认 / 开放问题
 

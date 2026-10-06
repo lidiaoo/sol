@@ -319,6 +319,11 @@ token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文�
 端点：`GET /healthz`、`GET /v1/status`、`GET /v1/rules`、`GET /v1/interfaces`、`GET /metrics`、
 `POST /v1/actions/{name}`、`POST /v1/commands/{id}`、`POST /v1/exec`、`POST /v1/reload`。
 
+`GET /v1/status` 会报出**正在应答的是哪个构建**——`"version"`（打标值，或工具链的伪版本）与
+`"revision"`（提交号，工作区有未提交改动时带 `-dirty` 后缀）；`/metrics` 把同一对信息暴露成
+`sol_build_info{version="...",revision="..."} 1`。这样两份配置不同的进程，光凭一份 bug 报告就能
+区分开。
+
 ### Reloading
 
 三条路径、一套实现：`SIGHUP`、`POST /v1/reload`、`server.watch` / `--watch`（轮询配置文件）。
@@ -413,14 +418,20 @@ move sol.exe C:\Windows\System32\sol.exe
 ### Build from source
 
 ```bash
-go build ./...
+make build          # or: go build .
 make test
 make lint
 ```
 
+`make build` 用 `git describe` 打上版本号，`make build-static` 产出发布流水线那种形态（静态、
+strip）。裸 `go build` 不需要打标：工具链自己会嵌入一个点明源码树的伪版本
+（`v0.0.0-<时间戳>-<提交>`）以及提交号，`go install ...@v1.2.3` 则嵌入那个 tag。这些信息在
+`-s -w -trimpath` 之后依然在，所以发布的二进制仍然说得出自己是谁。
+
 ### Verify Installation
 
 ```bash
+sol --version
 sol --help
 sol listen --help
 sol ifaces

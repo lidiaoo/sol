@@ -346,6 +346,12 @@ line — like the `secure_on` above — always leaves a loadable configuration.
 Endpoints: `GET /healthz`, `GET /v1/status`, `GET /v1/rules`, `GET /v1/interfaces`,
 `GET /metrics`, `POST /v1/actions/{name}`, `POST /v1/commands/{id}`, `POST /v1/exec`, `POST /v1/reload`.
 
+`GET /v1/status` reports the build it is answering from - `"version"` (the stamp, or the
+toolchain's pseudo-version) and `"revision"` (the commit, with a `-dirty` suffix when the tree
+had uncommitted changes) - and `/metrics` exposes the same pair as
+`sol_build_info{version="...",revision="..."} 1`. Two processes with different configs are then
+distinguishable from a bug report alone.
+
 ### Reloading
 
 Three paths, one implementation: `SIGHUP`, `POST /v1/reload`, and `server.watch` / `--watch`
@@ -448,14 +454,21 @@ move sol.exe C:\Windows\System32\sol.exe
 ### Build from source
 
 ```bash
-go build ./...
+make build          # or: go build .
 make test
 make lint
 ```
 
+`make build` stamps the version with `git describe`, and `make build-static` produces the shape
+the release pipeline ships (static, stripped). A plain `go build` needs no stamp: the toolchain
+embeds a pseudo-version naming the tree (`v0.0.0-<timestamp>-<commit>`) plus the commit, and
+`go install ...@v1.2.3` embeds that tag. Everything survives `-s -w -trimpath`, so the released
+binary can still say what it is.
+
 ### Verify Installation
 
 ```bash
+sol --version
 sol --help
 sol listen --help
 sol ifaces

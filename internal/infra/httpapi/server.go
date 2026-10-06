@@ -61,6 +61,11 @@ type RateLimitView struct {
 
 // Status is the /v1/status payload.
 type Status struct {
+	// Version and Revision identify the running binary (§19.5): the version the build was
+	// stamped with (or the module version), and the commit it came from. Both are reported so a
+	// bug report can name the exact tree.
+	Version     string  `json:"version"`
+	Revision    string  `json:"revision"`
 	Uptime      string  `json:"uptime"`
 	UptimeSecs  float64 `json:"uptime_seconds"`
 	Packets     uint64  `json:"packets"`
@@ -489,6 +494,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 
 	fmt.Fprintf(w, "# TYPE sol_rules gauge\nsol_rules %d\n", st.Rules)
 	fmt.Fprintf(w, "# TYPE sol_uptime_seconds gauge\nsol_uptime_seconds %.3f\n", st.UptimeSecs)
+	fmt.Fprintf(w, "# TYPE sol_build_info gauge\nsol_build_info{version=%q,revision=%q} 1\n", st.Version, st.Revision)
 	fmt.Fprintf(w, "# TYPE sol_actions_total counter\n")
 
 	for _, name := range slices.Sorted(maps.Keys(st.Actions)) {

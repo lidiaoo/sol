@@ -21,6 +21,8 @@ func testDeps() httpapi.Deps {
 	return httpapi.Deps{
 		Status: func() httpapi.Status {
 			return httpapi.Status{
+				Version:    "v0.0.2-test",
+				Revision:   "abc1234def90",
 				Uptime:     "1s",
 				UptimeSecs: 1,
 				Packets:    7,
@@ -119,6 +121,10 @@ func TestStatusEndpoint(t *testing.T) {
 	require.Equal(t, uint64(2), status.Matched)
 	require.Equal(t, []string{"eth0"}, status.Interfaces)
 	require.Equal(t, uint64(1), status.Actions["power.shutdown"])
+	// The build identity travels with the payload so a bug report can name the exact binary
+	// (§19.5); it is the only way to tell two restarts with different configs apart.
+	require.Equal(t, "v0.0.2-test", status.Version)
+	require.Equal(t, "abc1234def90", status.Revision)
 }
 
 func TestRulesEndpointRedactsToViews(t *testing.T) {
@@ -221,6 +227,7 @@ func TestMetricsExposition(t *testing.T) {
 	require.Contains(t, body, "sol_matched_total 2")
 	require.Contains(t, body, `sol_actions_total{action="power.shutdown"} 1`)
 	require.Contains(t, body, "sol_uptime_seconds 1.000")
+	require.Contains(t, body, `sol_build_info{version="v0.0.2-test",revision="abc1234def90"} 1`)
 }
 
 func TestBasicAuth(t *testing.T) {

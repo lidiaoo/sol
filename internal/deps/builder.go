@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bavix/sol/internal/app"
+	"github.com/bavix/sol/internal/buildinfo"
 	"github.com/bavix/sol/internal/config"
 	"github.com/bavix/sol/internal/domain/wol"
 	"github.com/bavix/sol/internal/infra/exec"
@@ -562,6 +563,8 @@ func (b *Builder) statusFunc(svc *app.ListenService) func() httpapi.Status {
 		}
 
 		status := httpapi.Status{
+			Version:       buildinfo.Version(),
+			Revision:      buildinfo.Revision(),
 			Uptime:        uptime.Truncate(time.Second).String(),
 			UptimeSecs:    uptime.Seconds(),
 			Packets:       stats.Packets,
