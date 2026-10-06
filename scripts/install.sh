@@ -468,6 +468,11 @@ rules:
     action: power.reboot
   - match: { ports: [10], content: { kind: none } }
     action: power.sleep
+# 重复包保护（默认就开着，可关）：电源动作各 5s 冷却；刚开机 / 刚唤醒 5s 内不执行电源动作。
+# 想关掉：settle 写 0、把对应动作写 0s。
+security:
+  settle: 5s
+  cooldowns: { power.sleep: 5s, power.shutdown: 5s, power.reboot: 5s }
 YAML
 	mkdir_root "$(dirname "$RUN_CONFIG")"
 	put_root "$runtime_tmp" "$RUN_CONFIG" 0644

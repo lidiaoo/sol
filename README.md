@@ -504,7 +504,9 @@ It uses the `sol` you already have - next to the script, in the current director
 never replaces it with a download. In the directory you run it from it writes `install.yaml`, whose only
 content is how to run sol, and it makes sure a working configuration exists: a plain magic packet to port
 11 shuts the machine down, `"reboot"` after the magic packet to 12 reboots it, `"sleep"` to 10 sleeps it -
-a service with no rules refuses to start, so the script writes one that runs. Where that configuration
+a service with no rules refuses to start, so the script writes one that runs. It also spells out the two
+repeat guards in that file - `security.settle` and the per-action cooldowns, 5s each - so you can see the
+defaults, and see how to switch them off, without reading any docs. Where that configuration
 lives differs by platform: on Linux and macOS it is `sol.yaml` in the directory you ran the script from;
 **on Windows it goes next to the installed `sol.exe`** (`C:\ProgramData\sol\sol.yaml`), because the
 scheduled task runs as `SYSTEM` at boot and should not depend on a project directory that can move. If you

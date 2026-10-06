@@ -458,7 +458,8 @@ irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile
 它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。它在**你执行
 脚本的那个目录**里写 `install.yaml`，内容只有"sol 怎么跑"；同时保证有一份能跑的运行配置：纯包 → 关机
 （端口 11）、magic+"reboot" → 重启（12）、magic+"sleep" → 睡眠（10）。服务没有规则会拒绝启动，所以
-脚本直接写一份能跑的。**这份配置放哪，平台不同**：Linux/macOS 就是执行目录里的 `sol.yaml`；Windows 放在
+脚本直接写一份能跑的。它还把两个"重复包护栏"**写在文件里**——`security.settle` 与三个电源动作各 5s 的
+冷却：默认值一眼看得见，也一眼知道怎么关掉。**这份配置放哪，平台不同**：Linux/macOS 就是执行目录里的 `sol.yaml`；Windows 放在
 **安装目录**（`C:\ProgramData\sol\sol.yaml`，跟 `sol.exe` 做伴）——计划任务以 SYSTEM 开机就跑，配置不该
 依赖一个可能被挪走的项目目录；你在执行目录里改过的那份会被**原样拷过去**，不会丢。改配置就编辑它、再
 重跑一遍脚本。

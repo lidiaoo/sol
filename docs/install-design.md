@@ -148,7 +148,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 - **全平台一致**：自动发现只看上面两个路径。macOS 不是 `/usr/local/etc/sol/…`，Windows 也不是 `C:\ProgramData\sol\…`；要放那里必须显式 `--config`（Windows 的 `~` = `C:\Users\<你>`）。
 - 之后叠加环境变量，最后叠加 CLI 参数（文件 → 环境变量 → CLI，CLI 胜）。
 - **服务场景的坑（靠绝对路径避开，Windows 还靠"配置跟二进制放一起"）**：服务有自己的家目录（systemd / launchd 是 root 的，Windows 是 `SYSTEM` 的），相对路径与 `~` 进到服务里全变样。脚本生成 `install.yaml` 时把 `--config` 写成**绝对路径**：Linux/macOS 指向执行目录那份 `sol.yaml`，Windows 指向**安装目录**那份（`C:\ProgramData\sol\sol.yaml`）——后者跟 `sol.exe` 做伴，不依赖某个可能被挪走、删掉的项目目录。这也是 README 里手工装 Windows 服务的命令一直以来的写法，脚本现在与它一致。这是"装完服务配置莫名不生效"最常见的原因。
-- 运行配置由脚本**只在它不存在时**生成一份开箱即用的示例（三条规则：纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠），**绝不覆盖**已有文件；路径与查找顺序见 §6。这一节早先写的 `--write-config` 开关属于被撤掉的 CLI 方案，脚本现在是零参数的。
+- 运行配置由脚本**只在它不存在时**生成一份开箱即用的示例（三条规则：纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠；另把两个默认护栏**显式写在文件里**——`security.settle: 5s` 与三个电源动作各 5s 的 `security.cooldowns`，用户一眼看见默认值、也一眼知道怎么关），**绝不覆盖**已有文件；路径与查找顺序见 §6。这一节早先写的 `--write-config` 开关属于被撤掉的 CLI 方案，脚本现在是零参数的。
 
 ### 5.5 连带补一个真缺陷
 
@@ -235,7 +235,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 **位置固定**（没有"换个位置"的开关）：`install.yaml` 在**你执行脚本的那个目录**，三平台一致；运行配置 `sol.yaml` 在 Linux/macOS 也在那儿，**Windows 上在安装目录**——
 
 - `./install.yaml`：脚本的**输入**（"sol 怎么跑"）。改完重跑脚本即可；已有就一个字都不覆盖。
-- 运行配置 `sol.yaml`：脚本只在它不存在时生成一份**开箱即用**的——三条规则：纯包 → 关机（端口 11）、magic+"reboot" → 重启（12）、magic+"sleep" → 睡眠（10）；服务没有配置文件会直接拒绝启动（crash-loop），而小白最可能的顺序就是先跑起来再改。
+- 运行配置 `sol.yaml`：脚本只在它不存在时生成一份**开箱即用**的——三条规则：纯包 → 关机（端口 11）、magic+"reboot" → 重启（12）、magic+"sleep" → 睡眠（10），并附一段显式的 `security:`（`settle: 5s` + 三个 5s 冷却）；服务没有配置文件会直接拒绝启动（crash-loop），而小白最可能的顺序就是先跑起来再改。
   - **Windows：放在安装目录**（`C:\ProgramData\sol\sol.yaml`），跟 `sol.exe` 做伴，计划任务读的就是它。执行目录里那份**不是**服务认的配置；你要是以前在执行目录改过 `sol.yaml`，重跑脚本会把它**原样拷进**安装目录，并把 `install.yaml` 里 `--config` 的取值换成安装目录的路径（内容不丢，原文件也不动）。
   - **为什么 Windows 不一样**：计划任务以 `SYSTEM` 开机就跑，配置放在某个用户的项目目录里容易被挪走、删掉，或者 `SYSTEM` 根本读不到。Linux/macOS 保持执行目录——配置跟你执行脚本的地方在一起，改完重跑即可。
 - **端口 <1024 在 Linux/macOS 上要 root**，所以默认配置意味着：正常安装（动手前会升权）没问题；但"不要 root 的用户级安装"在这种配置下预检会失败（sol 报 `bind: permission denied`），那种场景得把端口改成 ≥1024。Windows 上低端口不需要特权，不受这一条影响。
@@ -250,7 +250,7 @@ run:
   args: [listen, --config, /home/you/sol.yaml]
 ```
 
-**为什么还要生成 `sol.yaml`**：没有配置文件的 sol 会**拒绝启动**（`no rules configured`），装成服务就会 crash-loop。所以脚本顺手写一份能跑的示例（三条规则：纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠），你在上面改端口和动作即可。`run.args` 里的 `--config` 是**绝对路径**（Linux/macOS：执行目录那份；Windows：安装目录那份），服务不会读错文件。
+**为什么还要生成 `sol.yaml`**：没有配置文件的 sol 会**拒绝启动**（`no rules configured`），装成服务就会 crash-loop。所以脚本顺手写一份能跑的示例（三条规则：纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠，并在末尾显式写出 `security.settle` 与三个 5s 冷却——默认护栏要看得见，才谈得上"能关掉"），你在上面改端口和动作即可。`run.args` 里的 `--config` 是**绝对路径**（Linux/macOS：执行目录那份；Windows：安装目录那份），服务不会读错文件。
 
 - `run.args` 是**列表**而不是一行字符串——字符串没法校验（危险开关能混进来）、没法映射到 launchd 的 `ProgramArguments` 数组、没法 diff。每个 token 按 `sol listen` 的真实 flag 集合校验，未知 flag 报错。
 - **未知键即报错**（与 sol 配置解析同一风格）。
@@ -324,7 +324,7 @@ run:
 | 二进制落点（脚本决定，不可配） | `/usr/local/bin`；当前用户没写权限时 `~/.local/bin` + 提示 PATH | 同 Linux | `C:\ProgramData\sol` + 机器 PATH |
 | 台账 / 历史 | `/usr/local/share/sol/{install.json,install.log}` | 同 Linux | `C:\ProgramData\sol\{install.json,install.log}` |
 | 安装配置 `install.yaml`（只有 `run.args`） | 执行脚本的那个目录 | 同 Linux | 同 Linux |
-| 运行配置 `sol.yaml`（开箱即用的示例配置：三条规则，只在不存在时生成，绝不覆盖） | 执行脚本的那个目录 | 同 Linux | **安装目录** `C:\ProgramData\sol\sol.yaml`（跟 `sol.exe` 做伴，计划任务读的就是它；执行目录里那份会被拷过去） |
+| 运行配置 `sol.yaml`（开箱即用的示例配置：三条规则 + 显式写出的默认护栏 `settle: 5s` 与三个 5s 冷却，只在不存在时生成，绝不覆盖） | 执行脚本的那个目录 | 同 Linux | **安装目录** `C:\ProgramData\sol\sol.yaml`（跟 `sol.exe` 做伴，计划任务读的就是它；执行目录里那份会被拷过去） |
 | 服务管理器 | systemd | launchd | 计划任务（纯 exe 不能当服务） |
 | 装服务的额外文件 | `/etc/systemd/system/sol.service` | `/Library/LaunchDaemons/com.lidiaoo.sol.plist` | 计划任务 `sol` + 防火墙规则 |
 | 日志去向 | systemd 收 stdout → journald | launchd 要 `StandardErrorPath` → `/usr/local/var/log/sol.log` | **计划任务不收集 stdout** → 必须 `logging.output: file` |
