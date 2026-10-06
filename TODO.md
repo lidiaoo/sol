@@ -139,7 +139,7 @@
 ## P5 安装 · 覆盖升级 · 卸载 · 状态查看（docs/install-design.md）
 
 - [x] 设计定稿文档 `docs/install-design.md`（13 节：目标与非目标 / 交付形态与输出约定 / 安装台账 / 安装报告 / 三个查询子命令 / 探测决策矩阵 / 覆盖安装与升级 / 卸载 / 各平台差异与文件清单 / 验证与证据强度 / 包管理器 / 落地顺序 / 未决项）
-- [x] `sol paths` 子命令（二进制真实路径 + 生效配置与来源 + 候选路径命中项 + 日志目的地 + 台账路径；`--json`）——`config.Discover` 单一来源判定、候选打 `*`、配置解析失败也退 0 并单独报错、附 `install config`/`history` 与末行 `next`；平台路径集中在 `internal/install`；冒烟 s32 真机 25/25（含 `listen` 启动日志行 source=--config/`$SOL_CONFIG`/none 三态）
+- [ ] `sol paths` 子命令（二进制真实路径 + 生效配置与来源 + 候选路径命中项 + 日志目的地 + 台账路径；`--json`）
 - [ ] `sol config check` 子命令（加载 + 全部启动期校验 + 每条问题的修法；`--json`；升级预检复用）
 - [ ] `sol status` 子命令（**默认入口**：版本 / 二进制 sha256 与台账比对 / 安装方式 / 服务线索（`INVOCATION_ID`、`XPC_SERVICE_NAME`）/ 配置有效性 / 监听端口与权限告警；未纳管时也输出；退出码 0/1；`--json`）
 - [ ] `sol listen` 启动日志补配置来源行（`msg="configuration" path=... source=...`）

@@ -418,34 +418,6 @@ AUTO 列说的是**身份，不是当下可用性**：现在 down 的网卡仍�
 匹配到"下一个未命中的包"或"下一次轮询"为止，也就是最多 30 秒——想立刻生效就 `SIGHUP`（或
 `--watch`）。显式写出的 `interfaces: [x]` 仍在启动期校验：名字不存在就是拼错了，直接报错。
 
-## Which files sol uses
-
-`sol paths` 把"到底哪份文件在生效"直接答出来：当前二进制、生效的配置文件**以及是发现顺序的哪一层选中了它**、每个候选位置、审计日志去哪、安装脚本自己的台账。它只读不写，**配置解析不了也照样给路径**。
-
-```
-$ sol paths
-binary          /usr/local/bin/sol
-runtime config  /etc/sol/sol.yaml                   (source: system default)
-candidates
-  *             /etc/sol/sol.yaml                   (present)
-                /home/you/.config/sol/sol.yaml      (not present)
-log             stderr (default)
-ledger          /usr/local/share/sol/install.json    (not present)
-install config  /home/you/.config/sol/install.yaml
-history         /usr/local/share/sol/install.log
-next            sol config check
-```
-
-`source` 那栏是重点：`--config`、`$SOL_CONFIG`、`system default`、`user default` 点名了胜出的是哪一层——两个默认位置都有配置文件的机器不再是谜。`sol listen` 会把同样的答案作为审计日志的第一行写出来：
-
-```
-time=... level=INFO msg="configuration file" path=/etc/sol/sol.yaml source=system
-```
-
-即使配置解析失败 `sol paths` 也退出 0：其余位置仍然值得报告，解析错误单独占一行。`--json` 输出同一份报告给脚本用（`runtime_config`、`runtime_config_source`，候选项带 `exists` / `in_use`）。
-
-注意 **install config 不是运行配置**：`install.yaml` 是安装脚本生成给你改的，sol 启动时读的是 `runtime config` 那一行。
-
 ## Installation
 
 ### Quick Install

@@ -37,12 +37,6 @@ var listenCmd = &cobra.Command{
 			return err
 		}
 
-		// Say which configuration file is in effect, and which level of the discovery order chose
-		// it: the audit trail is where an operator looks, and guessing between --config,
-		// $SOL_CONFIG and the two defaults is precisely the time it would cost them.
-		location := config.Discover(configPath)
-		slog.Info("configuration file", "path", location.Path, "source", string(location.Source))
-
 		builder := deps.NewBuilder(cfg)
 
 		application, buildErr := builder.BuildListenService()
