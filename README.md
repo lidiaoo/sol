@@ -501,13 +501,18 @@ irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile
 ```
 
 It uses the `sol` you already have - next to the script, in the current directory, or on `PATH` - and
-never replaces it with a download. In the directory you run it from it writes two files: `install.yaml`,
-whose only content is how to run sol, and `sol.yaml`, a small working configuration: a plain magic packet to port 11 shuts the machine
-down, `"reboot"` after the magic packet to 12 reboots it, `"sleep"` to 10 sleeps it. A service with
-no rules refuses to start, so the script writes one that runs; edit the file and re-run the script to
-change it. Ports below 1024 need root on Linux/macOS, which the script sorts out before it touches
-anything - on a user-level install without root, move them to 1024 or above. It prints the current situation and both files, then asks two
-questions: install as a service, and go ahead. Nothing changes until you say yes.
+never replaces it with a download. In the directory you run it from it writes `install.yaml`, whose only
+content is how to run sol, and it makes sure a working configuration exists: a plain magic packet to port
+11 shuts the machine down, `"reboot"` after the magic packet to 12 reboots it, `"sleep"` to 10 sleeps it -
+a service with no rules refuses to start, so the script writes one that runs. Where that configuration
+lives differs by platform: on Linux and macOS it is `sol.yaml` in the directory you ran the script from;
+**on Windows it goes next to the installed `sol.exe`** (`C:\ProgramData\sol\sol.yaml`), because the
+scheduled task runs as `SYSTEM` at boot and should not depend on a project directory that can move. If you
+already edited a `sol.yaml` there, the script copies it over rather than throwing it away. Edit the
+configuration and re-run the script to change it. Ports below 1024 need root on Linux/macOS, which the
+script sorts out before it touches anything - on a user-level install without root, move them to 1024 or
+above. It prints the current situation and where the configuration lives, then asks two questions:
+install as a service, and go ahead. Nothing changes until you say yes.
 
 Privileges: it does not run as root from the start. Before any step that needs it (writing
 `/usr/local/bin`, registering the service), it re-runs itself through `sudo` on Linux/macOS, or
@@ -519,10 +524,11 @@ again), or uninstall (answer `u`; it asks before deleting your configuration). E
 is appended to `install.log`, with the equivalent command, next to the ledger `install.json`.
 
 Where things go: the binary in `/usr/local/bin/sol` (`C:\ProgramData\sol\sol.exe`), the ledger and
-history in `/usr/local/share/sol/` (`C:\ProgramData\sol\`), and - only if you asked for the service -
-a systemd unit, a launchd plist, or a scheduled task. An existing `sol.yaml` (or any other
-configuration you point `run.args` at) and your logs are never touched - the script only creates one
-when there is none.
+history in `/usr/local/share/sol/` (`C:\ProgramData\sol\`), the configuration in `sol.yaml` in the
+directory you ran the script from (`C:\ProgramData\sol\sol.yaml` - next to the binary, where the
+scheduled task reads it), and - only if you asked for the service - a systemd unit, a launchd plist, or a
+scheduled task. A configuration you already have (or any other one you point `run.args` at) and your logs
+are never touched - the script only creates one when there is none.
 
 The script is Linux/macOS/Windows aware but has been exercised on Linux; the Windows and macOS paths
 are marked as such in [docs/install-design.md](docs/install-design.md) until CI covers them.

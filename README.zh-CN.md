@@ -455,13 +455,16 @@ curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh -o
 irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。它写两个
-文件：`install.yaml`，内容只有"sol 怎么跑"；以及 `sol.yaml`，一份开箱即用的运行配置（纯包 → 关机
-（端口 11）、magic+"reboot" → 重启（12）、magic+"sleep" → 睡眠（10））——都生成在**你执行脚本的
-那个目录**里。服务没有规则会拒绝启动，所以脚本直接写一份能跑的；要改就编辑它、再重跑一遍脚本。
+它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。它在**你执行
+脚本的那个目录**里写 `install.yaml`，内容只有"sol 怎么跑"；同时保证有一份能跑的运行配置：纯包 → 关机
+（端口 11）、magic+"reboot" → 重启（12）、magic+"sleep" → 睡眠（10）。服务没有规则会拒绝启动，所以
+脚本直接写一份能跑的。**这份配置放哪，平台不同**：Linux/macOS 就是执行目录里的 `sol.yaml`；Windows 放在
+**安装目录**（`C:\ProgramData\sol\sol.yaml`，跟 `sol.exe` 做伴）——计划任务以 SYSTEM 开机就跑，配置不该
+依赖一个可能被挪走的项目目录；你在执行目录里改过的那份会被**原样拷过去**，不会丢。改配置就编辑它、再
+重跑一遍脚本。
 **端口 <1024 在 Linux/macOS 上要 root**：脚本动手前会升权，正常安装不用管；但如果是不要 root 的
 用户级安装，要把端口改成 ≥1024。
-它把现状与这两份文件都打印出来，再问两个问题：要不要装成服务、是否继续。你说"是"之前什么都不改。
+它把现状、配置在哪都打印出来，再问两个问题：要不要装成服务、是否继续。你说"是"之前什么都不改。
 
 **权限**：它不会一开始就以 root 跑。轮到需要权限的步骤（写 `/usr/local/bin`、注册服务）时，Linux/macOS
 上它用 `sudo` **重跑一遍自己**，Windows 上弹 **UAC** 以管理员身份重跑，并把你刚才的答案带过去——不会
@@ -471,8 +474,9 @@ irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile
 它做的每一件事都追加写进 `install.log`（带等价命令），和台账 `install.json` 放在一起。
 
 东西落在哪：二进制 `/usr/local/bin/sol`（Windows `C:\ProgramData\sol\sol.exe`），台账与历史
-`/usr/local/share/sol/`（Windows `C:\ProgramData\sol\`）；只有你选了装服务才会多一个 systemd
-单元 / launchd plist / 计划任务。sol 自己的配置与日志一个都不碰。
+`/usr/local/share/sol/`（Windows `C:\ProgramData\sol\`），运行配置 `sol.yaml` 在执行脚本的那个目录
+（Windows `C:\ProgramData\sol\sol.yaml`——跟二进制做伴，计划任务读的就是它）；只有你选了装服务才会多一个
+systemd 单元 / launchd plist / 计划任务。你自己已有的配置与日志一个都不碰（没有才写一份）。
 
 这份脚本三平台通用，但目前只在 Linux 上真机跑过；macOS 与 Windows 分支的证据强度记在
 [docs/install-design.md](docs/install-design.md)（等 CI 覆盖）。

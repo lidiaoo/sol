@@ -52,10 +52,13 @@ if ($env:SOL_UNIT_NAME) { $TaskName = $env:SOL_UNIT_NAME } else { $TaskName = 's
 
 $InstallDir = Join-Path $Root 'sol'
 $DestBin = Join-Path $InstallDir 'sol.exe'
+# 服务认的那份运行配置跟 sol.exe 放在一起（安装目录）：任务以 SYSTEM 开机就跑，
+# 配置不该依赖某个可能被挪走、删掉的项目目录。
+$ServiceConfig = Join-Path $InstallDir 'sol.yaml'
 $Ledger = Join-Path $InstallDir 'install.json'
 $History = Join-Path $InstallDir 'install.log'
 
-# 生成的文件就放在**你执行脚本的那个目录**：.\install.yaml 与 .\sol.yaml。
+# install.yaml 放在**你执行脚本的那个目录**；运行配置 sol.yaml 放在**安装目录**里，跟 sol.exe 做伴。
 # 服务定义里用绝对路径，所以不踩"服务有自己的家目录"那个坑。
 # 内部参数（UAC 升权重跑时把答案带过来；用户不需要、也不应该记这些）。
 # 为什么不用环境变量：Start-Process -Verb RunAs 经过 shell 提权，环境不保证原样继承。
@@ -158,7 +161,7 @@ function Task-State {
 
 # ───────────────────────── 安装配置（只有 run.args）─────────────────────────
 
-$DefaultArgs = @('listen', '--config', $DesktopConfig)
+$DefaultArgs = @('listen', '--config', $ServiceConfig)
 
 function Write-UserConfig {
 	$dir = Split-Path -Parent $UserConfig
@@ -172,6 +175,19 @@ function Write-UserConfig {
 		$argsLine
 	)
 	Write-Utf8NoBom $UserConfig $lines
+}
+
+# 只改 install.yaml 里那一行 args:，其余（你自己的注释、别的字段）原样留着。
+function Set-Args-Line($argv) {
+	$argsLine = '  args: [' + ($argv -join ', ') + ']'
+	$lines = @(Get-Content -Encoding UTF8 $UserConfig)
+	$out = @()
+	$done = $false
+	foreach ($l in $lines) {
+		if ((-not $done) -and ($l -match '^\s*args:\s*')) { $out += $argsLine; $done = $true } else { $out += $l }
+	}
+	if (-not $done) { $out += $argsLine }
+	Write-Utf8NoBom $UserConfig $out
 }
 
 function Read-Args {
@@ -189,26 +205,41 @@ function Read-Args {
 	$out
 }
 
-# sol.yaml：一份开箱即用的配置（纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠）。没有才写，绝不覆盖。
+# 服务认的那份 sol.yaml：一份开箱即用的配置（纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠）。
+# 没有才写，绝不覆盖；执行目录里那份（你改过的）会**原样拷过来**，不丢改动。
 $RuntimeConfigGenerated = $false
+$RuntimeConfigCopied = $false
 function Ensure-RuntimeConfig {
 	if (Test-Path $RunConfig) { return }
-	$lines = @(
-		'# 纯包 -> 关机；magic+"reboot" -> 重启；magic+"sleep" -> 睡眠',
-		'version: 1',
-		'server:',
-		'  interfaces: []',
-		'rules:',
-		'  - match: { ports: [11], content: { kind: none } }',
-		'    action: power.shutdown',
-		'  - match: { ports: [12], content: { kind: none } }',
-		'    action: power.reboot',
-		'  - match: { ports: [10], content: { kind: none } }',
-		'    action: power.sleep'
-	)
-	if (-not (Test-Path $InstallDir)) { } # 配置跟执行目录走，不动 ProgramData
-	Write-Utf8NoBom $RunConfig $lines
-	$script:RuntimeConfigGenerated = $true
+	# 目标在安装目录里（ProgramData 要管理员）：没升权的这次别抢着建目录、也别谎报已生成，
+	# 留给升权后的那一步（它会把整个脚本重跑一遍，自然又走到这里）。自选的根是自己的地盘，照写。
+	if (-not $IsAdmin -and -not $env:SOL_INSTALL_ROOT) { return }
+	try {
+		$cfgDir = Split-Path -Parent $RunConfig
+		if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force -ErrorAction Stop | Out-Null }
+		if (($RunConfig -ne $DesktopConfig) -and (Test-Path $DesktopConfig)) {
+			Copy-Item -Path $DesktopConfig -Destination $RunConfig -Force -ErrorAction Stop
+			$script:RuntimeConfigCopied = $true
+		} else {
+			$lines = @(
+				'# 纯包 -> 关机；magic+"reboot" -> 重启；magic+"sleep" -> 睡眠',
+				'version: 1',
+				'server:',
+				'  interfaces: []',
+				'rules:',
+				'  - match: { ports: [11], content: { kind: none } }',
+				'    action: power.shutdown',
+				'  - match: { ports: [12], content: { kind: none } }',
+				'    action: power.reboot',
+				'  - match: { ports: [10], content: { kind: none } }',
+				'    action: power.sleep'
+			)
+			Write-Utf8NoBom $RunConfig $lines
+		}
+		$script:RuntimeConfigGenerated = $true
+	} catch {
+		Warn2 "没能把运行配置写到 $RunConfig：$_（升权后的那一步会再试一次）"
+	}
 }
 
 $ConfigGenerated = $false
@@ -233,6 +264,22 @@ Test-Args
 $RunConfig = $DesktopConfig
 for ($i = 0; $i -lt $ArgsList.Count - 1; $i++) {
 	if ($ArgsList[$i] -eq '--config') { $RunConfig = $ArgsList[$i + 1] }
+}
+
+# 运行配置从"执行目录"搬到"安装目录"：老版本写下的默认值恰好就是 .\sol.yaml，是它才迁过来
+# （内容一起拷过去，改动不丢）。你自己另行指定的路径一律不动——那是有意为之的。
+if ($RunConfig -eq $DesktopConfig -and $DesktopConfig -ne $ServiceConfig) {
+	$RunConfig = $ServiceConfig
+	# 只换 --config 的取值，你自己加的其它参数照旧。
+	$migrated = @()
+	for ($k = 0; $k -lt $ArgsList.Count; $k++) {
+		if (($ArgsList[$k] -eq '--config') -and ($k + 1 -lt $ArgsList.Count)) {
+			$migrated += '--config'; $migrated += $ServiceConfig; $k++
+		} else { $migrated += $ArgsList[$k] }
+	}
+	$ArgsList = $migrated
+	Set-Args-Line $ArgsList
+	Say "运行配置   搬到安装目录：$RunConfig（执行目录里那份会拷过去；你另外指定的路径不受影响）"
 }
 
 function Get-ThresholdPorts {
@@ -268,7 +315,7 @@ function Show-State {
 		Say "已安装      $($LedgerJson.installed_version)（由安装脚本安装，$Ledger）"
 	} else {
 		Say '已安装      无台账（从没被这个脚本装过；下面按你已有的二进制处理）'
-		if (Test-Path (Join-Path $env:SystemRoot "System32\Tasks\$TaskName")) {
+		if ($env:SystemRoot -and (Test-Path (Join-Path $env:SystemRoot "System32\Tasks\$TaskName"))) {
 			Warn2 "有计划任务但没有台账（$TaskName）：不是我装的，我不动它。
       要手工清掉：
         schtasks /Delete /TN $TaskName /F"
@@ -277,7 +324,7 @@ function Show-State {
 	$st = Task-State
 	if ($st -eq 'installed') { Say "服务        计划任务 $TaskName 已注册" } else { Say "服务        没有（计划任务 $TaskName 不存在）" }
 	if (Test-Path $RunConfig) {
-		if ($script:RuntimeConfigGenerated) { Say "运行配置    $RunConfig（刚生成的示例配置：三条规则，按需改）" }
+		if ($script:RuntimeConfigGenerated) { Say "运行配置    $RunConfig$(if ($script:RuntimeConfigCopied) { '（从执行目录拷到安装目录的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' })" }
 		else { Say "运行配置    $RunConfig（sol 会读它）" }
 	} else { Say "运行配置    还不存在：$RunConfig" }
 	if ($env:SOL_INSTALL_ROOT) { Say "权限        普通用户 + SOL_INSTALL_ROOT=$env:SOL_INSTALL_ROOT（自己的地盘，不会升权）" }
@@ -464,6 +511,8 @@ function Escalate-IfNeeded([string]$action) {
 
 function Invoke-Install {
 	if (-not $LocalBin) { Die '没有可用的 sol.exe：把它放在脚本旁边或 PATH 里，再运行一次' }
+	# 升权后的那一次才写得进安装目录，所以配置的生成/拷贝放这儿，紧挨着预检。
+	Ensure-RuntimeConfig
 	$newSha = Has-Sha256 $LocalBin
 
 	Write-Ledger $true $LedgerJson.installed_version $LedgerJson.sha256
