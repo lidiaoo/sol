@@ -476,10 +476,10 @@ irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 | iex
 ```
 
 It uses the `sol` you already have - next to the script, in the current directory, or on `PATH` - and
-never replaces it with a download. It writes one file, `~/.config/sol/install.yaml`
-(`%APPDATA%\sol\install.yaml` on Windows), whose only content is how to run sol, then prints both the
-current situation and that file, and asks two questions: install as a service, and go ahead. Nothing
-changes until you say yes.
+never replaces it with a download. In the directory you run it from it writes two files: `install.yaml`,
+whose only content is how to run sol, and `sol.yaml`, a minimal working configuration (one `noop` rule,
+so a service does not refuse to start). It prints the current situation and both files, then asks two
+questions: install as a service, and go ahead. Nothing changes until you say yes.
 
 Re-running the script is how you see the current state, change how sol runs (edit the file, run it
 again), or uninstall (answer `u`; it asks before deleting your configuration). Every action it takes
@@ -487,8 +487,9 @@ is appended to `install.log`, with the equivalent command, next to the ledger `i
 
 Where things go: the binary in `/usr/local/bin/sol` (`C:\ProgramData\sol\sol.exe`), the ledger and
 history in `/usr/local/share/sol/` (`C:\ProgramData\sol\`), and - only if you asked for the service -
-a systemd unit, a launchd plist, or a scheduled task. sol's own configuration and logs are never
-touched.
+a systemd unit, a launchd plist, or a scheduled task. An existing `sol.yaml` (or any other
+configuration you point `run.args` at) and your logs are never touched - the script only creates one
+when there is none.
 
 The script is Linux/macOS/Windows aware but has been exercised on Linux; the Windows and macOS paths
 are marked as such in [docs/install-design.md](docs/install-design.md) until CI covers them.

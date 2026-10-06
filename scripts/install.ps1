@@ -1,7 +1,7 @@
 # sol 安装脚本（Windows）—— 零参数。
 #
 # 与 scripts/install.sh 是同一份契约（docs/install-design.md）：认出现状 → 生成/读取"怎么跑"的
-# 配置（%APPDATA%\sol\install.yaml，里面只有 run.args）→ 展示 → 问一句 → 才动手。
+# 配置（执行目录下的 install.yaml，里面只有 run.args；同目录再生成一份最小 sol.yaml）→ 展示 → 问一句 → 才动手。
 #
 #   powershell -ExecutionPolicy Bypass -File install.ps1     或双击 install.cmd
 #   没有终端（管道喂答案）时只生成配置，不执行任何操作
@@ -34,8 +34,20 @@ $InstallDir = Join-Path $Root 'sol'
 $DestBin = Join-Path $InstallDir 'sol.exe'
 $Ledger = Join-Path $InstallDir 'install.json'
 $History = Join-Path $InstallDir 'install.log'
-$DesktopConfig = Join-Path $InstallDir 'sol.yaml'
-$UserConfig = Join-Path $env:APPDATA 'sol\install.yaml'
+
+# 生成的文件就放在**你执行脚本的那个目录**：.\install.yaml 与 .\sol.yaml。
+# 服务定义里用绝对路径，所以不踩"服务有自己的家目录"那个坑。
+$RunDir = (Get-Location).Path
+$UserConfig = Join-Path $RunDir 'install.yaml'
+$DesktopConfig = Join-Path $RunDir 'sol.yaml'
+
+try {
+	$probe = Join-Path $RunDir '.sol-write-probe'
+	Set-Content -Path $probe -Value 'x' -ErrorAction Stop
+	Remove-Item $probe -Force
+} catch {
+	Die "在这个目录里写不了文件：$UserConfig 与 $DesktopConfig 要生成在这儿。换一个你有写权限的目录再跑一次。"
+}
 
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -111,6 +123,23 @@ function Read-Args {
 	$out
 }
 
+# sol.yaml：最小可用的一份（一条 noop 规则，只记日志不做事）。没有才写，绝不覆盖。
+$RuntimeConfigGenerated = $false
+function Ensure-RuntimeConfig {
+	if (Test-Path $RunConfig) { return }
+	$lines = @(
+		'# 由安装脚本生成的最小配置：一条 noop 规则——匹配到只记日志，什么也不做。',
+		'# 端口、动作按需改；改完重跑安装脚本（或重启计划任务）即可。',
+		'version: 1',
+		'rules:',
+		'  - match: { ports: [10010], content: { kind: none } }',
+		'    action: noop'
+	)
+	if (-not (Test-Path $InstallDir)) { } # 配置跟执行目录走，不动 ProgramData
+	Set-Content -Path $RunConfig -Value $lines -Encoding UTF8
+	$script:RuntimeConfigGenerated = $true
+}
+
 $ConfigGenerated = $false
 if (-not (Test-Path $UserConfig)) { Write-UserConfig; $ConfigGenerated = $true }
 $ArgsList = @(Read-Args)
@@ -173,7 +202,10 @@ function Show-State {
 	}
 	$st = Task-State
 	if ($st -eq 'installed') { Say "服务        计划任务 $TaskName 已注册" } else { Say "服务        没有（计划任务 $TaskName 不存在）" }
-	if (Test-Path $RunConfig) { Say "运行配置    $RunConfig（sol 会读它）" } else { Say "运行配置    还不存在：$RunConfig" }
+	if (Test-Path $RunConfig) {
+		if ($script:RuntimeConfigGenerated) { Say "运行配置    $RunConfig（刚生成的最小配置：一条 noop 规则，按需改）" }
+		else { Say "运行配置    $RunConfig（sol 会读它）" }
+	} else { Say "运行配置    还不存在：$RunConfig" }
 	if (-not $IsAdmin) { Say '权限        当前不是管理员：装服务 / 改机器 PATH 那几步会失败（脚本会告诉你）' }
 }
 
@@ -415,7 +447,7 @@ function Show-Report($what) {
 			if (Test-Path "$DestBin.bak") { Say "（旧版本留在 $DestBin.bak，回滚就是把它换回去）" }
 			Say ''
 			Say "安装配置   $UserConfig        改这里，然后重跑脚本"
-			Say "运行配置   $RunConfig$(if (-not (Test-Path $RunConfig)) { '（还不存在；示例见 README Quick start）' })"
+			Say "运行配置   $RunConfig$(if ($script:RuntimeConfigGenerated) { '（刚生成的最小配置：一条 noop 规则，按需改）' })"
 			Say "台账       $Ledger"
 			Say "历史       $History（完整动作清单，带等价命令）"
 			Say ''
@@ -446,6 +478,8 @@ function Show-Report($what) {
 }
 
 # ───────────────────────── 主流程 ─────────────────────────
+
+Ensure-RuntimeConfig
 
 Show-State
 Show-Config
@@ -480,16 +514,6 @@ if ($script:NoAnswer) {
 }
 
 $script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
-if (Test-Path $RunConfig) {
-	Say "运行配置   存在：$RunConfig"
-} else {
-	Say "运行配置   不存在：$RunConfig"
-	Say '           服务需要它，否则 sol 会拒绝启动（no rules configured）。最小示例：'
-	Say '             version: 1'
-	Say '             rules:'
-	Say '               - match: { ports: [10010], content: { kind: none } }'
-	Say '                 action: noop'
-}
 if (-not (Ask-Yes '执行吗？' 'y')) { Show-Report 'none'; exit 0 }
 
 Invoke-Install

@@ -1,7 +1,8 @@
 #!/bin/sh
 # sol 安装脚本 —— 零参数。
 #
-# 它只做三件事：认出现状 → 生成/读取"怎么跑"的配置 → 你确认之后才动手。
+# 它只做三件事：认出现状 → 生成/读取"怎么跑"的配置（就放在你执行脚本的这个目录：
+# ./install.yaml 与 ./sol.yaml）→ 你确认之后才动手。
 # 设计文档（本脚本与它是同一份契约）：docs/install-design.md
 #
 #   sh install.sh              生成配置 → 展示现状 → 问一句 → 执行
@@ -107,13 +108,10 @@ mkdir_root() { # mkdir_root <目录>
 	if writable_target "$(dirname "$1")"; then mkdir -p "$1"; else as_root mkdir -p "$1"; fi
 }
 
-# 用户家目录：用 sudo 跑时写 $SUDO_USER 的家，而不是 /root（否则用户在自己的家目录里根本找不到）。
-HOME_DIR=${HOME:-/tmp}
-if [ "$UID_NOW" = "0" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
-	HOME_DIR=$(eval echo "~$SUDO_USER" 2>/dev/null || echo "$HOME")
-fi
-[ -n "$HOME_DIR" ] || die "找不到用户家目录"
-USER_CONFIG="$HOME_DIR/.config/sol/install.yaml"
+# 生成的文件就放在**你执行脚本的那个目录**：./install.yaml 与 ./sol.yaml。
+# 找得到、看得见、改完重跑就行；服务定义里用的是绝对路径，所以不踩"服务有自己的家目录"那个坑。
+RUN_DIR=$(pwd)
+USER_CONFIG="$RUN_DIR/install.yaml"
 
 # ───────────────────────── 小工具 ─────────────────────────
 
@@ -262,9 +260,12 @@ fi
 
 # ───────────────────────── 安装配置（只有 run.args）─────────────────────────
 
-DEFAULT_CONFIG_PATH="$ROOT/etc/sol/sol.yaml"
+DEFAULT_CONFIG_PATH="$RUN_DIR/sol.yaml"
 DEFAULT_ARGS="listen --config $DEFAULT_CONFIG_PATH"          # 给人看、给报告用
 DEFAULT_ARGS_YAML="listen, --config, $DEFAULT_CONFIG_PATH"   # 写进文件：YAML 列表要逗号
+
+writable_target "$RUN_DIR" || die "在这个目录里写不了文件：$USER_CONFIG 与 $RUN_DIR/sol.yaml 要生成在这儿。
+换一个你有写权限的目录（比如 ~）再跑一次。"
 
 write_user_config() {
 	mkdir -p "$(dirname "$USER_CONFIG")"
@@ -321,6 +322,25 @@ for tok in $ARGS; do
 done
 [ -n "$RUN_CONFIG" ] || RUN_CONFIG="$DEFAULT_CONFIG_PATH"
 
+# sol.yaml：最小可用的一份（一条 noop 规则，只记日志不做事）。没有才写，绝不覆盖。
+RUNTIME_CONFIG_GENERATED=no
+ensure_runtime_config() {
+	[ -f "$RUN_CONFIG" ] && return 0
+	runtime_tmp=$(mktemp)
+	cat >"$runtime_tmp" <<'YAML'
+# 由安装脚本生成的最小配置：一条 noop 规则——匹配到只记日志，什么也不做。
+# 端口、动作按需改；改完重跑安装脚本（或重启服务）即可。
+version: 1
+rules:
+  - match: { ports: [10010], content: { kind: none } }
+    action: noop
+YAML
+	mkdir_root "$(dirname "$RUN_CONFIG")"
+	put_root "$runtime_tmp" "$RUN_CONFIG" 0644
+	rm -f "$runtime_tmp"
+	RUNTIME_CONFIG_GENERATED=yes
+}
+
 ports_below_1024() {
 	[ -f "$RUN_CONFIG" ] || return 1
 	nums=$(sed -n 's/^[[:space:]]*ports:[[:space:]]*\[\([0-9, ]*\)\].*/\1/p' "$RUN_CONFIG" | tr ',' ' ')
@@ -366,7 +386,11 @@ show_state() {
 	esac
 	[ -n "$MANAGED_BY" ] && say "包管理器    这个 sol 是 $MANAGED_BY 装的（升级会覆盖它）"
 	if [ -f "$RUN_CONFIG" ]; then
-		say "运行配置    $RUN_CONFIG（sol 会读它）"
+		if [ "$RUNTIME_CONFIG_GENERATED" = yes ]; then
+			say "运行配置    $RUN_CONFIG（刚生成的最小配置：一条 noop 规则，按需改）"
+		else
+			say "运行配置    $RUN_CONFIG（sol 会读它）"
+		fi
 	else
 		say "运行配置    还不存在：$RUN_CONFIG"
 	fi
@@ -758,7 +782,7 @@ do_uninstall() {
 		fi
 	else
 		say "配置留着：$USER_CONFIG、$RUN_CONFIG"
-		say "（要删：rm $USER_CONFIG；sudo rm $RUN_CONFIG）"
+		say "（要删：rm $USER_CONFIG $RUN_CONFIG）"
 		act user "保留配置（未删）" "# 配置与日志保留"
 	fi
 
@@ -777,7 +801,7 @@ report() { # report <install|uninstall|none>
 		if [ -f "$DEST_BIN.bak" ]; then say "（旧版本留在 $DEST_BIN.bak，回滚就是把它换回去）"; fi
 		say ""
 		say "安装配置   $USER_CONFIG        改这里，然后重跑脚本"
-		say "运行配置   $RUN_CONFIG$( [ -f "$RUN_CONFIG" ] && printf '' || printf '（还不存在；示例见 README Quick start）' )"
+		say "运行配置   $RUN_CONFIG$( [ "$RUNTIME_CONFIG_GENERATED" = yes ] && printf '（刚生成的最小配置：一条 noop 规则，按需改）' )"
 		say "台账       $LEDGER"
 		say "历史       $HISTORY（完整动作清单，带等价命令）"
 		say ""
@@ -815,7 +839,7 @@ report() { # report <install|uninstall|none>
 			say "配置       已按你的选择删除"
 		else
 			say "配置       保留：$USER_CONFIG、$RUN_CONFIG"
-			say "           要删：rm $USER_CONFIG; sudo rm $RUN_CONFIG"
+			say "           要删：rm $USER_CONFIG $RUN_CONFIG"
 		fi
 		say "历史       $HISTORY"
 		;;
@@ -828,6 +852,8 @@ report() { # report <install|uninstall|none>
 }
 
 # ───────────────────────── 主流程 ─────────────────────────
+
+ensure_runtime_config
 
 show_state
 show_config
@@ -867,17 +893,6 @@ fi
 # 未安装
 SERVICE_WANTED=false
 if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
-if [ -f "$RUN_CONFIG" ]; then
-	say "运行配置   存在：$RUN_CONFIG"
-else
-	say "运行配置   不存在：$RUN_CONFIG"
-	say "           服务需要它，否则 sol 会拒绝启动（no rules configured）。"
-	say "           最小示例（复制到上面那个路径即可）："
-	say "             version: 1"
-	say "             rules:"
-	say "               - match: { ports: [10010], content: { kind: none } }"
-	say "                 action: noop"
-fi
 if ! ask "执行吗？" y; then
 	report none
 	exit 0

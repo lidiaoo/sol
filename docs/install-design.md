@@ -65,7 +65,7 @@ skill 不重述命令，只做决策树与验证：调用安装脚本、判断"�
     "cap": "CAP_NET_BIND_SERVICE"
   },
   "firewall_rules": [{ "tool": "ufw", "spec": "10010/udp", "created_by": "installer" }],
-  "config_paths": ["/etc/sol/sol.yaml"],
+  "config_paths": ["/home/you/sol.yaml"],
   "log_paths": ["/var/log/sol/sol.log"],
   "previous": { "installed_version": "v0.2.1", "sha256": "…" },
   "incomplete": false
@@ -86,8 +86,8 @@ skill 不重述命令，只做决策树与验证：调用安装脚本、判断"�
 == 完成 ==
 sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已启用）
 
-安装配置   ~/.config/sol/install.yaml        改这里，然后重跑脚本
-运行配置   /etc/sol/sol.yaml（还不存在；示例见 README Quick start）
+安装配置   /home/you/install.yaml        改这里，然后重跑脚本
+运行配置   /home/you/sol.yaml（刚生成的最小配置：一条 noop 规则，按需改）
 台账       /usr/local/share/sol/install.json
 历史       /usr/local/share/sol/install.log
 
@@ -142,7 +142,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 
 - **全平台一致**：自动发现只看上面两个路径。macOS 不是 `/usr/local/etc/sol/…`，Windows 也不是 `C:\ProgramData\sol\…`；要放那里必须显式 `--config`（Windows 的 `~` = `C:\Users\<你>`）。
 - 之后叠加环境变量，最后叠加 CLI 参数（文件 → 环境变量 → CLI，CLI 胜）。
-- **服务场景的坑**：服务有自己的家目录（systemd / launchd 是 root 的，Windows 是 `SYSTEM` 的），`~/.config/sol/sol.yaml` 会变成 `/root/.config/sol/sol.yaml`。所以服务单元必须用 `--config` 给**绝对路径**，或把文件放在 `/etc/sol/sol.yaml`——这是"装完服务配置莫名不生效"最常见的原因。
+- **服务场景的坑（已被"产物跟着执行目录走"避开）**：服务有自己的家目录（systemd / launchd 是 root 的，Windows 是 `SYSTEM` 的），相对路径与 `~` 进到服务里全变样。脚本生成 `install.yaml` 时就把 `--config` 写成**执行目录的绝对路径**，所以单元/计划任务里也是绝对路径——这是"装完服务配置莫名不生效"最常见的原因。
 - 安装脚本默认**不创建**配置，只在报告里打印"生效配置：(无) → 将按此顺序查找：…"，并附一段可复制的最小配置；`--write-config` 才落盘，且只在目标不存在时写，绝不覆盖已有配置。
 
 ### 5.5 连带补一个真缺陷
@@ -172,12 +172,18 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 
 未安装时：
 
-```
-== 已生成安装配置 ==
-/home/you/.config/sol/install.yaml
+在你执行脚本的那个目录里（下面假设是 /home/you）：
 
-  # sol 怎么跑（改这里，然后重新跑一遍脚本）
-  run: { args: [listen, --config, /etc/sol/sol.yaml] }
+  install.yaml            # sol 怎么跑（改这里，然后重新跑一遍脚本）
+  sol.yaml                # 刚生成的最小配置：一条 noop 规则，按需改
+
+```
+== 已生成配置 ==
+/home/you/install.yaml
+/home/you/sol.yaml        # 最小配置，服务因此不会拒绝启动
+
+  # install.yaml 的内容
+  run: { args: [listen, --config, /home/you/sol.yaml] }
 
 二进制：用你这里的 ./sol（v0.3.0，sha256 1a2b…）；想换版本就把它换掉
 服务：装成 systemd 服务？[Y/n]
@@ -204,20 +210,27 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 
 ### 6.1 本机安装配置（安装脚本生成，用户可改）
 
-**位置固定**（没有"换个位置"的开关）：Linux / macOS `~/.config/sol/install.yaml`；Windows `%APPDATA%\sol\install.yaml`。用 sudo 跑时写到 `$SUDO_USER` 的家目录，而不是 `/root`——否则用户在自己的家目录里根本找不到这份文件。
+**位置固定**（没有"换个位置"的开关）：**你执行脚本的那个目录**，三平台一致——
+
+- `./install.yaml`：脚本的**输入**（"sol 怎么跑"）。改完重跑脚本即可；已有就一个字都不覆盖。
+- `./sol.yaml`：sol 的**运行配置**。脚本只在它不存在时生成一份**最小可用**的（一条 noop 规则，匹配到只记日志）——服务没有配置文件会直接拒绝启动（crash-loop），而小白最可能的顺序就是先跑起来再改。
+
+用 sudo 跑也一样：这两件产物跟的是**当前目录**，不是任何人的家目录（放 `~/.config` 服务反而读不到——服务有自己的家目录）。
 
 **内容只有一个 `run`**，它回答"sol 用什么参数跑"。其余的东西都不进文件：二进制从哪来由脚本自己找（§6.2），装不装服务现场问，服务类型 / 单元路径 / CAP / 防火墙工具按平台推导。
 
 ```yaml
 # 由 install.sh 生成：sol 怎么跑。改这里，然后重新跑一遍脚本。
 run:
-  args: [listen, --config, /etc/sol/sol.yaml]
+  args: [listen, --config, /home/you/sol.yaml]
 ```
+
+**为什么还要生成 `sol.yaml`**：没有配置文件的 sol 会**拒绝启动**（`no rules configured`），装成服务就会 crash-loop。所以脚本顺手写一份最小的（一条 noop：匹配到只记日志，不会关机），你在上面改端口和动作即可。`run.args` 里的 `--config` 是执行目录的**绝对路径**，服务不会读错文件。
 
 - `run.args` 是**列表**而不是一行字符串——字符串没法校验（危险开关能混进来）、没法映射到 launchd 的 `ProgramArguments` 数组、没法 diff。每个 token 按 `sol listen` 的真实 flag 集合校验，未知 flag 报错。
 - **未知键即报错**（与 sol 配置解析同一风格）。
 - **不覆盖**已有文件：配置在就按它执行；要重新生成就在问答里选 `r`。"改配置 → 重跑脚本"是唯一的修改回路。
-- **三层权威互不重叠**：这份配置是**输入**（怎么跑）；服务定义是**产物**（脚本生成，别手改）；`/etc/sol/sol.yaml` 是**权威运行配置**（sol 只认这个 + CLI/env，见 §5.4）。
+- **三层权威互不重叠**：`install.yaml` 是**输入**（怎么跑）；服务定义是**产物**（脚本生成，别手改）；`sol.yaml` 是**权威运行配置**（sol 只认它 + CLI/env，见 §5.4）——放在哪由你的 `run.args` 决定，脚本只是默认放在执行目录。
 - **漂移可见**：手改过 unit 之后，重跑脚本会发现"unit 里的参数 ≠ 台账记录"并提示重新生成。
 
 ### 6.2 二进制从哪来
@@ -265,7 +278,7 @@ run:
 
 1. **先读台账再动手**；没有台账就**拒绝**，打印"能看到什么 + 手工删除的确切命令"，不提供一键强删——安装出错是没装上，卸载出错是删了别人的东西。
 2. **只删自己建的**：系统用户、CAP、防火墙规则、PATH 改动——只动台账里标了是安装器创建的那些；用户自己设的 `SOL_TOKEN` 等只报告不动。
-3. **默认不碰配置与日志**：保留 `/etc/sol/sol.yaml`、`~/.config/sol/`、日志，并打印"留了什么、在哪、怎么删"；卸载时会问一句"配置文件也一起删掉吗？[y/N]"，默认否。
+3. **默认不碰配置与日志**：保留执行目录下的 `install.yaml`、`sol.yaml` 与日志，并打印"留了什么、在哪、怎么删"；卸载时会问一句"配置文件也一起删掉吗？[y/N]"，默认否。
 4. **幂等 + 能从半成品恢复**：装到一半失败也要能卸干净（台账在第一个副作用前写入，逐项打勾）。
 
 **各平台拆解**：
@@ -283,7 +296,7 @@ run:
 | 二进制 | `/usr/local/bin/sol` | `/usr/local/bin/sol` | `C:\ProgramData\sol\sol.exe` |
 | 二进制落点（脚本决定，不可配） | `/usr/local/bin`；当前用户没写权限时 `~/.local/bin` + 提示 PATH | 同 Linux | `C:\ProgramData\sol` + 机器 PATH |
 | 台账 / 历史 | `/usr/local/share/sol/{install.json,install.log}` | 同 Linux | `C:\ProgramData\sol\{install.json,install.log}` |
-| 安装配置（只有 `run.args`，用户可改） | `~/.config/sol/install.yaml` | 同 Linux | `%APPDATA%\sol\install.yaml` |
+| 安装配置与运行配置（`install.yaml` 只有 `run.args`；`sol.yaml` 是最小可用的一份，只在不存在时生成） | 执行脚本的那个目录：`./install.yaml` + `./sol.yaml` | 同 Linux | 同 Linux |
 | 服务管理器 | systemd | launchd | 计划任务（纯 exe 不能当服务） |
 | 装服务的额外文件 | `/etc/systemd/system/sol.service` | `/Library/LaunchDaemons/com.lidiaoo.sol.plist` | 计划任务 `sol` + 防火墙规则 |
 | 日志去向 | systemd 收 stdout → journald | launchd 要 `StandardErrorPath` → `/usr/local/var/log/sol.log` | **计划任务不收集 stdout** → 必须 `logging.output: file` |
@@ -304,7 +317,7 @@ Description=SoL listener
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/sol listen --config /etc/sol/sol.yaml
+ExecStart=/usr/local/bin/sol listen --config /home/you/sol.yaml
 Restart=always
 # 要用保留端口 7/9 或 <1024 端口时（否则注释掉）：
 # AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -328,7 +341,7 @@ WantedBy=multi-user.target
     <string>/usr/local/bin/sol</string>
     <string>listen</string>
     <string>--config</string>
-    <string>/etc/sol/sol.yaml</string>
+    <string>/home/you/sol.yaml</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

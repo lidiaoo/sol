@@ -435,8 +435,9 @@ irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 | iex
 ```
 
 它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。它只写一个
-文件 `~/.config/sol/install.yaml`（Windows 是 `%APPDATA%\sol\install.yaml`），内容只有"sol 怎么跑"；
-然后把现状与这份文件都打印出来，问两个问题：要不要装成服务、是否继续。你说"是"之前什么都不改。
+两个文件：`install.yaml`，内容只有"sol 怎么跑"；以及 `sol.yaml`，一份最小可用的运行配置（一条 `noop`
+规则，服务因此不会拒绝启动）——都生成在**你执行脚本的那个目录**里。
+它把现状与这两份文件都打印出来，再问两个问题：要不要装成服务、是否继续。你说"是"之前什么都不改。
 
 **重跑脚本**就是看现状、改 sol 的跑法（改文件再跑一遍）、或卸载（答 `u`，删配置前还会再问一次）。
 它做的每一件事都追加写进 `install.log`（带等价命令），和台账 `install.json` 放在一起。

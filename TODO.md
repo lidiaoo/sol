@@ -144,11 +144,11 @@
 - [x] 安装脚本的"权限/可写性告警"：配置里端口 <1024 时在台账记 CAP、unit 里留好注释；计划任务不收集 stdout → Windows 侧发现配置里没写 `logging.output: file` 时提醒（平台分支在脚本里，不进 sol）
 - ~~`sol listen` 启动日志补配置来源行~~ **不做**（sol 本体改动，见未决项）
 - [x] 台账 / 报告契约：`install.json`（schema 1，含 `service`/`previous`/`incomplete`）+ `install.log`（每次一段，动作 + 等价命令 + 是否 root）+ 报告值全部来自现场（重算 sha256、真跑 `--version`、从不打印配置内容与密钥）；报告只给**简短**一段（路径 + 校验 + 接下来）
-- [x] 本机安装配置（§6.1）：固定位置（Linux/macOS `~/.config/sol/install.yaml`、Windows `%APPDATA%\sol\install.yaml`；sudo 时写 `$SUDO_USER` 的家目录）+ **内容只有 `run.args`**（服务类型 / 单元路径 / CAP / 防火墙工具按平台推导，不进文件）+ **默认不覆盖已有**（选 `r` 才重写）+ `run.args` 按 `sol listen --help` 的**真实** flag 集合校验（提示里会点名那个不认识的参数）+ 示例 `example/install-example.yaml`
+- [x] 本机安装配置（§6.1）：**就放在你执行脚本的那个目录**（`./install.yaml` + 同目录生成一份最小 `./sol.yaml`，三平台一致；sudo 也一样，跟的是当前目录而不是任何人的家目录）+ **内容只有 `run.args`**（服务类型 / 单元路径 / CAP / 防火墙工具按平台推导，不进文件）+ **默认不覆盖已有**（选 `r` 才重写）+ `run.args` 按 `sol listen --help` 的**真实** flag 集合校验（提示里会点名那个不认识的参数）+ 示例 `example/install-example.yaml`
 - [x] 二进制来源（§6.2）第一步：**就地发现**（脚本旁 `./sol` / 当前目录 / `$PATH`），且"网上有新版"绝不去动用户放的那个
 - [ ] 二进制来源第二步：一台机器上完全没有 sol 时的下载回退（OS/arch 自动 + 校验）——当前是明确报错并让人放一个，不是静默下载
 - [x] `scripts/install.sh`（**已实现，真机冒烟 `scratch/s35` 57 条断言全过**，含真注册 systemd 服务 + 真发魔法包（journald 里能看到审计记录）+ 真卸载 + 换二进制升/降级 + 预检不过就什么都不动）：探测 → **生成配置 → 展示并确认** → 执行（预检 + 原子替换留 `sol.bak` + 服务定义单渲染器 + 回读）→ 卸载（先读台账，只删自己建的，配置默认留）+ **零命令行参数**（未安装：`执行吗？[Y/n]`；已安装：`回车=按配置应用 / u=卸载 / r=重新生成 / n=退出`；读不到答案（EOF / 无人值守）时**绝不执行**；CI 用管道喂答案 `printf 'y\n' | sh install.sh`）+ 目录锁
-- [x] `scripts/install.ps1` + `install.cmd`（**未在真机跑过**：本机没有 Windows / pwsh，只做了逐行审查与结构校验）：`C:\ProgramData\sol` + 生成 `%APPDATA%\sol\install.yaml`（只有 `run.args`）并确认；替换前先 `schtasks /End`（运行中 exe 有文件锁）；机器 PATH 只加一次；防火墙规则从运行配置里的端口推导
+- [x] `scripts/install.ps1` + `install.cmd`（**未在真机跑过**：本机没有 Windows / pwsh，只做了逐行审查与结构校验）：二进制落 `C:\ProgramData\sol`，`install.yaml` + 最小 `sol.yaml` 跟执行目录走并确认；替换前先 `schtasks /End`（运行中 exe 有文件锁）；机器 PATH 只加一次；防火墙规则从运行配置里的端口推导
 - [x] 三平台产物模板（§9.1/§9.2）：systemd unit / launchd plist / 计划任务三条注册命令 + `scripts/install.cmd`（双击入口，内部按对的执行策略调 ps1）+ macOS quarantine 处理（`xattr -d com.apple.quarantine`）+ Windows 上提醒 `logging.output: file`
 - [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本 + 注册后确认服务真的起来——**这是把 install.ps1 与 macOS 分支从"未验证"提上来的唯一办法**
 - [ ] scoop + winget 清单（schema 校验；winget 在 CI 里装不了，只能标 schema 级证据）
