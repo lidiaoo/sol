@@ -141,7 +141,7 @@
 - [x] 设计定稿文档 `docs/install-design.md`（13 节：目标与非目标 / 交付形态与输出约定 / 安装台账 / 安装报告 / 三个查询子命令 / 探测决策矩阵 / 覆盖安装与升级 / 卸载 / 各平台差异与文件清单 / 验证与证据强度 / 包管理器 / 落地顺序 / 未决项）
 - [x] `sol paths` 子命令（二进制真实路径 + 生效配置与来源 + 候选路径命中项 + 日志目的地 + 台账路径；`--json`）——`config.Discover` 单一来源判定、候选打 `*`、配置解析失败也退 0 并单独报错、附 `install config`/`history` 与末行 `next`；平台路径集中在 `internal/install`；冒烟 s32 真机 25/25（含 `listen` 启动日志行 source=--config/`$SOL_CONFIG`/none 三态）
 - [x] `sol config check` 子命令（加载 + 全部启动期校验 + 每条问题的修法；`--json`；升级预检复用）——`deps.Builder.Validate()` **复用启动同一条校验路径**；提示表以既有错误哨兵为 key；不监听/不要特权（端口被占也通过，3ms 返回）；退出码 0/1，`--json` 含 `ok`/`loaded`/`problems[]`/`summary`；顺带把 `exec.ErrNotRoot`/`ErrUserUnsupported` 移出 build-tag 文件（否则另一个平台构建失败）；冒烟 s33 真机 40/40
-- [x] `sol status` 子命令（**默认入口**：版本 / 二进制 sha256 与台账比对 / 安装方式 / 服务线索（`INVOCATION_ID`、`XPC_SERVICE_NAME`）/ 配置有效性 / 监听端口与权限告警；未纳管时也输出；退出码 0/1；`--json`）——problem/note 分离、配置校验复用 `Builder.Validate()`、特权端口按 `/proc/self/status` 的 CapEff 判 CAP、台账读取（schema 1，缺失=未纳管，0644 可读）、JSON `ledger_path`/`ledger` 分离；冒烟 s34 真机 36/36（含真写一份台账验证 sha256 比对与"被换过"提示）
+- [ ] `sol status` 子命令（**默认入口**：版本 / 二进制 sha256 与台账比对 / 安装方式 / 服务线索（`INVOCATION_ID`、`XPC_SERVICE_NAME`）/ 配置有效性 / 监听端口与权限告警；未纳管时也输出；退出码 0/1；`--json`）
 - [ ] `sol listen` 启动日志补配置来源行（`msg="configuration" path=... source=...`）
 - [ ] 台账 / 报告契约：`install.json` schema + `install.log` 格式 + 防漂移校验（报告值必须来自现场：重算 sha256、真跑 `--version`；不打印配置内容与密钥）+ 默认只给**简短**报告（文件清单 + 校验 + 接下来），完整动作清单写进 `install.log`
 - [ ] 本机安装配置（§6.1，**由安装脚本生成、用户可改**）：固定位置（Linux/macOS `~/.config/sol/install.yaml`、Windows `%APPDATA%\sol\install.yaml`；sudo 时写 `$SUDO_USER` 的家目录而不是 `/root`）+ **内容只有 `run.args`**（服务类型 / 单元路径 / CAP / 防火墙工具按平台推导，不进文件）+ **默认不覆盖已有**（问答里选 `r` 才重写）+ 未知键报错 + `run.args` 为列表并按真实 flag 集合校验 + 示例 `example/install-example.yaml`

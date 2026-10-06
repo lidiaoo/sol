@@ -418,30 +418,6 @@ AUTO 列说的是**身份，不是当下可用性**：现在 down 的网卡仍�
 匹配到"下一个未命中的包"或"下一次轮询"为止，也就是最多 30 秒——想立刻生效就 `SIGHUP`（或
 `--watch`）。显式写出的 `interfaces: [x]` 仍在启动期校验：名字不存在就是拼错了，直接报错。
 
-## 这个 sol 到底是什么
-
-`sol status` 只报告这台机器能证明的事：二进制与它的校验和、安装脚本是否放的这个二进制（来自台账）、台账记录的服务形态、当前进程是否由服务管理器启动、配置是否会启动、监听哪些端口、以及当前进程有没有权限绑它们。
-
-```
-$ sol status
-sol               version 0.3.0 (abc1234)
-binary            /usr/local/bin/sol
-sha256            3f2a0b1c4d5e
-installed by      script, installed 2026-10-06T12:40:00Z (ledger schema 1) - binary matches
-service           systemd, enabled (/etc/systemd/system/sol.service)
-started by        systemd (INVOCATION_ID is set)
-configuration     /etc/sol/sol.yaml  (source: system default) - would start
-ports             10010, 10011
-privileged ports  none
-log               file: /var/log/sol.log
-problems          none - this sol would run as configured
-next              systemctl status sol.service
-```
-
-它绝不自己去调 `systemctl` / `launchctl` / `schtasks`——那会把二进制焊死在某个 init 系统上——而是把该跑的那条命令按台账记录推导出来给你。
-
-**会挡住服务**的事算 **problem**，退出码 1（配置起不来、特权端口没权限绑、日志文件写不了）；**不挡事**的算 **note**：这个二进制不是安装脚本放的、装完之后被换过（台账里留着上一个校验和）、上一次安装没跑完。`--json` 输出整份报告给安装脚本和其它脚本用。
-
 ## Which files sol uses
 
 `sol paths` 把"到底哪份文件在生效"直接答出来：当前二进制、生效的配置文件**以及是发现顺序的哪一层选中了它**、每个候选位置、审计日志去哪、安装脚本自己的台账。它只读不写，**配置解析不了也照样给路径**。

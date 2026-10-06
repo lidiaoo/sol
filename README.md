@@ -458,38 +458,6 @@ away* keeps matching until the next unmatched packet or the next poll, so at mos
 `SIGHUP` (or `--watch`) applies the current list immediately. Explicit `interfaces: [x]` names are
 still validated at start-up: a name that is not there is a typo, and it is refused.
 
-## What this sol actually is
-
-`sol status` reports what the machine can prove about the running sol: the binary and its
-checksum, whether the install script placed it (from the ledger), what service setup is recorded,
-whether this process was started by a service manager, whether the configuration would start,
-which ports it listens on, and whether this process may bind them.
-
-```
-$ sol status
-sol               version 0.3.0 (abc1234)
-binary            /usr/local/bin/sol
-sha256            3f2a0b1c4d5e
-installed by      script, installed 2026-10-06T12:40:00Z (ledger schema 1) - binary matches
-service           systemd, enabled (/etc/systemd/system/sol.service)
-started by        systemd (INVOCATION_ID is set)
-configuration     /etc/sol/sol.yaml  (source: system default) - would start
-ports             10010, 10011
-privileged ports  none
-log               file: /var/log/sol.log
-problems          none - this sol would run as configured
-next              systemctl status sol.service
-```
-
-It never shells out to `systemctl`, `launchctl` or `schtasks` - that would tie the binary to one
-init system - so it reports the command to run instead, derived from what the ledger recorded.
-
-Anything that would stop the service is a **problem** and makes the exit code 1 (a configuration
-that would not start, a privileged port without the rights to bind it, a log file that cannot be
-written). Facts that do not stop anything are **notes**: the binary was not placed by the install
-script, something replaced it since (the ledger keeps the previous checksum), an install that did
-not finish. `--json` prints the whole report for the installer and for scripts.
-
 ## Which files sol uses
 
 `sol paths` answers "which file is actually in effect" without guesswork: the running binary,

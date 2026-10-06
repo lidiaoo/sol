@@ -142,16 +142,6 @@ SoL 状态
 - **服务状态**：只报本地能证明的事实——台账怎么记的、当前进程是否由服务管理器启动（systemd 的 `INVOCATION_ID` / `JOURNAL_STREAM`，launchd 的 `XPC_SERVICE_NAME`），以及**用户自己可以跑的那条平台命令**。sol 不去调 `systemctl`/`launchctl`/`schtasks`，避免把自己焊死在某个 init 系统上。
 - **权限告警**：配置里用了 <1024 / 保留端口但当前不是 root 也没有 CAP、`logging.output: file` 但目录不可写、`auth: hmac` 但密钥环境变量缺失——这些本来就是启动期会拒的，提前在这里说清并给修法。
 
-**已实现**（`cmd/status.go` + `internal/install/ledger.go` + `internal/infra/system/capability.go`；冒烟 s34 真机 36/36）：
-
-- **problem 与 note 分开**：会挡住服务的（配置起不来、特权端口无权限、日志目的地不可用）算 problem → 退出码 1；不挡事的（未纳管、二进制被换过、上次安装没跑完、由谁启动）算 note → 退出码 0。`--json` 里是 `problems[]` / `notes[]` 两个数组，安装脚本的验证直接读它们。
-- **配置有效性复用 `sol config check`**：同一条 `Builder.Validate()` 路径，不复制校验。
-- **服务线索只报事实**：`INVOCATION_ID` / `JOURNAL_STREAM`（systemd）、`XPC_SERVICE_NAME`（launchd）三个环境标记；计划任务不留标记，所以 Windows 上如实说"没有标记"，不猜。要看的命令由台账里记的 `service.path` 推导（systemd 取单元名、launchd 取 plist 标签、task 直接用任务名）。
-- **特权端口**：`< 1024` 一个判据就覆盖了保留端口 7/9。是否**有能力**绑由 `CanBindPrivilegedPorts()` 判定：Windows 直接可以；root 可以；Linux 非 root 时读 `/proc/self/status` 的 `CapEff` 第 10 位（`CAP_NET_BIND_SERVICE`）——**这正是 README 推荐的加固部署（`AmbientCapabilities`）不被误报的原因**。
-- **日志目的地**只报能证明的事：目录不存在、文件没有写位；不猜"我能不能写"。
-- **台账读取**（`internal/install/ledger.go`，schema 1）：缺失 → `ErrNoLedger` → "未纳管"（不是错误）；schema 更高 → 拒绝并提示升级 sol。**台账里没有密钥，因此写成 0644**——否则非 root 的 `sol status` 读不了它（这条是冒烟里真踩出来的：600 会让状态命令报"台账读不了"）。
-- JSON 字段名按用途起：`ledger_path`（路径）与 `ledger`（内容）分开，避免脚本把字符串当记录读。
-
 ### 5.2 `sol paths`
 
 二进制真实路径（`os.Executable()`，解 symlink）、**实际生效**的配置文件路径 + 来源（`--config` / `$SOL_CONFIG` / 系统路径 / 用户路径 / 都没有）、按优先级排列的候选路径与命中项、日志目的地、台账路径。回答"东西在哪"，不依赖安装脚本还在不在。
@@ -443,7 +433,7 @@ schtasks /Query /TN sol /V /FO LIST
 | # | 内容 |
 | --- | --- |
 | 1 | 本文档 + TODO 挂条目（本次） |
-| 2 | `sol paths` ✅ + `sol config check` ✅ + `sol status` ✅（含 `listen` 的配置来源启动日志行 ✅） |
+| 2 | `sol paths` ✅ + `sol config check` ✅（含 `listen` 的配置来源启动日志行 ✅） + `sol status` |
 | 3 | 台账 / 报告契约落地（`install.json` schema + `install.log` 格式 + 校验脚本 + 单测） |
 | 4 | `scripts/install.sh`：探测 → 生成配置（内容只有 `run.args`，不覆盖已有）→ 展示并确认 → 执行 / 卸载（预检 / 原子替换留 `sol.bak` / 回读运行版本）；**零命令行参数**，交互问答完成全部选择 + 真机冒烟 |
 | 5 | `scripts/install.ps1`（同上一行：零参数、交互问答） |
