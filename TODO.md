@@ -1,6 +1,6 @@
 # SoL TODO
 
-跟踪落地进度。设计见 [docs/routing-design.md](docs/routing-design.md)（括号内为章节号）。
+跟踪落地进度。设计见 [docs/routing-design.md](docs/routing-design.md)（括号内为章节号）；安装 / 覆盖升级 / 卸载 / 状态查看的设计见 [docs/install-design.md](docs/install-design.md)。
 约定：每条尽量对应一次可提交的改动；阶段完成标准 = `make test` + `make lint` 通过。
 
 ## 整体情况
@@ -133,3 +133,27 @@
 - [x] **网卡身份不能只看启动那一刻的 up/down**（用户指出）：已落地 = 合格判据去掉 `Up`（身份 ≠ 可用性）+ 运行期身份集合热换（`RoutingPolicy.SetInterfaces`，原子换 `policyState`）+ 未命中惰性刷新（1 秒下限，变化则重试该包一次）+ 30 秒轮询兜底 + `interface set changed` 审计。真机根因：`wlp5s0` down 时 `82:44:59:ff:68:48`（随机占位）vs up 后 `f0:d4:15:57:9c:c5`（真 MAC）——启动时可能锁死一个永不上线的地址。显式 `interfaces: [x]` 启动期仍严格报错、运行期稍后出现则纳入。冒烟 s30 真机 12/12（dummy 卡；含零流量下轮询纳入）。见设计 §17.2 / §17.2.1。
 - [x] **审计日志落地形式**：已落地 `logging.output` = `stderr`（默认）/ `stdout` / `file`（`logging.file`，追加 + 0600 + 不缓冲 + 不轮转），**不做 syslog**（标准库 `log/slog` 没有 syslog handler，引第三方库越界；要 syslog 就让 journald/rsyslog 转发）。三层校验（config 合并后校验 / OpenOutput 再校验 / Setup 装载），三处取值集合（config、infra、schema enum）由 `TestLoggingOutputNamesAgreeEverywhere` 防漂移；冒烟 s29 真机 14/14（文件里有审计记录、0600、stderr 为空、重启追加 5->9 行、stdout 模式、三种启动期拒绝）。见设计 §18。
 - [x] **热重载原子性：不需要回滚，因为失败即不应用**：`Reload` 先 `rebind()` 绑全部新端口、全部成功才换状态（否则 `ErrReloadBind`），配置加载失败时 reloader 根本不会被调用——旧配置一直在线。真机证据 s10：坏配置 -> 400 且旧规则继续命中；**新端口被外部占用 -> 409 且规则集一字未动**（10061/10062 两个端口照旧触发）；释放端口后同一次 reload -> 200，新端口开始服务、离开集合的 10062 关闭。
+
+---
+
+## P5 安装 · 覆盖升级 · 卸载 · 状态查看（docs/install-design.md）
+
+- [x] 设计定稿文档 `docs/install-design.md`（13 节：目标与非目标 / 交付形态与输出约定 / 安装台账 / 安装报告 / 三个查询子命令 / 探测决策矩阵 / 覆盖安装与升级 / 卸载 / 各平台差异与文件清单 / 验证与证据强度 / 包管理器 / 落地顺序 / 未决项）
+- [ ] `sol paths` 子命令（二进制真实路径 + 生效配置与来源 + 候选路径命中项 + 日志目的地 + 台账路径；`--json`）
+- [ ] `sol config check` 子命令（加载 + 全部启动期校验 + 每条问题的修法；`--json`；升级预检复用）
+- [ ] `sol status` 子命令（**默认入口**：版本 / 二进制 sha256 与台账比对 / 安装方式 / 服务线索（`INVOCATION_ID`、`XPC_SERVICE_NAME`）/ 配置有效性 / 监听端口与权限告警；未纳管时也输出；退出码 0/1；`--json`）
+- [ ] `sol listen` 启动日志补配置来源行（`msg="configuration" path=... source=...`）
+- [ ] 台账 / 报告契约：`install.json` schema + `install.log` 格式 + 防漂移校验（报告值必须来自现场：重算 sha256、真跑 `--version`；不打印配置内容与密钥）
+- [ ] `scripts/install.sh`：探测决策矩阵（同源同版本 / 新版本升级 / 降级默认拒绝 / 异源拒绝 / 无台账要 `--force` / PATH 多命中只报告）+ 配置预检（不通过不覆盖）+ 原子替换留 `sol.bak` + 回读运行中版本 + `--dry-run`（同格式加 `would`）+ `--uninstall` / `--purge` / `--history` / `--force` / `--allow-downgrade` + `flock`
+- [ ] `scripts/install.ps1`：`C:\ProgramData\sol` + `-Service`（计划任务 + 防火墙规则）+ `-Uninstall` / `-Purge`；替换前先 `schtasks /End`（运行中 exe 有文件锁）
+- [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本（把 macOS / Windows 从"未验证"提到"有 CI 证据"）
+- [ ] scoop + winget 清单（schema 校验；winget 在 CI 里装不了，只能标 schema 级证据）
+- [ ] Hermes skill `sol-install` + `references/{linux,macos,windows}.md`（决策树：先判断此前是怎么装的，再选路径；装完给摘要，证据取自 `sol status --json` 与台账）
+- [ ] README 一行安装（替换现有 5 段复制粘贴）+ 修正 Windows 那段 `move sol.exe C:\Windows\System32` + 中英文同步（代码块逐字节一致）
+- [ ] （可选，需对应实机或明确标"未验证"）brew formula / AUR
+
+## P5 未决项
+
+- 服务生命周期是否下沉为 `sol service {install,uninstall,status}`（Go 侧跨平台，取代脚本里三套服务管理器逻辑；安装、升级、卸载、状态四处共用）——用户入口仍是安装脚本与 `sol status`。
+- `sol status` 是否解析日志尾部推断"最近一次动作"——当前不做（不为好看去解析日志）。
+- 免特权探测"端口是否真的在监听"——当前只列配置端口 + 提示用 `--dry-run` 验证。
