@@ -139,9 +139,9 @@
 ## P5 安装 · 覆盖升级 · 卸载 · 状态查看（docs/install-design.md）
 
 - [x] 设计定稿文档 `docs/install-design.md`（13 节：目标与非目标 / 交付形态与输出约定 / 安装台账 / 安装报告 / 三个查询子命令 / 探测决策矩阵 / 覆盖安装与升级 / 卸载 / 各平台差异与文件清单 / 验证与证据强度 / 包管理器 / 落地顺序 / 未决项）
-- [ ] `sol paths` 子命令（二进制真实路径 + 生效配置与来源 + 候选路径命中项 + 日志目的地 + 台账路径；`--json`）
-- [ ] `sol config check` 子命令（加载 + 全部启动期校验 + 每条问题的修法；`--json`；升级预检复用）
-- [ ] `sol status` 子命令（**默认入口**：版本 / 二进制 sha256 与台账比对 / 安装方式 / 服务线索（`INVOCATION_ID`、`XPC_SERVICE_NAME`）/ 配置有效性 / 监听端口与权限告警；未纳管时也输出；退出码 0/1；`--json`）
+- [ ] 安装脚本的"现状报告"（装完 / 重跑时第一屏）：二进制真实路径与版本、生效配置与来源、服务形态、台账、日志去处；未纳管时也照报（**这就是"看状态"，不再做成 `sol status` 子命令**）
+- [ ] 安装脚本的"配置预检"：`sol listen --dry-run` 起一次，几秒内非零退出即视为被拒，把 stderr 原文 + 修法给用户；通过才动服务（**替代 `sol config check` 子命令**）
+- [ ] 安装脚本的"权限/可写性告警"：端口 <1024 且非 root、`logging.output: file` 的目录不存在或不可写（平台分支在脚本里，不进 sol）
 - [ ] `sol listen` 启动日志补配置来源行（`msg="configuration" path=... source=...`）
 - [ ] 台账 / 报告契约：`install.json` schema + `install.log` 格式 + 防漂移校验（报告值必须来自现场：重算 sha256、真跑 `--version`；不打印配置内容与密钥）+ 默认只给**简短**报告（文件清单 + 校验 + 接下来），完整动作清单写进 `install.log`
 - [ ] 本机安装配置（§6.1，**由安装脚本生成、用户可改**）：固定位置（Linux/macOS `~/.config/sol/install.yaml`、Windows `%APPDATA%\sol\install.yaml`；sudo 时写 `$SUDO_USER` 的家目录而不是 `/root`）+ **内容只有 `run.args`**（服务类型 / 单元路径 / CAP / 防火墙工具按平台推导，不进文件）+ **默认不覆盖已有**（问答里选 `r` 才重写）+ 未知键报错 + `run.args` 为列表并按真实 flag 集合校验 + 示例 `example/install-example.yaml`
@@ -151,12 +151,12 @@
 - [ ] 三平台产物模板（§9.1/§9.2）：systemd unit / launchd plist / 计划任务三条注册命令 + `scripts/install.cmd`（Windows 双击入口，内部按对的执行策略调 ps1）+ macOS quarantine 处理（`xattr -d com.apple.quarantine`）+ Windows 上必须 `logging.output: file`（计划任务不收集 stdout）+ 各平台"首次进入方式"一行（§9.2）
 - [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本 + 注册后确认服务真的起来（把 macOS / Windows 从"未验证"提到"有 CI 证据"）
 - [ ] scoop + winget 清单（schema 校验；winget 在 CI 里装不了，只能标 schema 级证据）
-- [ ] Hermes skill `sol-install` + `references/{linux,macos,windows}.md`（决策树：先判断此前是怎么装的，再选路径；装完给摘要，证据取自 `sol status --json` 与台账）
+- [ ] Hermes skill `sol-install` + `references/{linux,macos,windows}.md`（决策树：先判断此前是怎么装的，再选路径；装完给摘要，证据取自安装脚本的输出与台账）
 - [ ] README 一行安装（替换现有 5 段复制粘贴）+ 修正 Windows 那段 `move sol.exe C:\Windows\System32` + 中英文同步（代码块逐字节一致）
 - [ ] （可选，需对应实机或明确标"未验证"）brew formula / AUR
 
 ## P5 未决项
 
-- 服务生命周期是否下沉为 `sol service {install,uninstall,status}`（Go 侧跨平台，取代脚本里三套服务管理器逻辑；安装、升级、卸载、状态四处共用）——用户入口仍是安装脚本与 `sol status`。
-- `sol status` 是否解析日志尾部推断"最近一次动作"——当前不做（不为好看去解析日志）。
+- ~~服务生命周期下沉为 `sol service {…}`~~ **已定不做**：三套服务管理器留在安装脚本里（systemd / launchd / 计划任务），由真机冒烟覆盖；sol 本体不新增子命令。
+- 是否给 `sol listen` 加一行"生效配置 + 来源"的启动日志（sol 本体 2 行改动）——按"不改 sol"的方向暂不做。
 - 免特权探测"端口是否真的在监听"——当前只列配置端口 + 提示用 `--dry-run` 验证。

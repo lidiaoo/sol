@@ -29,7 +29,7 @@
 | 层 | 交付物 | 面向谁 |
 | --- | --- | --- |
 | 仓库真资产 | `scripts/install.sh`（Linux/macOS，POSIX）、`scripts/install.ps1` + `scripts/install.cmd`（Windows：双击入口，内部按对的执行策略调 ps1）、README 一行安装、包管理器清单 | 用户 |
-| 查询子命令 | `sol status` / `sol paths` / `sol config check` | 用户与脚本/CI |
+| 装完要能回答的问题（现状 / 文件清单 / 预检） | 由安装脚本给，零参数 | 用户与脚本/CI |
 | Hermes skill | `sol-install`（决策树 + `references/{linux,macos,windows}.md`） | Agent |
 
 skill 不重述命令，只做决策树与验证：调用安装脚本、判断"此前是怎么装的"、装完给出摘要与下一步。
@@ -41,7 +41,7 @@ skill 不重述命令，只做决策树与验证：调用安装脚本、判断"�
 3. **退出码固定**：`0` = 一切正常 / `1` = 存在问题（配置无效、服务不在、二进制被替换）。CI 与脚本据此判断。
 4. **不需要特权**。三个命令都不需要 root；若某条信息确实需要特权才能取，明确写出"这条要看需要 root，命令是……"，而不是静默省略。
 5. **单一职责**：一个命令回答一个问题，不合并成 `sol info --all`。
-6. **`sol status` 是默认入口**。小白只需要记这一条命令，其余命令由 status 在输出里列出来。
+6. **重跑安装脚本就是默认入口**。小白只记这一条命令：它先报现状（装了什么、文件在哪、服务形态、台账），再问 应用/卸载/重新生成/退出。
 
 ## 3 安装台账（install.json）
 
@@ -74,7 +74,7 @@ skill 不重述命令，只做决策树与验证：调用安装脚本、判断"�
 
 为什么它在**设计期**就要定：卸载、升级、状态查询三件事全部依赖它；台账不在就只能靠猜，而猜着删别人的系统是最糟的失败模式。
 
-- `incomplete: true`：安装/升级中途失败时置位，卸载时据此收尾，`sol status` 据此提示。
+- `incomplete: true`：安装/升级中途失败时置位，卸载时据此收尾，重跑脚本时据此提示。
 - `previous`：回滚依据（配合 `sol.bak`）。
 - `config_paths` / `log_paths`：**报告用**，卸载默认不删（见 §8）。
 
@@ -97,7 +97,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 
 接下来
   systemctl status sol.service
-  sol status
+  重跑安装脚本可以随时看现状（它会先报再问；答 n 退出，什么都不改）
 ```
 
 报告的"校验"那两行按平台换：Linux `systemctl is-active sol.service` / macOS `launchctl print system/com.lidiaoo.sol` / Windows `schtasks /Query /TN sol`。
@@ -111,46 +111,22 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 3. 需要 root 的步骤标 `(root)`；用户后续需要 root 做的事单独列。
 4. 失败也要报告：已完成 / 未完成 / 如何回滚，并把台账置 `incomplete`。
 
-## 5 状态查看子命令
+## 5 装完要能回答的问题（由安装脚本回答，不做成 sol 子命令）
 
-| 命令 | 回答的问题 | 特权 | 退出码 | `--json` |
-| --- | --- | --- | --- | --- |
-| `sol status` | 装了没 / 哪个版本 / 健康吗（**默认入口**） | 不需要 | 0 正常，1 有问题 | ✅ |
-| `sol paths` | 文件都在哪：二进制 / 配置（含来源）/ 候选路径 / 日志 / 台账 | 不需要 | 0 | ✅ |
-| `sol config check` | 这份配置能被新版本接受吗，哪条规则有问题、怎么修 | 不需要 | 0 通过，1 不通过 | ✅ |
+安装脚本必须把这三件事说清楚，而**不在 sol 本体里新增子命令**：用户已经有可执行文件，安装体验不该让二进制为它变复杂。
 
-### 5.1 `sol status`
+| 问题 | 谁来回答 | 怎么回答（都零参数） |
+| --- | --- | --- |
+| 装了没 / 哪个版本 / 文件都在哪 | 安装脚本自己 | 每次跑脚本先"认出现状"，第一屏就打印：二进制真实路径与版本、生效配置与来源、服务形态、台账、日志去处；然后才问 应用/卸载/重新生成/退出 |
+| 这份配置会不会被拒 | 安装脚本 + 真二进制 | 预检 = 用 `sol listen --dry-run` 起一次（几秒内非零退出并把拒绝原因写到 stderr 即不合格），随后杀掉；通过才动服务 |
+| 覆盖安装 / 升级有没有问题 | 安装脚本 | 版本与 sha256 比对（台账）、`run.args` 与服务定义比对、异源提醒、`sol.bak` 回滚点 |
 
-```
-SoL 状态
-  版本        sol version v0.3.0 (abc1234)
-  二进制      /usr/local/bin/sol        sha256 与台账一致 ✓
-  安装方式    由安装脚本安装（2026-10-06 11:20，前缀 /usr/local/bin）
-  服务        systemd sol.service —— 本进程由 systemd 启动（INVOCATION_ID 存在）
-              查看是否活着：systemctl status sol.service
-  配置        /etc/sol/sol.yaml（来自 --config）—— 校验通过 ✓
-  日志        stderr（systemd 下即 journald）
-  监听端口    10010/udp、7/udp（保留端口，动作固定 noop）
+- **重跑安装脚本就是"看状态"**：零参数、先报告后询问，答 `n` 什么都不改——所以不需要 `sol status`。
+- **`--dry-run` 预检是唯一可信的配置校验**：它和真正启动走同一条路（同一个二进制、同一份配置），不需要 root（高位端口），被拒时把 stderr 原文给用户看，并附"怎么修"。
+- **权限与可写性告警也在脚本里判**：端口 <1024 而 `id -u` 非 0、`logging.output: file` 的目录不存在或不可写——平台差异天然由脚本分支处理，不用进 sol。
+- **台账 `install.json` 由脚本写、由脚本读**：`schema` 写在文件里，读到未来的版本就拒绝并提示升级脚本。台账不含密钥，因此 0644 可读（600 会让普通用户的后续查询读不了它）。
+- **不碰 sol 的启动日志**：脚本自己知道它生成了哪份配置，报告里直接写；给 `sol listen` 加"生效配置 + 来源"那行留作未决项（§13）。
 
-下一步
-  systemctl status sol.service ... 看服务
-  sol config check ... 改完配置后自查
-```
-
-- **未安装 / 无台账时照样能跑**（从 PATH 定位自己），报"未纳管：这个二进制不是安装脚本装的"——这就是"装没装"的答案。
-- **二进制 sha256 与台账比对**：不一致说明二进制被换过（被包管理器覆盖、或有人手动替换）。这是"未纳管 / 被顶掉"的可观测信号。
-- **服务状态**：只报本地能证明的事实——台账怎么记的、当前进程是否由服务管理器启动（systemd 的 `INVOCATION_ID` / `JOURNAL_STREAM`，launchd 的 `XPC_SERVICE_NAME`），以及**用户自己可以跑的那条平台命令**。sol 不去调 `systemctl`/`launchctl`/`schtasks`，避免把自己焊死在某个 init 系统上。
-- **权限告警**：配置里用了 <1024 / 保留端口但当前不是 root 也没有 CAP、`logging.output: file` 但目录不可写、`auth: hmac` 但密钥环境变量缺失——这些本来就是启动期会拒的，提前在这里说清并给修法。
-
-### 5.2 `sol paths`
-
-二进制真实路径（`os.Executable()`，解 symlink）、**实际生效**的配置文件路径 + 来源（`--config` / `$SOL_CONFIG` / 系统路径 / 用户路径 / 都没有）、按优先级排列的候选路径与命中项、日志目的地、台账路径。回答"东西在哪"，不依赖安装脚本还在不在。
-
-### 5.3 `sol config check`
-
-加载配置 + 跑**全部启动期校验**（保留端口、重复端口、歧义规则、secret 解析、日志目的地、allowlist 形式、动作参数、`sequence` 步数……），对每条问题给出**怎么修**。不建监听、不要特权。三处使用：用户改完配置自查、升级前的预检（§7）、覆盖安装失败后的诊断。
-
-与 `--dry-run` 的分工：`check` 只验配置；`--dry-run` 会真的起服务收包但不执行动作。
 
 ### 5.4 配置发现顺序（以及安装 / 服务场景的坑）
 
@@ -242,7 +218,7 @@ run:
 - **未知键即报错**（与 sol 配置解析同一风格）。
 - **不覆盖**已有文件：配置在就按它执行；要重新生成就在问答里选 `r`。"改配置 → 重跑脚本"是唯一的修改回路。
 - **三层权威互不重叠**：这份配置是**输入**（怎么跑）；服务定义是**产物**（脚本生成，别手改）；`/etc/sol/sol.yaml` 是**权威运行配置**（sol 只认这个 + CLI/env，见 §5.4）。
-- **漂移可见**：手改过 unit 之后，`sol status` 发现"unit 里的参数 ≠ 台账记录"就提示重跑脚本。
+- **漂移可见**：手改过 unit 之后，重跑脚本会发现"unit 里的参数 ≠ 台账记录"并提示重新生成。
 
 ### 6.2 二进制从哪来
 
@@ -255,7 +231,7 @@ run:
 ## 7 覆盖安装与升级
 
 ```
-认二进制（版本 + sha256）→ 配置预检（sol config check）→ 停服务 → 原子替换（旧的留 sol.bak）
+认二进制（版本 + sha256）→ 配置预检（`sol listen --dry-run` 起一次看是否被拒）→ 停服务 → 原子替换（旧的留 sol.bak）
       → 重新生成服务定义（run.args 变了才需要）→ 重启 → 回读运行中的 version/revision → 更新台账
 ```
 
@@ -386,7 +362,7 @@ schtasks /Query /TN sol /V /FO LIST
 
 | 交付物 | 证据强度 | 方式 |
 | --- | --- | --- |
-| `sol status` / `paths` / `config check` | **真机全量** | 单测 + Linux 真机冒烟（沿用现有 `sNN` 机制） |
+| 安装脚本的现状报告 / 文件清单 / `--dry-run` 预检 | **真机全量** | 真机冒烟（沿用现有 `sNN` 机制）：真跑脚本 + 真起服务 + 真卸载 |
 | `scripts/install.sh` | **真机全量** | Linux 真机跑：无二进制时下载回退 / 有二进制时就地使用 / 重跑无变化 / 换二进制（升与降）/ 只改 `run.args` / 异源提醒 / 无台账 / 卸载，并真发一个魔法包确认能起来 |
 | `scripts/install.ps1`、macOS 路径、三平台产物模板（unit / plist / 计划任务） | **CI 证据**（否则只能标"仅语法级"） | 新增 `.github/workflows/install-smoke.yml`，matrix ubuntu/macos/windows 真跑脚本 + 校验 + `--version` + `ifaces` + 注册后确认服务真的起来了 |
 | 包管理器清单 | **schema 级** | scoop/winget 的 JSON schema 校验；winget 在 CI 里装不了，只能标 |
@@ -411,7 +387,7 @@ schtasks /Query /TN sol /V /FO LIST
 | # | 内容 |
 | --- | --- |
 | 1 | 本文档 + TODO 挂条目（本次） |
-| 2 | `sol paths` + `sol config check` + `sol status`（含 `listen` 的配置来源启动日志行） |
+| 2 | `scripts/install.sh`（Linux/macOS）+ `install.ps1`/`install.cmd`（Windows）：认出现状 → 生成按平台的配置 → 展示并确认 → 执行（`--dry-run` 预检、服务定义、台账、报告） |
 | 3 | 台账 / 报告契约落地（`install.json` schema + `install.log` 格式 + 校验脚本 + 单测） |
 | 4 | `scripts/install.sh`：探测 → 生成配置（内容只有 `run.args`，不覆盖已有）→ 展示并确认 → 执行 / 卸载（预检 / 原子替换留 `sol.bak` / 回读运行版本）；**零命令行参数**，交互问答完成全部选择 + 真机冒烟 |
 | 5 | `scripts/install.ps1`（同上一行：零参数、交互问答） |
@@ -422,6 +398,6 @@ schtasks /Query /TN sol /V /FO LIST
 
 ## 13 未决项
 
-1. **服务生命周期是否下沉到 `sol service {install,uninstall,status}`（Go 侧，跨平台）**，脚本只负责取二进制 + 校验 + 放置。理由：三套服务管理器写死在 bash/pwsh 里难以测试，而安装、升级、卸载、状态四处都要用同一套逻辑。若采纳，用户入口仍是安装脚本与 `sol status`，`sol service` 只是更下层的一条命令。
-2. `sol status` 是否需要从日志尾部推断"最近一次动作"——当前设计不做（避免为了好看去解析日志）。
-3. `sol status` 里"监听端口是否真的在听"能否做成免特权探测——当前只列配置端口 + 提示用 `--dry-run` 验证。
+1. **已定：服务生命周期不下沉到 Go 侧。** 三套服务管理器（systemd / launchd / 计划任务）留在安装脚本里，由真机冒烟覆盖；sol 本体不新增 `sol service` 之类子命令。
+2. **是否给 `sol listen` 加一行"生效配置 + 来源"（`msg="configuration file" path=… source=…`）**：sol 本体的 2 行改动，能让 journald 直接看出它读的是哪份配置。按"不改 sol"的方向本次不做；重跑安装脚本可以在脚本侧报同样的信息。
+3. "监听端口是否真的在听"能否做成免特权探测——目前只列配置端口 + 提示用 `--dry-run` 验证。
