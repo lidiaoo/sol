@@ -205,7 +205,11 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 
 - **想看上次做了什么**：报告里印出 `install.log` 的路径，完整动作清单都在里面（不需要 `--verbose` 这种开关）。
 - **CI / 无人值守**：不给参数，用管道喂答案即可（`printf 'y\n' | bash install.sh`）。**检测到没有终端时只生成配置、不执行任何操作**——绝不猜"用户大概是想装"。
-- 需要 root 的步骤（写 `/usr/local/bin`、写 unit、enable 服务）在执行阶段逐条 sudo，不做"整个脚本 sudo 跑"。
+- **要 root 就先升权，再动手**（不是半路一条条 sudo：密码问到一半、失败还被 `|| true` 吞掉）。规则：
+  - Linux / macOS：动手之前用 `sudo` **重跑一遍自己**，把"你已经答过的答案"带过去（`--sol-action` / `--sol-service` / `--sol-run-dir`，内部参数，用户不需要知道），所以**不会再问一遍**；同一个执行目录，配置照旧落在那里。管道执行（`curl | sh`）没有可重跑的文件 → 退化为逐条 sudo 并说明。
+  - Windows：不是管理员就 `Start-Process -Verb RunAs`（**触发 UAC**）以管理员身份重跑自己，`-WorkingDirectory` 保持同一个执行目录，答案同样带过去。
+  - 沙箱/自选的根（`SOL_INSTALL_ROOT`）**永不升权**：那是你自己的地盘。
+  - 升权失败（UAC 被拒 / 没有 sudo）→ 明确报错并给替代路径（换落点或换角色），而不是继续往下撞。
 - 并发用锁（`flock` / Windows 锁文件）。执行前清理**自己**的残留（同名 unit/plist/task 且台账标了是它建的），否则 `enable` 会撞上旧单元。
 
 ### 6.1 本机安装配置（安装脚本生成，用户可改）

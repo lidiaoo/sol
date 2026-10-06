@@ -17,6 +17,25 @@ set -eu
 
 DESIGN="docs/install-design.md"
 
+die() {
+	printf '错误: %s\n' "$*" >&2
+	exit 1
+}
+
+# 内部参数：升权重跑时用来把"你已经答过的答案"带过去。用户不需要、也不应该记这些；
+# 它们存在的唯一原因是 sudo 默认会清环境（env 传不过去）。
+ACTION_ARG=""
+SERVICE_ARG=""
+RUN_DIR_ARG=""
+for arg in "$@"; do
+	case "$arg" in
+	--sol-action=*) ACTION_ARG=${arg#--sol-action=} ;;
+	--sol-service=*) SERVICE_ARG=${arg#--sol-service=} ;;
+	--sol-run-dir=*) RUN_DIR_ARG=${arg#--sol-run-dir=} ;;
+	*) die "这个脚本不接受参数（$arg）。所有选择都在生成的配置文件和问答里。" ;;
+	esac
+done
+
 # ───────────────────────── 输出 ─────────────────────────
 
 bold=""
@@ -29,11 +48,6 @@ fi
 say() { printf '%s\n' "$*"; }
 head2() { printf '\n%s%s%s\n' "$bold" "$*" "$reset"; }
 warn() { printf '提醒: %s\n' "$*" >&2; }
-die() {
-	printf '错误: %s\n' "$*" >&2
-	exit 1
-}
-
 # ───────────────────────── 平台与路径 ─────────────────────────
 
 OS=$(uname -s)
@@ -110,8 +124,47 @@ mkdir_root() { # mkdir_root <目录>
 
 # 生成的文件就放在**你执行脚本的那个目录**：./install.yaml 与 ./sol.yaml。
 # 找得到、看得见、改完重跑就行；服务定义里用的是绝对路径，所以不踩"服务有自己的家目录"那个坑。
-RUN_DIR=$(pwd)
+RUN_DIR=${RUN_DIR_ARG:-${SOL_INSTALL_RUN_DIR:-$(pwd)}}
 USER_CONFIG="$RUN_DIR/install.yaml"
+
+# ───────────────────────── 升权 ─────────────────────────
+
+# 已经带答案升过权了（子进程）：不再问，直接做。
+ELEVATED_ACTION=${ACTION_ARG:-${SOL_INSTALL_ACTION:-}}
+
+# 要写系统路径 / 注册服务这一步需要 root。与其半路一条条 sudo（密码问一半、失败还被吞掉），
+# 不如动手之前一次性升权：把已经问到的答案带过去，用 sudo 重跑一遍自己，同一个目录。
+escalate() { # escalate <install|uninstall>
+	action=$1
+	[ "$UID_NOW" = "0" ] && return 0
+	[ -n "$ROOT" ] && return 0 # 自选的根（沙箱 / chroot）：自己的地盘，不升权
+	needs=no
+	case "$action" in
+	uninstall) needs=yes ;; # 卸载要动系统单元与落点
+	install)
+		writable_target "$BINDIR" || needs=yes
+		writable_target "$SHAREDIR" || needs=yes
+		[ "$SERVICE_CHOSEN" = true ] && needs=yes
+		;;
+	esac
+	[ "$needs" = yes ] || return 0
+
+	# 管道执行（curl | sh）没有可重跑的脚本文件，只能退回逐条 sudo。
+	self="$SCRIPT_DIR/$(basename "$0")"
+	if [ ! -f "$self" ]; then
+		warn "这一步要 root，但脚本是管道执行的、没法自己升权：下面需要权限的步骤会逐条 sudo。"
+		return 0
+	fi
+	[ -n "$SUDO" ] || die "这一步需要 root（落点 $BINDIR、服务 $UNIT_NAME）。请用 root 角色重跑，或把落点换到你自己有写权限的目录。"
+
+	say ""
+	say "这一步要写 $BINDIR 并注册 $SERVICE_KIND 服务，需要 root。"
+	say "我用 sudo 重新执行一遍自己：同一个目录、你刚才的答案带过去，不会再问一遍。"
+	if [ "$SERVICE_CHOSEN" = true ]; then svc=yes; else svc=no; fi
+	# exec 会顶掉当前进程：先放锁（子进程会自己重新拿），否则父进程的 trap 永远不会跑。
+	rm -rf "$LOCK_DIR"
+	exec "$SUDO" "$self" "--sol-action=$action" "--sol-service=$svc" "--sol-run-dir=$RUN_DIR"
+}
 
 # ───────────────────────── 小工具 ─────────────────────────
 
@@ -153,8 +206,15 @@ run_limited() {
 
 LOCK_DIR="${TMPDIR:-/tmp}/sol-install.lock"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-	die "另一个安装/卸载正在进行（$LOCK_DIR）。确定没有的话：rmdir $LOCK_DIR"
+	owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+	if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+		die "另一个安装/卸载正在进行（pid $owner，$LOCK_DIR）。确定没有的话：rm -rf $LOCK_DIR"
+	fi
+	warn "发现上次留下的锁（pid ${owner:-未知} 已经不在了），接管它。"
+	rm -rf "$LOCK_DIR"
+	mkdir "$LOCK_DIR" 2>/dev/null || die "拿不到锁：$LOCK_DIR"
 fi
+echo $$ >"$LOCK_DIR/pid"
 trap 'rm -rf "$LOCK_DIR"; [ -n "$TMPDIR_OUT" ] && rm -f "$TMPDIR_OUT"' EXIT INT TERM
 
 # ───────────────────────── 认出现状 ─────────────────────────
@@ -385,6 +445,13 @@ show_state() {
 	*) say "服务        状态未知（没有 systemctl / launchctl？）" ;;
 	esac
 	[ -n "$MANAGED_BY" ] && say "包管理器    这个 sol 是 $MANAGED_BY 装的（升级会覆盖它）"
+	if [ "$UID_NOW" = "0" ]; then
+		say "权限        root（写系统路径与注册服务不需要再升权）"
+	elif [ -n "$ROOT" ]; then
+		say "权限        普通用户 + SOL_INSTALL_ROOT=$ROOT（自己的地盘，不会 sudo）"
+	else
+		say "权限        普通用户（要写系统路径/注册服务时，动手前会用 sudo 重跑一遍自己）"
+	fi
 	if [ -f "$RUN_CONFIG" ]; then
 		if [ "$RUNTIME_CONFIG_GENERATED" = yes ]; then
 			say "运行配置    $RUN_CONFIG（刚生成的最小配置：一条 noop 规则，按需改）"
@@ -855,6 +922,26 @@ report() { # report <install|uninstall|none>
 
 ensure_runtime_config
 
+# 已经被升权重跑（带答案进来的）：不重复展示、也不再问，直接执行。
+if [ -n "$ELEVATED_ACTION" ]; then
+	SERVICE_CHOSEN=false
+	[ "${SERVICE_ARG:-${SOL_INSTALL_SERVICE:-no}}" = yes ] && SERVICE_CHOSEN=true
+	case "$ELEVATED_ACTION" in
+	install)
+		say "（已用 sudo 升权执行：安装）"
+		do_install
+		report install
+		;;
+	uninstall)
+		say "（已用 sudo 升权执行：卸载）"
+		do_uninstall
+		report uninstall
+		;;
+	*) die "未知的 SOL_INSTALL_ACTION：$ELEVATED_ACTION" ;;
+	esac
+	exit 0
+fi
+
 show_state
 show_config
 
@@ -864,6 +951,7 @@ if [ "$LEDGER_EXISTS" = yes ]; then
 请选择：[回车 = 按配置应用 / u = 卸载 / r = 重新生成配置 / n = 退出]")
 	case "$choice" in
 	u | uninstall)
+		escalate uninstall
 		do_uninstall
 		report uninstall
 		;;
@@ -879,6 +967,7 @@ if [ "$LEDGER_EXISTS" = yes ]; then
 		;;
 	*)
 		if [ "$LEDGER_CREATED_UNIT" = true ]; then SERVICE_WANTED=true; else SERVICE_WANTED=false; fi
+		escalate install
 		do_install
 		if [ "$NOOP" = yes ]; then
 			say "（什么都没改。想强制重写服务定义就选 r 重新生成配置，或先卸载。）"
@@ -898,6 +987,7 @@ if ! ask "执行吗？" y; then
 	exit 0
 fi
 
+escalate install
 do_install
 if [ "$NOOP" = yes ]; then
 	say "（什么都没改。想强制重写服务定义就选 r 重新生成配置，或先卸载。）"

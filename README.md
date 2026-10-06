@@ -481,6 +481,11 @@ whose only content is how to run sol, and `sol.yaml`, a minimal working configur
 so a service does not refuse to start). It prints the current situation and both files, then asks two
 questions: install as a service, and go ahead. Nothing changes until you say yes.
 
+Privileges: it does not run as root from the start. Before any step that needs it (writing
+`/usr/local/bin`, registering the service), it re-runs itself through `sudo` on Linux/macOS, or
+relaunches under UAC on Windows, carrying your answers across so you are not asked twice. Decline and
+it stops with an explanation rather than half-installing.
+
 Re-running the script is how you see the current state, change how sol runs (edit the file, run it
 again), or uninstall (answer `u`; it asks before deleting your configuration). Every action it takes
 is appended to `install.log`, with the equivalent command, next to the ledger `install.json`.
