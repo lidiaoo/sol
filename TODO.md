@@ -155,9 +155,9 @@
 - [x] "已安装但单元不在"时再问一次服务问题（台账 `created_unit: false` 不等于"用户不要服务"）
 - [x] 三平台"跑不通"排查：`curl | sh`（stdin 是脚本 → 答案去 `/dev/tty` 问 + 提示改 `-o install.sh`）、`irm | iex`（`$PSCommandPath` 空 → 无法 UAC 重跑）、`install.ps1` 无 BOM 被 5.1 按 GBK 读、`install.cmd` 改纯 ASCII、生成的 `args` 被写成五行（自产自销不上）、端口解析只认行首（防火墙失效）、Windows 缺防火墙模块会致命、launchd 日志目录、`$IsAdmin` 探测异常、Windows 侧补 UAC 升权
 - [x] 发布侧：`.goreleaser.yml` + 自带 release 工作流 + 安装脚本作为 release 资产
-- [ ] 升权路径在**干净机器**上的完整验证（本机已有真实安装，K 会自动跳过；落点 /usr/local/bin 不可配，只能靠 CI matrix 或一次性容器）（本机已有真实安装，K 会自动跳过；落点不可配，只能靠 CI matrix 或一次性容器）
+- [x] 升权路径在**干净机器**上的完整验证：由 install-smoke 的三个 job 覆盖（runner 干净、真 root / 真管理员，落点就是 /usr/local/bin 与 C:\ProgramData\sol）
 - [x] 三平台产物模板（§9.1/§9.2）：systemd unit / launchd plist / 计划任务三条注册命令 + `scripts/install.cmd`（双击入口，内部按对的执行策略调 ps1）+ macOS quarantine 处理（`xattr -d com.apple.quarantine`）+ Windows 上提醒 `logging.output: file`
-- [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本 + 注册后确认服务真的起来——**这是把 install.ps1 与 macOS 分支从"未验证"提上来的唯一办法**
+- [x] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本 + 注册后确认服务真的起来（每个 job 都带"升级前先停掉自己那份"的回归断言）——**这是把 install.ps1 与 macOS 分支从"未验证"提上来的唯一办法**。注意：工作流本身只在本机做了 YAML/语法与逐块命令的核对，真跑要等它在 runner 上跑一轮
 - [ ] scoop + winget 清单（schema 校验；winget 在 CI 里装不了，只能标 schema 级证据）
 - [ ] Hermes skill `sol-install` + `references/{linux,macos,windows}.md`（决策树：先判断此前是怎么装的，再选路径；装完给摘要，证据取自安装脚本的输出与台账）
 - [x] README 安装段改为"一条命令 + 零参数安装脚本"（release 下载保留在下一节）+ 修掉 Windows 那段 `move sol.exe C:\Windows\System32` + 中英文同步（代码块逐字节一致，由 `TestReadmeTranslationsAgree` 守）

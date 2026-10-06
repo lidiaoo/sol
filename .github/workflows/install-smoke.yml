@@ -1,0 +1,258 @@
+name: Install smoke
+
+# 为什么要有这个工作流：安装脚本是**断言**，不是文档——它得在三种真平台上真的装一遍才算数。
+# 本机（开发者机器）永远验不了这些：
+#   * 升权路径要一台"干净机器"（本机已经装着真实服务，而且落点 /usr/local/bin 不可配）
+#   * Windows 的计划任务、UAC、文件锁，只有真 Windows 才作数
+#   * macOS 的 launchctl 同理
+# 所以这里不"模拟"：runner 是一次性的，脚本就按用户会做的方式装、升级、卸载，然后断言结果。
+# 每个 job 都刻意覆盖今天修过的两件事：升级前先停掉自己那份、卸载先停进程再删。
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: 'linux (systemd, real root)'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: true
+      - name: Build
+        run: go build -o /tmp/solbuild/sol .
+      # 执行目录 = 脚本所在目录：这是用户最可能的用法（把脚本和 sol 放一起，就地跑）。
+      # 端口用 >1024 的高端口：CI 机器上 10/11/12 可能被系统服务占着，而这一步要验的是脚本本身。
+      - name: Prepare the directory the user would run this from
+        working-directory: scripts
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/solbuild
+          cp /tmp/solbuild/sol ./sol
+          cat > sol.yaml <<'YAML'
+          version: 1
+          rules:
+            - match: { ports: [10131], content: { kind: none } }
+              action: noop
+          YAML
+      - name: 'Install (answers: yes to service, yes to apply)'
+        working-directory: scripts
+        run: printf 'y\ny\n' | sudo -E sh install.sh
+      - name: Assert it really installed and is really listening
+        run: |
+          set -euxo pipefail
+          systemctl is-enabled sol.service
+          systemctl is-active sol.service
+          /usr/local/bin/sol --version
+          for _ in $(seq 1 20); do
+            if ss -ulpn | grep -q ':10131'; then exit 0; fi
+            sleep 0.5
+          done
+          echo 'sol 没在监听 10131：' >&2
+          sudo journalctl -u sol.service -n 60 --no-pager >&2
+          exit 1
+      - name: Assert the ledger was written and says it is complete
+        run: |
+          set -euo pipefail
+          sudo cat /usr/local/share/sol/install.json
+          sudo grep -q '"incomplete": false' /usr/local/share/sol/install.json
+      - name: 'Re-run is idempotent (numbered menu: 1 = apply)'
+        working-directory: scripts
+        run: printf '1\n' | sudo -E sh install.sh
+      # 下面这条是那个 bug 的回归测试：升级时端口必然被自己的上一个实例占着，
+      # 脚本必须先停掉它、再预检、然后才覆盖二进制。
+      - name: Upgrade must stop our own running instance first
+        working-directory: scripts
+        run: |
+          set -euo pipefail
+          sudo systemctl stop sol.service
+          sudo sh -c "nohup /usr/local/bin/sol listen --config '$PWD/sol.yaml' --dry-run >/tmp/manual-sol.log 2>&1 & echo \$! >/tmp/manual-sol.pid"
+          sleep 1
+          sudo kill -0 "$(cat /tmp/manual-sol.pid)"
+          # 造一份"新版本"：只改版本串，这样 sha 变了、走的是真正的升级路径
+          go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$GITHUB_RUN_ID" -o ./sol .
+          printf '1\n' | sudo -E sh install.sh
+          sleep 1
+          if sudo kill -0 "$(cat /tmp/manual-sol.pid)" 2>/dev/null; then
+            echo '手工起的那份还活着——升级没有先停掉它' >&2
+            exit 1
+          fi
+          sudo /usr/local/bin/sol --version | grep -q "ci-$GITHUB_RUN_ID"
+          systemctl is-active sol.service
+      - name: 'Uninstall (numbered menu: 2 = uninstall, then keep the config)'
+        working-directory: scripts
+        run: printf '2\nn\n' | sudo -E sh install.sh
+      - name: Assert uninstall took everything of ours away
+        run: |
+          set -euo pipefail
+          if [ -e /usr/local/bin/sol ]; then echo '二进制还在' >&2; exit 1; fi
+          if [ -e /etc/systemd/system/sol.service ]; then echo '单元文件还在' >&2; exit 1; fi
+          if systemctl cat sol.service >/dev/null 2>&1; then echo '服务还在' >&2; exit 1; fi
+          # 台账历史里的动作是中文描述（"[$who] 说明" + 等价命令两行），所以按卸载那步的描述断言
+          sudo grep -q '删二进制' /usr/local/share/sol/install.log
+
+  macos:
+    name: 'macos (launchd, real root)'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: true
+      - name: Build
+        run: go build -o /tmp/solbuild/sol .
+      - name: Prepare the directory the user would run this from
+        working-directory: scripts
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/solbuild
+          cp /tmp/solbuild/sol ./sol
+          cat > sol.yaml <<'YAML'
+          version: 1
+          rules:
+            - match: { ports: [10132], content: { kind: none } }
+              action: noop
+          YAML
+      - name: Install
+        working-directory: scripts
+        run: printf 'y\ny\n' | sudo -E sh install.sh
+      - name: Assert launchd really has it and it is listening
+        run: |
+          set -euxo pipefail
+          sudo launchctl print system/com.lidiaoo.sol >/dev/null
+          /usr/local/bin/sol --version
+          for _ in $(seq 1 20); do
+            if sudo lsof -nP -iUDP:10132 | grep -q sol; then exit 0; fi
+            sleep 0.5
+          done
+          echo 'sol 没在监听 10132：' >&2
+          sudo tail -n 60 /usr/local/var/log/sol.log >&2
+          exit 1
+      - name: Upgrade must stop our own running instance first
+        working-directory: scripts
+        run: |
+          set -euo pipefail
+          sudo launchctl bootout system/com.lidiaoo.sol || true
+          sudo sh -c "nohup /usr/local/bin/sol listen --config '$PWD/sol.yaml' --dry-run >/tmp/manual-sol.log 2>&1 & echo \$! >/tmp/manual-sol.pid"
+          sleep 1
+          sudo kill -0 "$(cat /tmp/manual-sol.pid)"
+          go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$GITHUB_RUN_ID" -o ./sol .
+          printf '1\n' | sudo -E sh install.sh
+          sleep 1
+          if sudo kill -0 "$(cat /tmp/manual-sol.pid)" 2>/dev/null; then
+            echo '手工起的那份还活着——升级没有先停掉它' >&2
+            exit 1
+          fi
+          /usr/local/bin/sol --version | grep -q "ci-$GITHUB_RUN_ID"
+      - name: Uninstall
+        working-directory: scripts
+        run: printf '2\nn\n' | sudo -E sh install.sh
+      - name: Assert uninstall took everything of ours away
+        run: |
+          set -euo pipefail
+          if [ -e /usr/local/bin/sol ]; then echo '二进制还在' >&2; exit 1; fi
+          if [ -e /Library/LaunchDaemons/com.lidiaoo.sol.plist ]; then echo 'plist 还在' >&2; exit 1; fi
+
+  windows:
+    name: 'windows (Task Scheduler, real admin)'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: true
+      - name: Build
+        run: go build -o sol.exe .
+      # 执行目录 = scripts\：脚本旁边放着 sol.exe，和用户的做法一致。
+      # 端口用 10133（>1024）：Windows 上低端口常被 Hyper-V/WSL 的"排除端口段"预占，
+      # 而这一步要验的是脚本本身，不是那台机器的端口政策。
+      - name: Prepare the directory the user would run this from
+        working-directory: scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Copy-Item ..\sol.exe .\sol.exe -Force
+          @'
+          version: 1
+          rules:
+            - match: { ports: [10133], content: { kind: none } }
+              action: noop
+          '@ | Set-Content -Encoding utf8 .\sol.yaml
+      - name: 'Install (answers: yes to service, yes to apply)'
+        working-directory: scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "y`ny`n" | & pwsh -NoProfile -File .\install.ps1
+      - name: Assert the task exists, the config sits next to the binary, and it is listening
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          schtasks /Query /TN sol
+          if (-not (Test-Path 'C:\ProgramData\sol\sol.exe')) { throw 'sol.exe 不在安装目录' }
+          if (-not (Test-Path 'C:\ProgramData\sol\sol.yaml')) { throw '运行配置不在安装目录' }
+          $q = (schtasks /Query /TN sol /V /FO LIST | Out-String)
+          if ($q -notmatch 'C:\\ProgramData\\sol\\sol\.yaml') { throw "计划任务读的不是安装目录那份配置：`n$q" }
+          $i = 0
+          while ($i -lt 20) {
+            if (Get-NetUDPEndpoint -LocalPort 10133 -ErrorAction SilentlyContinue) { break }
+            Start-Sleep -Milliseconds 500; $i++
+          }
+          if (-not (Get-NetUDPEndpoint -LocalPort 10133 -ErrorAction SilentlyContinue)) {
+            Get-ChildItem 'C:\ProgramData\sol' | Out-String | Write-Host
+            throw 'sol.exe 没在监听 10133'
+          }
+      - name: 'Re-run is idempotent (numbered menu: 1 = apply)'
+        working-directory: scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "1`n" | & pwsh -NoProfile -File .\install.ps1
+      # 那个 bug 的回归测试：升级前必须先停掉自己那份，否则覆盖不了二进制、
+      # 而且下次安装的预检会以"端口占用"失败。
+      - name: Upgrade must stop our own running instance first
+        working-directory: scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          schtasks /End /TN sol | Out-Null
+          $p = Start-Process -PassThru -FilePath 'C:\ProgramData\sol\sol.exe' `
+            -ArgumentList 'listen', '--config', 'C:\ProgramData\sol\sol.yaml', '--dry-run'
+          Start-Sleep -Seconds 2
+          if ($p.HasExited) { throw '手工起的那份立刻退出了' }
+          go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$env:GITHUB_RUN_ID" -o .\sol.exe .
+          "1`n" | & pwsh -NoProfile -File .\install.ps1
+          Start-Sleep -Seconds 2
+          if (-not $p.HasExited) { $p.Kill(); throw '手工起的那份还活着——升级没有先停掉它' }
+          $v = & 'C:\ProgramData\sol\sol.exe' --version
+          if ("$v" -notmatch "ci-$env:GITHUB_RUN_ID") { throw "升级后版本不对：$v" }
+      - name: 'Uninstall (numbered menu: 2 = uninstall, then keep the config)'
+        working-directory: scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "2`nn" | & pwsh -NoProfile -File .\install.ps1
+      - name: Assert uninstall took everything of ours away
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path 'C:\ProgramData\sol\sol.exe') { throw 'sol.exe 还在' }
+          $out = (schtasks /Query /TN sol 2>&1 | Out-String)
+          if ($out -notmatch 'ERROR|找不到|cannot find') { throw "计划任务还在：$out" }
+          if (-not (Select-String -Path 'C:\ProgramData\sol\install.log' -Pattern '删二进制' -Quiet)) {
+            throw '台账里没有卸载记录'
+          }

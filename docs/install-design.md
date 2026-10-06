@@ -405,8 +405,8 @@ schtasks /Query /TN sol /V /FO LIST
 | 交付物 | 证据强度 | 方式 |
 | --- | --- | --- |
 | 安装脚本的现状报告 / 文件清单 / `--dry-run` 预检 | **真机全量** | 真机冒烟（沿用现有 `sNN` 机制）：真跑脚本 + 真起服务 + 真卸载 |
-| `scripts/install.sh` | **真机全量（已完成）** | `scratch/s35` 57 条断言：无二进制时下载回退 / 有二进制时就地使用 / 重跑无变化 / 换二进制（升与降）/ 只改 `run.args` / 异源提醒 / 无台账 / 卸载，并真发一个魔法包确认能起来 |
-| `scripts/install.ps1`、macOS 路径、三平台产物模板（unit / plist / 计划任务） | **CI 证据**（否则只能标"仅语法级"） | 新增 `.github/workflows/install-smoke.yml`，matrix ubuntu/macos/windows 真跑脚本 + 校验 + `--version` + `ifaces` + 注册后确认服务真的起来了 |
+| `scripts/install.sh` | **真机全量（已完成）** | `scratch/s35` 63 条 + `scratch/s55` 25 条断言：无二进制时下载回退 / 有二进制时就地使用 / 重跑无变化 / 换二进制（升与降）/ 只改 `run.args` / 异源提醒 / 无台账 / 卸载，并真发一个魔法包确认能起来；s55 另覆盖"预检绑不上就先停掉正在跑的我们自己的那份"、"卸载先停进程再删"与编号菜单的新界面 |
+| `scripts/install.ps1`、macOS 路径、三平台产物模板（unit / plist / 计划任务） | **CI 证据**（否则只能标"仅语法级"） | `.github/workflows/install-smoke.yml` **已落地**：matrix ubuntu/macos/windows，在一次性 runner 上按用户的用法真装（真 root / 真管理员）→ 断言服务真的 active、真的在监听配置端口、台账 `"incomplete": false` → 再跑一遍验幂等 → 用重新构建的二进制做升级（"先停掉自己那份"的回归断言）→ 卸载并断言没留下我们建的东西。`scratch/s54` 26→44 条断言是它在 Linux 上用便携 pwsh + schtasks 桩做的前置核对；工作流本身的证据要等它在 runner 上跑一轮 |
 | 包管理器清单 | **schema 级** | scoop/winget 的 JSON schema 校验；winget 在 CI 里装不了，只能标 |
 | README 里的安装命令 | **真跑** | 沿用现有 readme 断言脚本（抽 README 片段真执行） |
 
