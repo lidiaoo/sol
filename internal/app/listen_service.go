@@ -89,6 +89,16 @@ type ListenService struct {
 	actions  map[string]uint64
 	lastSeen *EventRecord
 
+	// ifacesSel re-reads the machine's interfaces on demand (§17.2). Nil means the identity
+	// set is whatever start-up resolved.
+	ifacesSel func() ([]wol.IfaceInfo, error)
+	// ifaceRefreshInterval is the background poll period: 0 takes the default, negative
+	// disables the poll (tests drive the refresh themselves).
+	ifaceRefreshInterval time.Duration
+	// lastIfaceRefresh bounds the on-demand refresh, so a flood of noise packets cannot turn
+	// into a syscall storm. Unix nanoseconds; 0 means "never refreshed".
+	lastIfaceRefresh atomic.Int64
+
 	// rtMu guards the routing state that Reload swaps in. The counters above stay
 	// outside it so a reload never waits for an in-flight action.
 	rtMu      sync.RWMutex
@@ -141,6 +151,26 @@ func NewListenService(
 		limiter:   newRateLimiter(0, 0),
 		inflight:  newInflight(),
 	}
+}
+
+const (
+	// defaultIfaceRefresh is how often the background poll re-reads the interface list. It
+	// covers the machine that has received nothing yet: the on-demand refresh only fires on a
+	// packet that misses, so without the poll a dock plugged in after start-up would wait for
+	// the first packet it is meant to answer.
+	defaultIfaceRefresh = 30 * time.Second
+	// ifaceRefreshFloor is the shortest distance between two on-demand refreshes.
+	ifaceRefreshFloor = time.Second
+)
+
+// WithInterfaceSelector installs the function that re-reads the machine's interfaces, plus the
+// background poll period (0 = default, negative = no poll). Without it the identity set stays
+// whatever start-up resolved.
+func (s *ListenService) WithInterfaceSelector(sel func() ([]wol.IfaceInfo, error), interval time.Duration) *ListenService {
+	s.ifacesSel = sel
+	s.ifaceRefreshInterval = interval
+
+	return s
 }
 
 // WithCooldowns installs the per-action execution windows; zero disables the guard.
@@ -285,9 +315,136 @@ func (s *ListenService) Run(ctx context.Context) error {
 
 	defer s.listeners.closeAll()
 
+	if s.ifacesSel != nil && s.ifaceRefreshInterval >= 0 {
+		go s.pollInterfaces(ctx)
+	}
+
 	s.eventLoop(ctx, pktCh, errCh)
 
 	return nil
+}
+
+// refreshIfaces re-reads the machine's interfaces and swaps them into the routing policy when
+// they changed, reporting whether they did. minGap limits how often the on-demand path may do
+// this (the poll passes 0: it is slow enough by construction).
+//
+// The identity set is not a start-up property: a NIC can be down and come up later, and its MAC
+// can change when it does (a wireless card that NetworkManager randomizes while down reads as a
+// placeholder), a dock can be plugged in, a NIC can be created. The listening sockets bind
+// 0.0.0.0, so those packets do arrive - only the match is missing.
+func (s *ListenService) refreshIfaces(minGap time.Duration, reason string) bool {
+	sel := s.ifacesSel
+	if sel == nil {
+		return false
+	}
+
+	if minGap > 0 {
+		now := time.Now().UnixNano()
+		last := s.lastIfaceRefresh.Load()
+
+		if last != 0 && now-last < int64(minGap) {
+			return false
+		}
+
+		// One refresher at a time: the ones that lose the race wait for the next window.
+		if !s.lastIfaceRefresh.CompareAndSwap(last, now) {
+			return false
+		}
+	}
+
+	ifaces, err := sel()
+	if err != nil {
+		slog.Warn("cannot re-read the interfaces", "error", err)
+
+		return false
+	}
+
+	rt := s.snapshot()
+
+	changed, err := rt.policy.SetInterfaces(ifaces)
+	if err != nil {
+		slog.Warn("cannot refresh the interface set", "error", err)
+
+		return false
+	}
+
+	old := s.replaceIfaces(ifaces)
+
+	if !changed {
+		return false
+	}
+
+	added, removed := diffIfaces(old, ifaces)
+
+	slog.Info("interface set changed",
+		"reason", reason,
+		"added", added,
+		"removed", removed,
+	)
+
+	return true
+}
+
+// replaceIfaces stores the fresh list and returns the one it replaced.
+func (s *ListenService) replaceIfaces(ifaces []wol.IfaceInfo) []wol.IfaceInfo {
+	s.rtMu.Lock()
+	defer s.rtMu.Unlock()
+
+	old := s.ifaces
+	s.ifaces = ifaces
+
+	return old
+}
+
+// diffIfaces reports the NICs that appeared and those that went away, as name=mac pairs.
+func diffIfaces(old, fresh []wol.IfaceInfo) ([]string, []string) {
+	added := make([]string, 0, len(fresh))
+	removed := make([]string, 0, len(old))
+
+	was := make(map[string]string, len(old))
+	for _, iface := range old {
+		was[iface.Name] = iface.MAC.String()
+	}
+
+	now := make(map[string]string, len(fresh))
+	for _, iface := range fresh {
+		now[iface.Name] = iface.MAC.String()
+	}
+
+	for _, iface := range fresh {
+		if mac, ok := was[iface.Name]; !ok || mac != iface.MAC.String() {
+			added = append(added, iface.Name+"="+iface.MAC.String())
+		}
+	}
+
+	for _, iface := range old {
+		if _, ok := now[iface.Name]; !ok {
+			removed = append(removed, iface.Name+"="+iface.MAC.String())
+		}
+	}
+
+	return added, removed
+}
+
+// pollInterfaces re-reads the interface list on a timer, so a NIC that shows up while nothing is
+// being received is picked up before the first packet that needs it.
+func (s *ListenService) pollInterfaces(ctx context.Context) {
+	interval := s.ifaceRefreshInterval
+	if interval <= 0 {
+		interval = defaultIfaceRefresh
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.refreshIfaces(0, "periodic poll")
+		}
+	}
 }
 
 // snapshot reads the current routing state. It sits here, after the exported
@@ -402,6 +559,13 @@ func (s *ListenService) handlePacket(ctx context.Context, pkt packet) {
 	}
 
 	decision, matched := rt.policy.Resolve(ev)
+
+	// A miss may simply mean the identity set is stale (a NIC that came up after start-up, a
+	// dock that was plugged in). Re-read it at most once a second and try the packet again.
+	if !matched && s.refreshIfaces(ifaceRefreshFloor, "unmatched packet") {
+		decision, matched = rt.policy.Resolve(ev)
+	}
+
 	if !matched {
 		slog.Info("non-matching packet",
 			"src", addrString(pkt.src),

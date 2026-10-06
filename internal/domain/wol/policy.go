@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"sync/atomic"
 	"time"
 )
 
@@ -102,11 +103,18 @@ type compiledRule struct {
 	score    int
 }
 
+// policyState is the part of a policy that a live interface refresh replaces. The compiled rules
+// and the MAC -> interface index are derived from the same interface list, so they travel
+// together: a packet must never be matched against a rule set and an index that disagree.
+type policyState struct {
+	rules      []compiledRule
+	ifaceByMAC map[string]string
+}
+
 // RoutingPolicy resolves an incoming packet to an action.
 type RoutingPolicy struct {
-	rules         []compiledRule
+	state         atomic.Pointer[policyState]
 	actions       map[Action]ActionDef
-	ifaceByMAC    map[string]string
 	secureOn      []byte
 	packetKey     []byte
 	replay        *ReplayGuard
@@ -129,7 +137,6 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 
 	policy := &RoutingPolicy{
 		actions:       actionsOrDefault(opts.Actions),
-		ifaceByMAC:    macIndex(ifaces),
 		secureOn:      opts.SecureOn,
 		packetKey:     opts.PacketKey,
 		now:           opts.Now,
@@ -139,24 +146,81 @@ func NewRoutingPolicy(rules []Rule, ifaces []IfaceInfo, opts PolicyOptions) (*Ro
 		allowReserved: opts.AllowReserved,
 	}
 
-	for i, rule := range rules {
-		compiled, compileErr := policy.compileRule(rule, ifaceMACs, allMACs)
-		if compileErr != nil {
-			return nil, fmt.Errorf("rule %d: %w", i+1, compileErr)
-		}
-
-		policy.rules = append(policy.rules, compiled)
+	compiled, err := policy.compileRules(rules, ifaceMACs, allMACs)
+	if err != nil {
+		return nil, err
 	}
 
-	if conflictErr := policy.checkConflicts(); conflictErr != nil {
+	if conflictErr := checkConflicts(compiled); conflictErr != nil {
 		return nil, conflictErr
 	}
 
-	slices.SortStableFunc(policy.rules, func(a compiledRule, b compiledRule) int {
+	slices.SortStableFunc(compiled, func(a compiledRule, b compiledRule) int {
 		return b.score - a.score
 	})
 
+	policy.state.Store(&policyState{rules: compiled, ifaceByMAC: macIndex(ifaces)})
+
 	return policy, nil
+}
+
+// SetInterfaces swaps in a fresh interface list (§17.2). The MAC kinds that name local interfaces
+// (self, interface) are resolved from it, so a NIC that was down when sol started - or one that
+// appeared afterwards, like a dock or a wireless link that came up late - starts matching without
+// a restart. It reports whether the set actually changed, so the caller can audit it.
+//
+// A rule that names an interface which is absent right now keeps its name and matches nothing
+// until the NIC is back: unplugging a dock must not turn into a failed refresh. At start-up the
+// same missing name is an error, because there it is far more likely to be a typo.
+func (p *RoutingPolicy) SetInterfaces(ifaces []IfaceInfo) (bool, error) {
+	current := p.state.Load()
+
+	byName, all, err := indexIfaces(ifaces)
+	if err != nil {
+		return false, err
+	}
+
+	index := macIndex(ifaces)
+	if sameInterfaceIndex(current.ifaceByMAC, index) {
+		return false, nil
+	}
+
+	rules := make([]compiledRule, 0, len(current.rules))
+
+	for i := range current.rules {
+		item := current.rules[i]
+
+		mac, macErr := compileMAC(item.rule.Match.MAC, byName, all)
+		switch {
+		case macErr == nil:
+			item.mac = mac
+		case errors.Is(macErr, ErrUnknownInterface):
+			item.mac = compiledMAC{kind: item.mac.kind, ifaces: item.mac.ifaces}
+		default:
+			return false, fmt.Errorf("rule %d: %w", i+1, macErr)
+		}
+
+		rules = append(rules, item)
+	}
+
+	p.state.Store(&policyState{rules: rules, ifaceByMAC: index})
+
+	return true, nil
+}
+
+// sameInterfaceIndex reports whether two name -> MAC indexes describe the same NICs.
+func sameInterfaceIndex(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for mac, name := range a {
+		if b[mac] != name {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Decision is the outcome of resolving a packet against the policy.
@@ -182,12 +246,14 @@ func (p *RoutingPolicy) Resolve(ev Event) (Decision, bool) {
 		parsed = p.authenticate(ev.Payload, parsed)
 	}
 
-	for i := range p.rules {
-		if p.rules[i].matches(ev, parsed) {
+	state := p.state.Load()
+
+	for i := range state.rules {
+		if state.rules[i].matches(ev, parsed) {
 			return Decision{
-				Action:        p.rules[i].rule.Action,
-				DryRun:        p.rules[i].rule.DryRun,
-				Interface:     p.ifaceByMAC[parsed.MAC.String()],
+				Action:        state.rules[i].rule.Action,
+				DryRun:        state.rules[i].rule.DryRun,
+				Interface:     state.ifaceByMAC[parsed.MAC.String()],
 				TargetMAC:     parsed.MAC,
 				Authenticated: parsed.Authenticated,
 			}, true
@@ -200,10 +266,11 @@ func (p *RoutingPolicy) Resolve(ev Event) (Decision, bool) {
 // Ports returns the distinct ports to bind: the ports declared by the rules plus the
 // extra (unrouted) ports, such as those of the remote command channel.
 func (p *RoutingPolicy) Ports() []int {
-	seen := make(map[int]bool, len(p.rules)+len(p.extraPorts))
-	ports := make([]int, 0, len(p.rules)+len(p.extraPorts))
+	rules := p.state.Load().rules
+	seen := make(map[int]bool, len(rules)+len(p.extraPorts))
+	ports := make([]int, 0, len(rules)+len(p.extraPorts))
 
-	for _, rule := range p.rules {
+	for _, rule := range rules {
 		for _, port := range rule.ports {
 			if seen[port] {
 				continue
@@ -235,17 +302,40 @@ func (p *RoutingPolicy) ParsePacket(payload []byte) (ParsedPacket, bool) {
 
 // InterfaceForMAC returns the local interface owning mac, when known.
 func (p *RoutingPolicy) InterfaceForMAC(mac net.HardwareAddr) string {
-	return p.ifaceByMAC[mac.String()]
+	return p.state.Load().ifaceByMAC[mac.String()]
 }
 
 // Rules returns the configured rules.
 func (p *RoutingPolicy) Rules() []Rule {
-	rules := make([]Rule, len(p.rules))
-	for i := range p.rules {
-		rules[i] = p.rules[i].rule
+	compiled := p.state.Load().rules
+	rules := make([]Rule, len(compiled))
+
+	for i := range compiled {
+		rules[i] = compiled[i].rule
 	}
 
 	return rules
+}
+
+// compileRules compiles every rule against one interface set. Start-up and a live interface
+// refresh both come through here, so the two can never disagree about what a rule means.
+func (p *RoutingPolicy) compileRules(
+	rules []Rule,
+	ifaceMACs map[string]net.HardwareAddr,
+	allMACs []net.HardwareAddr,
+) ([]compiledRule, error) {
+	compiled := make([]compiledRule, 0, len(rules))
+
+	for i, rule := range rules {
+		item, err := p.compileRule(rule, ifaceMACs, allMACs)
+		if err != nil {
+			return nil, fmt.Errorf("rule %d: %w", i+1, err)
+		}
+
+		compiled = append(compiled, item)
+	}
+
+	return compiled, nil
 }
 
 func (p *RoutingPolicy) compileRule(rule Rule, ifaceMACs map[string]net.HardwareAddr, allMACs []net.HardwareAddr) (compiledRule, error) {
@@ -396,14 +486,15 @@ func (p *RoutingPolicy) compileSecureOn(rule Rule) ([]byte, error) {
 // secureOns lists every password a packet may carry: the policy default plus one per rule. The
 // order does not matter, since all passwords sit at the same six bytes and only one can match.
 func (p *RoutingPolicy) secureOns() [][]byte {
-	candidates := make([][]byte, 0, len(p.rules)+1)
+	rules := p.state.Load().rules
+	candidates := make([][]byte, 0, len(rules)+1)
 
 	if len(p.secureOn) > 0 {
 		candidates = append(candidates, p.secureOn)
 	}
 
-	for i := range p.rules {
-		secureOn := p.rules[i].secureOn
+	for i := range rules {
+		secureOn := rules[i].secureOn
 		if len(secureOn) == 0 {
 			continue
 		}
@@ -452,10 +543,10 @@ func (p *RoutingPolicy) checkReserved(ports []int, def ActionDef, content Conten
 	return nil
 }
 
-func (p *RoutingPolicy) checkConflicts() error {
-	for i := range p.rules {
-		for j := i + 1; j < len(p.rules); j++ {
-			if err := conflict(p.rules[i], p.rules[j]); err != nil {
+func checkConflicts(rules []compiledRule) error {
+	for i := range rules {
+		for j := i + 1; j < len(rules); j++ {
+			if err := conflict(rules[i], rules[j]); err != nil {
 				return err
 			}
 		}

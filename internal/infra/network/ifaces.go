@@ -74,9 +74,20 @@ func describe(iface net.Interface) (wol.IfaceInfo, error) {
 		info.IPs = append(info.IPs, ipNet.IP)
 	}
 
-	info.Eligible = info.Up && !info.Loopback && !info.Virtual && len(info.MAC) == wol.MACSize
+	info.Eligible = eligibleInfo(info)
 
 	return info, nil
+}
+
+// eligibleInfo reports whether a NIC is part of this machine's identity.
+//
+// Availability is deliberately not part of the criterion (§17.2): a NIC that is down right now is
+// still this machine, and it may come up later - a wireless link that NetworkManager brings up
+// after boot, a dock that gets plugged in. Its MAC can even change when it does, which the live
+// refresh in the listener picks up. Only loopback, virtual/tunnel names and entries without a
+// hardware address are excluded.
+func eligibleInfo(info wol.IfaceInfo) bool {
+	return !info.Loopback && !info.Virtual && len(info.MAC) == wol.MACSize
 }
 
 func eligible(all []wol.IfaceInfo) []wol.IfaceInfo {

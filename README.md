@@ -420,11 +420,22 @@ useful before trusting an `--iface`-less startup:
 NAME             TYPE      STATUS  MAC                IPV4           AUTO
 lo               loopback  up                         127.0.0.1      no
 enp6s0           physical  up      58:11:22:bc:78:66  192.168.0.120  yes
-wlp5s0           physical  down    0a:e8:9e:0f:d3:8d  -              no
+wlp5s0           physical  down    0a:e8:9e:0f:d3:8d  -              yes
 docker0          virtual   up      02:42:4e:d9:8c:14  172.17.0.1     no
 ```
 
 `sol ifaces --json` prints the same list for scripts.
+
+AUTO is about **identity, not availability**: a NIC that is down right now is still this machine
+(`wlp5s0` above), because it can come up later - and its MAC can even change when it does (a
+wireless card that reports a randomized placeholder while down switches to its real address when it
+comes up). The listener therefore re-reads the interface list while it runs: a packet that matches
+no rule triggers one re-read (at most once a second), and a 30-second poll covers a machine that has
+received nothing at all. Changes are audited as `interface set changed` with the interfaces that
+appeared or went away. Additions take effect within a second of the next packet; a NIC that *goes
+away* keeps matching until the next unmatched packet or the next poll, so at most 30 seconds -
+`SIGHUP` (or `--watch`) applies the current list immediately. Explicit `interfaces: [x]` names are
+still validated at start-up: a name that is not there is a typo, and it is refused.
 
 ## Installation
 

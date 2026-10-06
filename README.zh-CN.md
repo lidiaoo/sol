@@ -383,11 +383,19 @@ token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文�
 NAME             TYPE      STATUS  MAC                IPV4           AUTO
 lo               loopback  up                         127.0.0.1      no
 enp6s0           physical  up      58:11:22:bc:78:66  192.168.0.120  yes
-wlp5s0           physical  down    0a:e8:9e:0f:d3:8d  -              no
+wlp5s0           physical  down    0a:e8:9e:0f:d3:8d  -              yes
 docker0          virtual   up      02:42:4e:d9:8c:14  172.17.0.1     no
 ```
 
 `sol ifaces --json` 输出同样的列表，供脚本使用。
+
+AUTO 列说的是**身份，不是当下可用性**：现在 down 的网卡仍然是这台机器的一部分（上表的 `wlp5s0`），
+因为它随时可能起来——而且起来时 MAC 还可能变（无线网卡在 down 时内核可能报一个随机占位地址，
+起来后才换成真地址）。所以监听进程会在运行期重读网卡列表：一个没命中任何规则的包会触发一次重读
+（最多每秒一次），外加一个 30 秒的轮询，覆盖"一直没收到包"的机器。变化会以 `interface set changed`
+记进审计日志，点名新增/消失的网卡。**新增** 会在下一个包到达后一秒内生效；**消失** 的网卡会一直
+匹配到"下一个未命中的包"或"下一次轮询"为止，也就是最多 30 秒——想立刻生效就 `SIGHUP`（或
+`--watch`）。显式写出的 `interfaces: [x]` 仍在启动期校验：名字不存在就是拼错了，直接报错。
 
 ## Installation
 

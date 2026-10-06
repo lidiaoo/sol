@@ -75,6 +75,12 @@ tagged release.
   cache. Refusals are counted: `/v1/status` reports `replayed` with a `replay_reasons` breakdown
   and `/metrics` exports `sol_replayed_total` (plus a line per reason), so a channel under replay
   is visible without scraping logs.
+- Interface identity is re-read while sol runs: a NIC that is down at start-up is no longer
+  excluded (identity is not availability), a NIC that appears later - or one whose MAC changes when
+  it comes up, which is what a wireless card does - starts matching without a restart, and a NIC
+  that goes away stops matching at the next unmatched packet or the 30-second poll. Every change is
+  audited as `interface set changed`. Explicit `interfaces: [x]` names are still validated at
+  start-up, and a name that is not there is still a start-up error.
 - `logging.output` chooses the audit log destination: `stderr` (default), `stdout`, or `file` with
   `logging.file`. A log file is append-only and mode 0600 (it names source addresses, actions and
   command lines), unbuffered, and not rotated - pair it with logrotate. `SOL_LOG_OUTPUT` and

@@ -985,13 +985,29 @@ sol listen --iface eth1 --port 11:shutdown
 
 ### 17.2 合格网卡（auto 的选择规则）
 
-- `Up`
 - 非 loopback
 - 有硬件地址（MAC）
 - （尽力）排除虚拟/隧道：名字匹配 `docker*` / `veth*` / `virbr*` / `br-*` / `tun*` / `tap*` / `vmnet*` 等
 - 有线 + 无线都算（本设计不区分介质，只做分类显示）
+- **不要求 `Up`**：判据是"这台机器的身份"，不是"现在能不能收包"
 
 若 auto 选到 0 个合格网卡 -> 启动报错。
+
+#### 17.2.1 身份集合的运行期刷新
+
+**为什么**：`Up` 曾是合格判据的第一条，于是"启动时 down 的网卡"被永久排除。更糟的是**它的 MAC 会变**——真机实测同一张 `wlp5s0`：down 时报 `82:44:59:ff:68:48`（首字节 0x82，本地管理位置位 = 随机占位），up 之后是 `f0:d4:15:57:9c:c5`（真 MAC）。也就是说启动时读到的可能是一个**永远不出现在线上**的地址，那张网卡上的唤醒包一个都匹配不上。而监听 socket 绑的是 `0.0.0.0`，包其实**收得到**，缺的只是匹配。
+
+**做法**：
+
+1. 合格判据去掉 `Up`（身份与可用性分开）。`sol ifaces` 的 STATUS 列照旧报当下 up/down，**AUTO 列改为"是否属于身份集合"**，所以 down 的真实网卡现在显示 `yes`。
+2. `RoutingPolicy` 把「编译后的规则 + MAC→网卡索引」收成一个原子状态（`policyState`），新增 `SetInterfaces(ifaces)` 一次性热换（无锁读，热路径不变）；`mac: self` / `mac: interface` 的地址集合随之更新。
+3. 触发时机两条：**未命中时惰性刷新**（1 秒下限，噪声包不会变成 syscall 风暴；有变化则把该包重试一次）+ **30 秒后台轮询**（覆盖"一直没收到包"的冷启动：惰性路径压根不会触发）。
+4. 审计：变化时记 `interface set changed`（`reason` / `added` / `removed`，`name=mac`）；`/v1/interfaces` 立即反映。
+5. 显式 `interfaces: [x]`：启动期仍严格（不存在的名字 = 拼错，报错）；运行期该网卡稍后出现则自动纳入。**运行期某张被点名的网卡暂时消失不会让刷新失败**：规则保留名字、暂时匹配不上，插回来即恢复。
+6. **语义边界（诚实写清）**：**增**的方向在下一次未命中就生效（≤1 秒下限）；**减**的方向只在下一次未命中或下次轮询时才发现，所以"网卡消失后那段 MAC 仍可能匹配，最多 30 秒"。要立刻生效就 SIGHUP / `--watch` 重载。
+7. 安全面：WoL 无认证，身份集合变大 = 同一 L2 上可伪造的 MAC 范围从"启动时 up 的网卡"扩到"机器真实网卡集合"；收包 socket 本来就绑 `0.0.0.0`，代码层面没有新增攻击面，真正的控制仍是 `secure_on` / 包级 HMAC / `src_cidr`。
+
+**证据**：domain 单测 `TestSetInterfacesFollowsTheMachine` / `TestSetInterfacesPicksUpAChangedAddress` / `TestSetInterfacesToleratesAnAbsentNamedInterface`；network 单测 `TestEligibleInfoIsAboutIdentityNotAvailability`；app 单测 `TestUnmatchedPacketRefreshesTheIdentitySet` / `TestIfaceRefreshIsRateLimited` / `TestThePollPicksUpANewNICWithoutTraffic`（`-race`）；冒烟 **s30 真机 12/12**（dummy 网卡模拟，不动真无线以免断网）：down 的卡算身份（AUTO=yes）；启动后新建的卡按惰性路径可触发且审计点名；删卡后由下一次未命中发现并审计、随后不再匹配；30 秒轮询在**零流量**下把新卡纳入 `/v1/interfaces`。
 
 ### 17.3 配置与字段
 

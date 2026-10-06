@@ -172,7 +172,13 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 			}).
 			WithRawShell(rawShellSettings(b.cfg.Remote.RawShell, func(reason string) {
 				b.reportRefusal(reason, "raw_shell")
-			}))
+			})).
+			// The identity set is re-read from the same rule every time: explicit names keep
+			// their meaning (a name that is missing now is a start-up error), and auto follows
+			// what the machine actually has (§17.2).
+			WithInterfaceSelector(func() ([]wol.IfaceInfo, error) {
+				return b.InterfaceResolver().Select(b.cfg.InterfaceNames)
+			}, 0)
 
 		b.warnRawShell()
 	})
