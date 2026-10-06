@@ -3,11 +3,12 @@
 package exec
 
 import (
+	"errors"
 	osexec "os/exec"
 )
 
-// ErrUserUnsupported is defined in executor.go so that builds on other platforms can name it
-// too; it is raised here, where user/group would have to be applied.
+// ErrUserUnsupported reports user/group on platforms without setuid support.
+var ErrUserUnsupported = errors.New("exec user/group is not supported on this platform")
 
 // credential is empty outside unix: privilege drops are not attempted there.
 type credential struct{}

@@ -18,8 +18,13 @@ var (
 	ErrUnknownUser = errors.New("unknown exec user")
 	// ErrUnknownGroup reports a group that cannot be resolved.
 	ErrUnknownGroup = errors.New("unknown exec group")
-	// ErrNotRoot is defined in executor.go so that builds on other platforms can name it too;
-	// it is raised here, where the privilege drop actually happens.
+	// ErrNotRoot reports a configured privilege drop without the rights to perform it:
+	// silently running as the current user would make the configuration a lie.
+	//
+	// Root is the only accepted setup: requirePrivilege is a plain geteuid check, so a process
+	// that holds CAP_SETUID/CAP_SETGID without root is refused too. The message must not promise
+	// that path - a runbook granting just those two capabilities would be following our text.
+	ErrNotRoot = errors.New("exec user/group requires root")
 )
 
 // credential is the uid/gid pair an exec command runs as, plus the supplementary

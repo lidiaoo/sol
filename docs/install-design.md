@@ -158,14 +158,6 @@ SoL 状态
 
 加载配置 + 跑**全部启动期校验**（保留端口、重复端口、歧义规则、secret 解析、日志目的地、allowlist 形式、动作参数、`sequence` 步数……），对每条问题给出**怎么修**。不建监听、不要特权。三处使用：用户改完配置自查、升级前的预检（§7）、覆盖安装失败后的诊断。
 
-**已实现**（`cmd/check.go` + `deps.Builder.Validate()`；冒烟 s33 真机 40/40）：
-
-- **校验只有一份实现**：`Builder.Validate()` 就是 `buildRuntime()`——监听进程启动时走的同一条路；`check` 不复制任何规则、动作或 allowlist 的判断，因此不可能"check 说没事、启动却被拒"。控制面另跑 `BuildHTTPServer()` 的认证/TLS 校验（它只组装，不监听）。
-- **不做监听的证据**：冒烟里让 python 先占住配置里那个端口，`check` 仍然通过且 3ms 返回，之后没有残留进程——这是"只读文件"的可复现证据。
-- **每条问题配一条修法**：提示表以各包**已有的错误哨兵**为 key（`wol.ErrDuplicatePort`、`config.ErrMissingEnvVar`、`outbound.ErrURLNotAllowed`……），所以文案不会和产生它的校验脱节；没有映射的错误就照原样打印（原文会点名出错的字段）。
-- 顺带发现并修掉一个真跨平台缺陷：`exec.ErrNotRoot` / `exec.ErrUserUnsupported` 原本定义在 build-tag 文件里，CLI 一引用就会让另一个平台的构建失败 → 两个哨兵移到中性的 `executor.go`，并由 `GOOS=windows` / `darwin` 构建验证。
-- 退出码 0/1；`--json` 给 `ok` / `loaded` / `problems[]` / `summary`，供升级预检（§7）与 CI 使用。`loaded=false` 表示**配置根本没读出来**（此时不打印摘要，避免"没有网卡、没有日志"这种误导）。
-
 与 `--dry-run` 的分工：`check` 只验配置；`--dry-run` 会真的起服务收包但不执行动作。
 
 ### 5.4 配置发现顺序（以及安装 / 服务场景的坑）
@@ -433,7 +425,7 @@ schtasks /Query /TN sol /V /FO LIST
 | # | 内容 |
 | --- | --- |
 | 1 | 本文档 + TODO 挂条目（本次） |
-| 2 | `sol paths` ✅ + `sol config check` ✅（含 `listen` 的配置来源启动日志行 ✅） + `sol status` |
+| 2 | `sol paths` ✅ + `sol config check`（含 `listen` 的配置来源启动日志行 ✅） + `sol status` |
 | 3 | 台账 / 报告契约落地（`install.json` schema + `install.log` 格式 + 校验脚本 + 单测） |
 | 4 | `scripts/install.sh`：探测 → 生成配置（内容只有 `run.args`，不覆盖已有）→ 展示并确认 → 执行 / 卸载（预检 / 原子替换留 `sol.bak` / 回读运行版本）；**零命令行参数**，交互问答完成全部选择 + 真机冒烟 |
 | 5 | `scripts/install.ps1`（同上一行：零参数、交互问答） |

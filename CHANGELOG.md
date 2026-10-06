@@ -40,14 +40,6 @@ tagged release.
 
 ### Added
 
-- **`sol config check`**: runs every start-up check on a configuration without listening -
-  the rule set, the secrets and environment variables, the logging destination, the
-  allowlist, the action parameters and the control plane - and prints each refusal with the
-  change that fixes it. It reuses the listener's own validation path (`Builder.Validate`), so
-  a configuration cannot pass the check and then be refused at start-up. No privilege, no
-  port opened, exit code 0/1, `--json` for the installer's pre-upgrade check and CI.
-  `exec.ErrNotRoot` and `exec.ErrUserUnsupported` moved out of the build-tagged files so a
-  CLI that names them still cross-compiles.
 - **`sol paths`**: names the running binary, the configuration file in effect and which
   level of the discovery order chose it (`--config`, `$SOL_CONFIG`, the system default or the
   user default), every candidate location, the audit-log destination, and the installer's

@@ -495,49 +495,6 @@ The **install config** is not the runtime configuration: `install.yaml` is what 
 script generates for you to edit, while the file sol reads at start-up is the one on the
 `runtime config` line.
 
-## Checking a configuration before you trust it
-
-`sol config check` runs the checks the listener would run at start-up - the rule set (reserved
-ports, duplicates, ambiguity), the secrets and environment variables, the logging destination,
-the allowlist, the action parameters and the control plane - and prints each refusal together
-with the change that fixes it:
-
-```
-$ sol config check
-configuration  /etc/sol/sol.yaml  (source: system default)
-result         1 problem(s)
-  1            rule 1: reserved port only accepts noop on an empty payload: port 9 only accepts noop
-               fix: ports 7 and 9 are reserved for plain Wake-on-LAN and accept only the noop action: move the action to a high port, or pass --allow-reserved-actions to keep the old behaviour
-rules          1  9
-remote ports   -
-named actions  4
-interfaces     auto (every eligible interface)
-log            stderr (default)
-dry run        no
-next           fix the problem above, then run: sol config check
-```
-
-It opens nothing and needs no privilege (a configuration whose port is already taken by someone
-else still passes, which is how you know it only read the file), so it is safe on a machine that
-is busy being the service. The exit code is 0 when the configuration would start and 1 when it
-would not, which makes it usable as a pre-upgrade check or a CI gate; `--json` prints the same
-result for scripts (`ok`, `loaded`, `problems[]` with their hints, and a summary).
-
-A passing check answers "what did I just validate", rather than only staying quiet:
-
-```
-$ sol config check
-configuration  /etc/sol/sol.yaml  (source: system default)
-result         ok - this configuration would start
-rules          3  11, 12, 10
-remote ports   -
-named actions  4
-interfaces     auto (every eligible interface)
-log            stderr (default)
-dry run        no
-next           sol listen          (start listening)
-```
-
 ## Installation
 
 ### Quick Install
