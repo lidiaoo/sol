@@ -32,7 +32,7 @@ $Design = 'docs/install-design.md'
 function Say($msg) { Write-Host $msg }
 function Head2($msg) { Write-Host ""; Write-Host $msg -ForegroundColor White }
 function Warn2($msg) { Write-Warning $msg }
-function Die($msg) { Write-Error $msg; exit 1 }
+function Die($msg) { Write-Host $msg -ForegroundColor Red; exit 1 }
 # .NET 里明确"UTF-8 且不带 BOM"。PowerShell 5.1 的 -Encoding UTF8 是带 BOM 的：
 # 生成的 YAML/JSON 会被塞一个 BOM，而 .ps1 自身若没 BOM，5.1 又会按 ANSI/GBK 读它（中文变乱码、
 # 甚至解析失败）。读写两头都用这里。
@@ -134,8 +134,25 @@ if ($LedgerExists) {
 	try { $LedgerJson = Get-Content -Raw -Encoding UTF8 $Ledger | ConvertFrom-Json } catch { $LedgerJson = $null }
 }
 
+# 原生命令（schtasks 之类）往 stderr 写东西时，$ErrorActionPreference='Stop' 会把它当成终止错误——
+# 既看不到真实报错，还会把流程带走（真机上就是这样把 /Create 的失败变成了 TerminatingError）。
+# 这里临时放宽，并把输出与退出码一起拿回来。
+function Invoke-Native([string]$Exe, [string[]]$Argv) {
+	$old = $ErrorActionPreference
+	$ErrorActionPreference = 'Continue'
+	try {
+		$out = & $Exe @Argv 2>&1
+		return @{ Code = $LASTEXITCODE; Out = (($out | Out-String).Trim()) }
+	} catch {
+		return @{ Code = -1; Out = "$_" }
+	} finally {
+		$ErrorActionPreference = $old
+	}
+}
+
 function Task-State {
-	try { $null = schtasks /Query /TN $TaskName /XML 2>$null; if ($LASTEXITCODE -eq 0) { return 'installed' } } catch { }
+	$r = Invoke-Native 'schtasks' @('/Query', '/TN', $TaskName, '/XML')
+	if ($r.Code -eq 0) { return 'installed' }
 	return 'absent'
 }
 
@@ -347,34 +364,41 @@ function Invoke-Precheck {
 		Warn2 "运行配置 $RunConfig 还不存在，没法预检；服务起来后会立刻退出（sol 拒绝在没有规则时启动）"
 		return $false
 	}
-	$errFile = [System.IO.Path]::GetTempFileName()
-	# -WindowStyle 只在 Windows 上支持（受限环境/非 Windows 的 pwsh 会直接抛），
-	# 而 Start-Process 本身也可能被拦（杀软、SmartScreen）。这步不该把整个安装带走。
-	$spArgs = @{
-		FilePath = $LocalBin
-		ArgumentList = ($ArgsList + '--dry-run')
-		PassThru = $true
-		RedirectStandardError = $errFile
-	}
-	# $IsWindows 是 PowerShell 7+ 才有的自变量；5.1 里它是 $null，会被当成$false。
-	if ((Get-Variable -Name IsWindows -ErrorAction SilentlyContinue -ValueOnly) -or $PSVersionTable.PSEdition -eq 'Desktop') { $spArgs['WindowStyle'] = 'Hidden' }
+	# 直接用 .NET 起进程，不用 Start-Process -RedirectStandardError：后者在 Windows PowerShell 5.1 上
+	# 会一直等到子进程退出，HasExited 于是永远是 true——"预检被拒绝"就再也说不清是真是假。
+	# 这里明确等 3 秒：还在跑 = 通过；已退出 = 把它的输出（stdout + stderr 都要）原样给你看。
+	$psi = New-Object System.Diagnostics.ProcessStartInfo
+	$psi.FileName = $LocalBin
+	$argLine = @()
+	foreach ($a in ($ArgsList + '--dry-run')) { if ($a -match '\s') { $argLine += '"' + $a + '"' } else { $argLine += $a } }
+	$psi.Arguments = ($argLine -join ' ')
+	$psi.UseShellExecute = $false
+	$psi.CreateNoWindow = $true
+	$psi.RedirectStandardOutput = $true
+	$psi.RedirectStandardError = $true
+	$proc = New-Object System.Diagnostics.Process
+	$proc.StartInfo = $psi
 	try {
-		$p = Start-Process @spArgs
-		Start-Sleep -Seconds 3
-		if ($p.HasExited) {
-			$err = (Get-Content -Path $errFile -ErrorAction SilentlyContinue | Select-Object -First 3) -join "`n"
-			Say '预检        被拒绝：'
-			Say ($err -split "`n" | ForEach-Object { "            $_" } | Out-String)
-			return $false
+		if (-not $proc.Start()) { Warn2 '预检没能起起来 sol（进程没起来）'; return $false }
+		$outTask = $proc.StandardOutput.ReadToEndAsync()
+		$errTask = $proc.StandardError.ReadToEndAsync()
+		if (-not $proc.WaitForExit(3000)) {
+			try { $proc.Kill() } catch { }
+			Say '预检        通过（sol 用这份配置起来了 3 秒，匹配了也不会真做事：listen 是 dry-run）'
+			return $true
 		}
-		Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-		Say '预检        通过（sol 用这份配置起来了 3 秒，匹配了也不会真做事：listen 是 dry-run）'
-		return $true
+		# 真正有用的那行在最后（比如 bind 失败），所以打印尾部而不是"前 3 行"。
+		$all = @((($outTask.Result + "`n" + $errTask.Result) -split "`r?`n") | Where-Object { $_.Trim() })
+		Say "预检        被拒绝（sol 起来又退出了，退出码 $($proc.ExitCode)）："
+		$show = if ($all.Count -gt 15) { $all[($all.Count - 15)..($all.Count - 1)] } else { $all }
+		foreach ($l in $show) { Say "            $l" }
+		Say '            （要改端口/接口就编辑上面那份运行配置，改完重跑这个脚本）'
+		return $false
 	} catch {
 		Warn2 "预检没能起起来 sol（$_）。没预检通过就不动手，所以此次什么都没改。"
 		return $false
 	} finally {
-		Remove-Item $errFile -ErrorAction SilentlyContinue
+		try { $proc.Dispose() } catch { }
 	}
 }
 
@@ -525,21 +549,19 @@ function Invoke-Install {
 function Register-SolService {
 	$tr = '"' + $DestBin + '" ' + (($ArgsList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
 	# schtasks 自己的报错是"为什么没注册上"的唯一线索：绝不能吞掉它。
-	$out = & schtasks /Create /TN $TaskName /TR $tr /SC ONSTART /RU SYSTEM /RL HIGHEST /F 2>&1
-	$code = $LASTEXITCODE
-	if ($code -ne 0) {
-		Warn2 "schtasks /Create（带 /RL HIGHEST）失败，退出码 $code：$out"
+	$r = Invoke-Native 'schtasks' @('/Create', '/TN', $TaskName, '/TR', $tr, '/SC', 'ONSTART', '/RU', 'SYSTEM', '/RL', 'HIGHEST', '/F')
+	if ($r.Code -ne 0) {
+		Warn2 "schtasks /Create（带 /RL HIGHEST）失败，退出码 $($r.Code)：$($r.Out)"
 		# 部分 Windows 上 /RL HIGHEST 与 /RU SYSTEM 不能同时给（SYSTEM 本身就是最高权限）。
-		$out = & schtasks /Create /TN $TaskName /TR $tr /SC ONSTART /RU SYSTEM /F 2>&1
-		$code = $LASTEXITCODE
-		if ($code -ne 0) {
-			Warn2 "schtasks /Create 仍然失败，退出码 $code：$out`n  手动来一遍：schtasks /Create /TN $TaskName /TR `"$tr`" /SC ONSTART /RU SYSTEM /F"
+		$r = Invoke-Native 'schtasks' @('/Create', '/TN', $TaskName, '/TR', $tr, '/SC', 'ONSTART', '/RU', 'SYSTEM', '/F')
+		if ($r.Code -ne 0) {
+			Warn2 "schtasks /Create 仍然失败，退出码 $($r.Code)：$($r.Out)`n  手动来一遍：schtasks /Create /TN $TaskName /TR `"$tr`" /SC ONSTART /RU SYSTEM /F"
 			return
 		}
 		Say '（去掉 /RL HIGHEST 后注册成功：/RU SYSTEM 的任务本身就是最高权限）'
 	}
-	$run = & schtasks /Run /TN $TaskName 2>&1
-	if ($LASTEXITCODE -ne 0) { Warn2 "schtasks /Run 失败，退出码 $LASTEXITCODE：$run（任务已注册，只是这次没立刻起来；重启后会自动跑）" }
+	$run = Invoke-Native 'schtasks' @('/Run', '/TN', $TaskName)
+	if ($run.Code -ne 0) { Warn2 "schtasks /Run 失败，退出码 $($run.Code)：$($run.Out)（任务已注册，只是这次没立刻起来；重启后会自动跑）" }
 	Act 'admin' '注册并启动计划任务' "schtasks /Create /TN $TaskName /TR `"$tr`" /SC ONSTART /RU SYSTEM /F; schtasks /Run /TN $TaskName"
 }
 
