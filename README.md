@@ -143,7 +143,7 @@ security:
   exec_allowlist: [/usr/bin]
   cooldown: 5s
   cooldowns: { power.shutdown: 30s }
-  settle: 2m                  # after a boot or a resume: no power action for 2m (default; 0 = off)
+  settle: 5s                  # after a boot or a resume: no power action for 5s (default; 0 = off)
   # settle_actions: [power.sleep, power.shutdown]   # default: the three power actions
   rate_limit: 10/s            # global token bucket across every action and trigger
   rate_burst: 20              # bucket size; 0 means one second of rate_limit
@@ -405,11 +405,11 @@ Three limits protect the machine from a broadcast storm, and the first two are o
 
 - `security.cooldown` / `security.cooldowns.<action>` — per action: the minimum interval between
   two executions of the *same* action. The destructive power actions (`power.sleep`,
-  `power.shutdown`, `power.reboot`) default to **2m**: a wake-on-LAN sender repeats its packet for
+  `power.shutdown`, `power.reboot`) default to **5s**: a wake-on-LAN sender repeats its packet for
   reliability — three copies or more — and every copy arrives as its own trigger, so honouring the
   second one would undo the first. Override one with `security.cooldowns.<action>`, switch it off
   with `0s`.
-- `security.settle` (default **2m**) — the window right after sol started (a boot, a reboot, a
+- `security.settle` (default **5s**) — the window right after sol started (a boot, a reboot, a
   service restart) and right after the machine came back from suspend, during which the actions in
   `security.settle_actions` (`power.sleep`, `power.shutdown`, `power.reboot` by default) are
   refused. That is exactly where the rest of a magic-packet burst lands — the NIC wakes the machine

@@ -588,11 +588,11 @@ rules:
 `))
 
 	require.NoError(t, err)
-	require.Equal(t, 2*time.Minute, cfg.Settle)
+	require.Equal(t, 5*time.Second, cfg.Settle)
 	require.Equal(t, []wol.Action{wol.ActionSleep, wol.ActionShutdown, wol.ActionReboot}, cfg.SettleActions)
-	require.Equal(t, 2*time.Minute, cfg.ActionCooldowns[wol.ActionSleep])
-	require.Equal(t, 2*time.Minute, cfg.ActionCooldowns[wol.ActionShutdown])
-	require.Equal(t, 2*time.Minute, cfg.ActionCooldowns[wol.ActionReboot])
+	require.Equal(t, 5*time.Second, cfg.ActionCooldowns[wol.ActionSleep])
+	require.Equal(t, 5*time.Second, cfg.ActionCooldowns[wol.ActionShutdown])
+	require.Equal(t, 5*time.Second, cfg.ActionCooldowns[wol.ActionReboot])
 	require.Zero(t, cfg.Cooldown, "the general cooldown stays off")
 }
 
@@ -614,7 +614,7 @@ rules:
 	require.Equal(t, []wol.Action{wol.ActionShutdown}, cfg.SettleActions)
 	require.Equal(t, 10*time.Second, cfg.Cooldown)
 	require.NotContains(t, cfg.ActionCooldowns, wol.ActionSleep, "0s switches the built-in window off")
-	require.Equal(t, 2*time.Minute, cfg.ActionCooldowns[wol.ActionReboot])
+	require.Equal(t, 5*time.Second, cfg.ActionCooldowns[wol.ActionReboot])
 }
 
 func TestLoadGuardDisabled(t *testing.T) {

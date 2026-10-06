@@ -105,7 +105,7 @@
 - [x] 远端原始命令（`allow_raw_shell` 默认关 + `/bin/sh -c` + 认证 / 专用端口 / allowlist / `src_cidrs` + 启动告警 + HTTP `POST /v1/exec`）——见设计 §21.6 / §19.15；冒烟 s20 27/27（含\"默认关\"的实证：去掉开关后同一个包什么都不做、落回该端口规则）
 - [x] `wol.send`（唤醒别的机器：`mac`（必填，只来自配置）+ `broadcast` / `port` / `secure_on` / `repeat` / `interval`（默认广播 255.255.255.255、端口 9、1 份、100ms）；加载期填默认值；与 `ParsePacket` 互为逆的 `EncodeMagicPacket`；广播发送补 `SO_BROADCAST`（否则 `EACCES`）；复用 cooldown / 限流 / dry-run / 审计。顺手修掉 sequence 上 `timeout` 被静默忽略的既有漏洞）——见设计 §19.13
 - [x] 按动作 cooldown（`security.cooldown` + `security.cooldowns.<动作名>`；包触发与手动触发共用，抑制计入 `sol_suppressed_total`，手动触发返回 429）——见设计 §19.6
-- [x] 重复包保护（**默认开**）：三个电源动作内置 2m 按动作窗口（`0s` 可关）+ 新增 `security.settle`（刚启动 / 刚 suspend 回来 2m 内拒绝电源动作；进程年龄 + wall/单调时钟差判断；`settle: 0` 关闭、`settle_actions` 收窄；抑制计入 `settle_skipped` / `sol_settle_skipped_total`；README 双语与 schema 同步）——见设计 §19.6
+- [x] 重复包保护（**默认开**）：三个电源动作内置 5s 按动作窗口（`0s` 可关）+ 新增 `security.settle`（刚启动 / 刚 suspend 回来 5s 内拒绝电源动作；进程年龄 + wall/单调时钟差判断；`settle: 0` 关闭、`settle_actions` 收窄；抑制计入 `settle_skipped` / `sol_settle_skipped_total`；README 双语与 schema 同步）——见设计 §19.6
 - [x] 全局速率限制（令牌桶 / 每秒上限）：`security.rate_limit`（`10/s`、`600/m`、`3600/h`，裸数字 = 每秒；空/0 = 关闭）+ `security.rate_burst`（桶容量，0 = 一秒的 rate_limit；只写 burst 不写 rate 启动报错）。跨所有动作与触发源（包 / 手动 / 远端命令）计数；抑制计入 `sol_suppressed_total` 与新的 `sol_rate_limited_total`，手动触发 429；reload 时限额未变则保留已耗尽的桶；`/v1/status` 回显 `rate_limit{per_second,burst}` + `rate_limited`——见设计 §19.12
 - [x] 执行中的重入（in-flight 去重，替代"cooldown singleflight"）：语义定为**抑制**而非合并等待；身份 = 动作名 + 参数 / 裸 shell 命令行；无条件开启；计入 `suppressed` + `inflight`（`/metrics` 的 `sol_inflight_total`）；三条 HTTP 触发路径回 429。顺带修掉两个真缺陷（远端命令被护栏拒绝回 500、`/v1/exec` 被护栏拒绝回 202 却不执行）——见设计 §19.12.1，冒烟 s24 真机 16/16
 

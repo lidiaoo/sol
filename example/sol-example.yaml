@@ -10,7 +10,7 @@ rules:
   - match: { ports: [10], content: { kind: none } }
     action: power.sleep
 security:
-  # 默认就有的重复包保护：电源动作各带 2m 冷却，且刚开机 / 刚唤醒 2m 内不执行电源动作。
+  # 默认就有的重复包保护：电源动作各带 5s 冷却，且刚开机 / 刚唤醒 5s 内不执行电源动作。
   # 想关掉就把 settle 写 0、把对应动作写 0s。这里显式写出来只为一眼看得见默认值。
-  settle: 2m
-  cooldowns: { power.sleep: 2m, power.shutdown: 2m, power.reboot: 2m }
+  settle: 5s
+  cooldowns: { power.sleep: 5s, power.shutdown: 5s, power.reboot: 5s }

@@ -1288,9 +1288,11 @@ func buildAllRules(f *fileConfig, actions map[wol.Action]wol.ActionDef) ([]wol.R
 // sender stops. These are defaults, not policy: security.cooldowns.<action> overrides one, an
 // explicit 0s disables it, and security.settle is the window that covers the boot and the resume
 // itself, which a cooldown cannot see (a shutdown wipes the process, and its state with it).
+// A burst arrives together, so the window only has to outlast it; a long window also blocks a
+// legitimate packet sent right after a wake, which is why this is seconds and not minutes.
 const (
-	defaultPowerCooldown = 2 * time.Minute
-	defaultSettleWindow  = 2 * time.Minute
+	defaultPowerCooldown = 5 * time.Second
+	defaultSettleWindow  = 5 * time.Second
 )
 
 // defaultSettleActions is the set security.settle protects when security.settle_actions is absent.

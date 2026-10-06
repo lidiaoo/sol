@@ -132,7 +132,7 @@ security:
   exec_allowlist: [/usr/bin]
   cooldown: 5s
   cooldowns: { power.shutdown: 30s }
-  settle: 2m                  # after a boot or a resume: no power action for 2m (default; 0 = off)
+  settle: 5s                  # after a boot or a resume: no power action for 5s (default; 0 = off)
   # settle_actions: [power.sleep, power.shutdown]   # default: the three power actions
   rate_limit: 10/s            # global token bucket across every action and trigger
   rate_burst: 20              # bucket size; 0 means one second of rate_limit
@@ -371,10 +371,10 @@ token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文�
 三道限制保护机器不被广播风暴打穿，前两道**默认就开着**：
 
 - `security.cooldown` / `security.cooldowns.<动作名>` —— 按动作：**同一个**动作两次执行之间的最小
-  间隔。三个会改变状态的电源动作（`power.sleep`、`power.shutdown`、`power.reboot`）默认 **2 分钟**：
+  间隔。三个会改变状态的电源动作（`power.sleep`、`power.shutdown`、`power.reboot`）默认 **5 秒**：
   Wake-on-LAN 的发送方为了可靠会重复发包（3 个以上），而**每个包都是独立的一次触发**，认了第二个
   就等于把第一个撤销了。可用 `security.cooldowns.<动作名>` 改窗口，或用 `0s` 关掉。
-- `security.settle`（默认 **2 分钟**）—— 两个时刻之后的窗口：sol **刚启动**（开机、重启、服务重启）
+- `security.settle`（默认 **5 秒**）—— 两个时刻之后的窗口：sol **刚启动**（开机、重启、服务重启）
   和机器**刚从睡眠里回来**。这段时间里 `security.settle_actions` 列出的动作（默认三个电源动作）
   会被拒绝。因为魔法包突发剩下的那几个包**正落在这里**——网卡会把机器再唤醒一次——而只有这道护栏
   能真正断掉这种乒乓：机器一旦关机，进程和它内存里的窗口也就都没了。`security.settle: 0` 关闭。

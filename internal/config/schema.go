@@ -126,7 +126,7 @@ type securityConfig struct {
 	Cooldown                 string            `yaml:"cooldown"`
 	Cooldowns                map[string]string `yaml:"cooldowns"`
 	// Settle is the window right after sol starts (a boot, or a restart) or right after the machine
-	// resumes from suspend during which SettleActions are suppressed; empty means the built-in 2m.
+	// resumes from suspend during which SettleActions are suppressed; empty means the built-in 5s.
 	Settle              string           `yaml:"settle"`
 	SettleActions       []string         `yaml:"settle_actions"`
 	RateLimit           string           `yaml:"rate_limit"`
