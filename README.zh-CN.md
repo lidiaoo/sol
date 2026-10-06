@@ -420,39 +420,63 @@ AUTO 列说的是**身份，不是当下可用性**：现在 down 的网卡仍�
 
 ## Installation
 
-### Quick Install
+### Quick Install（零参数安装脚本）
 
-按平台与架构下载最新 release：
+一条命令，没有任何参数。它先认出现状、把它准备做什么打印出来，动手之前先问你。
 
-**Linux AMD64：**
+**Linux / macOS：**
+```console
+curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh | sh
+```
+
+**Windows**（PowerShell；也可以直接双击随附的 `install.cmd`）：
+```console
+irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 | iex
+```
+
+它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。它只写一个
+文件 `~/.config/sol/install.yaml`（Windows 是 `%APPDATA%\sol\install.yaml`），内容只有"sol 怎么跑"；
+然后把现状与这份文件都打印出来，问两个问题：要不要装成服务、是否继续。你说"是"之前什么都不改。
+
+**重跑脚本**就是看现状、改 sol 的跑法（改文件再跑一遍）、或卸载（答 `u`，删配置前还会再问一次）。
+它做的每一件事都追加写进 `install.log`（带等价命令），和台账 `install.json` 放在一起。
+
+东西落在哪：二进制 `/usr/local/bin/sol`（Windows `C:\ProgramData\sol\sol.exe`），台账与历史
+`/usr/local/share/sol/`（Windows `C:\ProgramData\sol\`）；只有你选了装服务才会多一个 systemd
+单元 / launchd plist / 计划任务。sol 自己的配置与日志一个都不碰。
+
+这份脚本三平台通用，但目前只在 Linux 上真机跑过；macOS 与 Windows 分支的证据强度记在
+[docs/install-design.md](docs/install-design.md)（等 CI 覆盖）。
+
+### Download the release directly（自己下 release）
+
+**Linux AMD64:**
 ```bash
 curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
-**Linux ARM64：**
+**Linux ARM64:**
 ```bash
 curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
-**macOS Intel：**
+**macOS Intel:**
 ```bash
 curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
-**macOS Apple Silicon：**
+**macOS Apple Silicon:**
 ```bash
 curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
-**Windows (PowerShell)：**
+**Windows (PowerShell):**
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-windows-amd64.zip" -OutFile "sol.zip"
 Expand-Archive -Path "sol.zip" -DestinationPath "." -Force
-move sol.exe C:\Windows\System32\sol.exe
 ```
 
-> 上游最后一个 tag 是 v0.0.2，配置文件、额外动作和端口 9 的变更都在它之后；升级既有安装前
-> 请先读、额外动作和端口 9 的变更；升级既有安装前请先读
+> 上游最后一个 tag 是 v0.0.2，配置文件、额外动作与端口 9 的变更都在它之后；升级既有安装前请先读
 > [CHANGELOG](CHANGELOG.md)。
 
 ### Build from source

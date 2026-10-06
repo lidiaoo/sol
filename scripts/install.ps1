@@ -332,6 +332,14 @@ function Invoke-Install {
 
 	if ($script:ServiceChosen) { Register-SolService }
 
+	# 计划任务不收集 stdout：审计日志只能靠 sol 自己写文件，配置里没写就提醒一句。
+	if ($script:ServiceChosen -and (Test-Path $RunConfig)) {
+		$hasFileLog = (Get-Content $RunConfig) | Where-Object { $_ -match 'output:\s*file' }
+		if (-not $hasFileLog) {
+			Warn2 "计划任务不收集 stdout：$RunConfig 里建议写 logging: { output: file, file: C:\ProgramData\sol\sol.log }，否则审计记录无处可去。"
+		}
+	}
+
 	# 防火墙（按运行配置里的端口；读不到就不猜）
 	$ports = Get-ThresholdPorts
 	if ($ports.Count -gt 0) {

@@ -138,22 +138,22 @@
 
 ## P5 安装 · 覆盖升级 · 卸载 · 状态查看（docs/install-design.md）
 
-- [x] 设计定稿文档 `docs/install-design.md`（13 节：目标与非目标 / 交付形态与输出约定 / 安装台账 / 安装报告 / 三个查询子命令 / 探测决策矩阵 / 覆盖安装与升级 / 卸载 / 各平台差异与文件清单 / 验证与证据强度 / 包管理器 / 落地顺序 / 未决项）
-- [ ] 安装脚本的"现状报告"（装完 / 重跑时第一屏）：二进制真实路径与版本、生效配置与来源、服务形态、台账、日志去处；未纳管时也照报（**这就是"看状态"，不再做成 `sol status` 子命令**）
-- [ ] 安装脚本的"配置预检"：`sol listen --dry-run` 起一次，几秒内非零退出即视为被拒，把 stderr 原文 + 修法给用户；通过才动服务（**替代 `sol config check` 子命令**）
-- [ ] 安装脚本的"权限/可写性告警"：端口 <1024 且非 root、`logging.output: file` 的目录不存在或不可写（平台分支在脚本里，不进 sol）
-- [ ] `sol listen` 启动日志补配置来源行（`msg="configuration" path=... source=...`）
-- [ ] 台账 / 报告契约：`install.json` schema + `install.log` 格式 + 防漂移校验（报告值必须来自现场：重算 sha256、真跑 `--version`；不打印配置内容与密钥）+ 默认只给**简短**报告（文件清单 + 校验 + 接下来），完整动作清单写进 `install.log`
-- [ ] 本机安装配置（§6.1，**由安装脚本生成、用户可改**）：固定位置（Linux/macOS `~/.config/sol/install.yaml`、Windows `%APPDATA%\sol\install.yaml`；sudo 时写 `$SUDO_USER` 的家目录而不是 `/root`）+ **内容只有 `run.args`**（服务类型 / 单元路径 / CAP / 防火墙工具按平台推导，不进文件）+ **默认不覆盖已有**（问答里选 `r` 才重写）+ 未知键报错 + `run.args` 为列表并按真实 flag 集合校验 + 示例 `example/install-example.yaml`
-- [ ] 二进制来源（§6.2）：**就地发现优先**（脚本旁 `./sol` / 当前目录 / `$PATH`），找不到才回退下载（OS/arch 自动 + 校验）；不因"网上有新版"去动用户放的二进制
-- [ ] `scripts/install.sh`：探测（二进制发现 → 版本/哈希与台账比对 → `run.args` 与服务定义比对 → 异源提醒 → PATH 多命中只报告 → 无台账就地接管）→ **生成配置 → 展示并确认**（答 n = 只生成不执行，文件保留）→ 执行（配置预检不通过不覆盖 + 原子替换留 `sol.bak` + 重新生成服务定义 + 回读运行中版本）+ **零命令行参数**（未安装：`执行吗？[Y/n]`；已安装：`回车=按配置应用 / u=卸载 / r=重新生成 / n=退出`；卸载再问一句"配置文件也删吗？[y/N]"；非交互环境只生成不执行；CI 用管道喂答案 `printf 'y\n' | bash install.sh`）+ `flock`
-- [ ] `scripts/install.ps1`：`C:\ProgramData\sol` + 生成 `%APPDATA%\sol\install.yaml`（只有 `run.args`）并确认——**零参数**，交互问答与 Linux 版一致（装不装服务现场问，默认沿用台账）；替换前先 `schtasks /End`（运行中 exe 有文件锁）
-- [ ] 三平台产物模板（§9.1/§9.2）：systemd unit / launchd plist / 计划任务三条注册命令 + `scripts/install.cmd`（Windows 双击入口，内部按对的执行策略调 ps1）+ macOS quarantine 处理（`xattr -d com.apple.quarantine`）+ Windows 上必须 `logging.output: file`（计划任务不收集 stdout）+ 各平台"首次进入方式"一行（§9.2）
-- [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本 + 注册后确认服务真的起来（把 macOS / Windows 从"未验证"提到"有 CI 证据"）
+- [x] 设计定稿文档 `docs/install-design.md`（13 节：目标与非目标 / 交付形态与输出约定 / 安装台账 / 安装报告 / 装完要能回答的问题（由安装脚本给）/ 探测决策矩阵 / 覆盖安装与升级 / 卸载 / 各平台差异与文件清单 / 验证与证据强度 / 包管理器 / 落地顺序 / 未决项）
+- [x] 安装脚本的"现状报告"（装完 / 重跑时第一屏）：二进制真实路径与版本、PATH 上每个命中的 sol 并标出哪个生效、服务形态、台账、是不是包管理器装的、运行配置；未纳管时也照报（**这就是"看状态"，不再做成 `sol status` 子命令**）
+- [x] 安装脚本的"配置预检"：`sol listen --dry-run` 起一次（dry-run：匹配了也不会真做事），几秒内自己退出即视为被拒并中止，把 stderr 原文给用户；通过才动服务（**替代 `sol config check` 子命令**）
+- [x] 安装脚本的"权限/可写性告警"：配置里端口 <1024 时在台账记 CAP、unit 里留好注释；计划任务不收集 stdout → Windows 侧发现配置里没写 `logging.output: file` 时提醒（平台分支在脚本里，不进 sol）
+- ~~`sol listen` 启动日志补配置来源行~~ **不做**（sol 本体改动，见未决项）
+- [x] 台账 / 报告契约：`install.json`（schema 1，含 `service`/`previous`/`incomplete`）+ `install.log`（每次一段，动作 + 等价命令 + 是否 root）+ 报告值全部来自现场（重算 sha256、真跑 `--version`、从不打印配置内容与密钥）；报告只给**简短**一段（路径 + 校验 + 接下来）
+- [x] 本机安装配置（§6.1）：固定位置（Linux/macOS `~/.config/sol/install.yaml`、Windows `%APPDATA%\sol\install.yaml`；sudo 时写 `$SUDO_USER` 的家目录）+ **内容只有 `run.args`**（服务类型 / 单元路径 / CAP / 防火墙工具按平台推导，不进文件）+ **默认不覆盖已有**（选 `r` 才重写）+ `run.args` 按 `sol listen --help` 的**真实** flag 集合校验（提示里会点名那个不认识的参数）+ 示例 `example/install-example.yaml`
+- [x] 二进制来源（§6.2）第一步：**就地发现**（脚本旁 `./sol` / 当前目录 / `$PATH`），且"网上有新版"绝不去动用户放的那个
+- [ ] 二进制来源第二步：一台机器上完全没有 sol 时的下载回退（OS/arch 自动 + 校验）——当前是明确报错并让人放一个，不是静默下载
+- [x] `scripts/install.sh`（**已实现，真机冒烟 `scratch/s35` 57 条断言全过**，含真注册 systemd 服务 + 真发魔法包（journald 里能看到审计记录）+ 真卸载 + 换二进制升/降级 + 预检不过就什么都不动）：探测 → **生成配置 → 展示并确认** → 执行（预检 + 原子替换留 `sol.bak` + 服务定义单渲染器 + 回读）→ 卸载（先读台账，只删自己建的，配置默认留）+ **零命令行参数**（未安装：`执行吗？[Y/n]`；已安装：`回车=按配置应用 / u=卸载 / r=重新生成 / n=退出`；读不到答案（EOF / 无人值守）时**绝不执行**；CI 用管道喂答案 `printf 'y\n' | sh install.sh`）+ 目录锁
+- [x] `scripts/install.ps1` + `install.cmd`（**未在真机跑过**：本机没有 Windows / pwsh，只做了逐行审查与结构校验）：`C:\ProgramData\sol` + 生成 `%APPDATA%\sol\install.yaml`（只有 `run.args`）并确认；替换前先 `schtasks /End`（运行中 exe 有文件锁）；机器 PATH 只加一次；防火墙规则从运行配置里的端口推导
+- [x] 三平台产物模板（§9.1/§9.2）：systemd unit / launchd plist / 计划任务三条注册命令 + `scripts/install.cmd`（双击入口，内部按对的执行策略调 ps1）+ macOS quarantine 处理（`xattr -d com.apple.quarantine`）+ Windows 上提醒 `logging.output: file`
+- [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本 + 注册后确认服务真的起来——**这是把 install.ps1 与 macOS 分支从"未验证"提上来的唯一办法**
 - [ ] scoop + winget 清单（schema 校验；winget 在 CI 里装不了，只能标 schema 级证据）
 - [ ] Hermes skill `sol-install` + `references/{linux,macos,windows}.md`（决策树：先判断此前是怎么装的，再选路径；装完给摘要，证据取自安装脚本的输出与台账）
-- [ ] README 一行安装（替换现有 5 段复制粘贴）+ 修正 Windows 那段 `move sol.exe C:\Windows\System32` + 中英文同步（代码块逐字节一致）
-- [ ] （可选，需对应实机或明确标"未验证"）brew formula / AUR
+- [x] README 安装段改为"一条命令 + 零参数安装脚本"（release 下载保留在下一节）+ 修掉 Windows 那段 `move sol.exe C:\Windows\System32` + 中英文同步（代码块逐字节一致，由 `TestReadmeTranslationsAgree` 守）
 
 ## P5 未决项
 

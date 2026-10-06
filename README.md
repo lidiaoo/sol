@@ -462,7 +462,38 @@ still validated at start-up: a name that is not there is a typo, and it is refus
 
 ### Quick Install
 
-Download the latest release for your platform and architecture:
+One script, no arguments. It works out the situation, shows you what it would do, and asks before it
+touches anything.
+
+**Linux / macOS:**
+```console
+curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh | sh
+```
+
+**Windows** (PowerShell, or double-click the shipped `install.cmd`):
+```console
+irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 | iex
+```
+
+It uses the `sol` you already have - next to the script, in the current directory, or on `PATH` - and
+never replaces it with a download. It writes one file, `~/.config/sol/install.yaml`
+(`%APPDATA%\sol\install.yaml` on Windows), whose only content is how to run sol, then prints both the
+current situation and that file, and asks two questions: install as a service, and go ahead. Nothing
+changes until you say yes.
+
+Re-running the script is how you see the current state, change how sol runs (edit the file, run it
+again), or uninstall (answer `u`; it asks before deleting your configuration). Every action it takes
+is appended to `install.log`, with the equivalent command, next to the ledger `install.json`.
+
+Where things go: the binary in `/usr/local/bin/sol` (`C:\ProgramData\sol\sol.exe`), the ledger and
+history in `/usr/local/share/sol/` (`C:\ProgramData\sol\`), and - only if you asked for the service -
+a systemd unit, a launchd plist, or a scheduled task. sol's own configuration and logs are never
+touched.
+
+The script is Linux/macOS/Windows aware but has been exercised on Linux; the Windows and macOS paths
+are marked as such in [docs/install-design.md](docs/install-design.md) until CI covers them.
+
+### Download the release directly
 
 **Linux AMD64:**
 ```bash
@@ -488,7 +519,6 @@ curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-d
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-windows-amd64.zip" -OutFile "sol.zip"
 Expand-Archive -Path "sol.zip" -DestinationPath "." -Force
-move sol.exe C:\Windows\System32\sol.exe
 ```
 
 > Upstream's last tagged release, v0.0.2, predates the configuration file, the extra actions and the port-9 change; read the

@@ -636,6 +636,11 @@ do_install() {
 			act root "放置二进制（原子替换）" "sudo mv <新二进制> $DEST_BIN"
 		fi
 		rm -f "$new_tmp"
+		if [ "$SERVICE_KIND" = "launchd" ] && command -v xattr >/dev/null 2>&1; then
+			# 下载来的二进制带 quarantine 标记，不清掉首次运行会被 Gatekeeper 拦住。
+			xattr -d com.apple.quarantine "$DEST_BIN" 2>/dev/null || true
+			act user "清 quarantine 标记（macOS）" "xattr -d com.apple.quarantine $DEST_BIN"
+		fi
 	fi
 
 	# 4) 服务定义（只有选了服务才写）
