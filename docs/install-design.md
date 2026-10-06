@@ -28,7 +28,7 @@
 
 | 层 | 交付物 | 面向谁 |
 | --- | --- | --- |
-| 仓库真资产 | `scripts/install.sh`（Linux/macOS，POSIX）、`scripts/install.ps1`（Windows）、README 一行安装、包管理器清单 | 用户 |
+| 仓库真资产 | `scripts/install.sh`（Linux/macOS，POSIX）、`scripts/install.ps1` + `scripts/install.cmd`（Windows：双击入口，内部按对的执行策略调 ps1）、README 一行安装、包管理器清单 | 用户 |
 | 查询子命令 | `sol status` / `sol paths` / `sol config check` | 用户与脚本/CI |
 | Hermes skill | `sol-install`（决策树 + `references/{linux,macos,windows}.md`） | Agent |
 
@@ -99,6 +99,8 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
   systemctl status sol.service
   sol status
 ```
+
+报告的"校验"那两行按平台换：Linux `systemctl is-active sol.service` / macOS `launchctl print system/com.lidiaoo.sol` / Windows `schtasks /Query /TN sol`。
 
 **落盘**：简短报告 + 完整动作清单追加写 `install.log`（带时间戳，install / upgrade / uninstall 每次一段）。
 
@@ -248,6 +250,8 @@ run:
 
 想钉版本就自己放一个二进制——脚本不替用户决定版本，也不会因为"网上有新版"就去动你放的那个。
 
+**落点由脚本按平台决定（不可配）**：Linux / macOS → `/usr/local/bin/sol`（当前用户没有写权限就用 `~/.local/bin/sol` 并提示怎么加 PATH）；Windows → `C:\ProgramData\sol\sol.exe` 并加进机器 PATH。macOS 上脚本还会处理下载文件的 quarantine 标记（`xattr -d com.apple.quarantine`），否则首次运行会被 Gatekeeper 拦住——这一步用户不需要知道。
+
 ## 7 覆盖安装与升级
 
 ```
@@ -301,14 +305,82 @@ run:
 | | Linux | macOS | Windows |
 | --- | --- | --- | --- |
 | 二进制 | `/usr/local/bin/sol` | `/usr/local/bin/sol` | `C:\ProgramData\sol\sol.exe` |
+| 二进制落点（脚本决定，不可配） | `/usr/local/bin`；当前用户没写权限时 `~/.local/bin` + 提示 PATH | 同 Linux | `C:\ProgramData\sol` + 机器 PATH |
 | 台账 / 历史 | `/usr/local/share/sol/{install.json,install.log}` | 同 Linux | `C:\ProgramData\sol\{install.json,install.log}` |
 | 安装配置（只有 `run.args`，用户可改） | `~/.config/sol/install.yaml` | 同 Linux | `%APPDATA%\sol\install.yaml` |
 | 服务管理器 | systemd | launchd | 计划任务（纯 exe 不能当服务） |
 | 装服务的额外文件 | `/etc/systemd/system/sol.service` | `/Library/LaunchDaemons/com.lidiaoo.sol.plist` | 计划任务 `sol` + 防火墙规则 |
+| 日志去向 | systemd 收 stdout → journald | launchd 要 `StandardErrorPath` → `/usr/local/var/log/sol.log` | **计划任务不收集 stdout** → 必须 `logging.output: file` |
+| 防火墙 | 检测到 `ufw` / `firewalld` 才加规则 | 默认不动（macOS 应用防火墙不拦 UDP 入站；开了就提示手动放行） | `netsh advfirewall` / `New-NetFirewallRule` |
+| 首次进入方式 | `curl … install.sh \| sh` | 同 Linux，另加 quarantine 处理 | `irm … install.ps1 \| iex`，或双击 `install.cmd` |
 | 覆盖陷阱 | 旧 inode、`Restart=always` | `KeepAlive` 拉回 | 运行中 exe 文件锁 |
 | 特权端口 | root 或 `CAP_NET_BIND_SERVICE` | root | 无特权端口概念 |
 
 二进制来源：你放的（脚本就地使用）或脚本回退下载（§6.2）。默认（不装服务）产生：二进制 + 台账 + 历史 + 安装配置；换过二进制后多一个 `sol.bak`。**运行配置与日志不由安装脚本创建**，只在报告里打印期望路径。
+
+### 9.1 脚本生成的服务定义（三平台模板）
+
+**Linux**（systemd，`/etc/systemd/system/sol.service`）：
+
+```ini
+[Unit]
+Description=SoL listener
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/sol listen --config /etc/sol/sol.yaml
+Restart=always
+# 要用保留端口 7/9 或 <1024 端口时（否则注释掉）：
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+# CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# User=sol
+
+[Install]
+WantedBy=multi-user.target
+```
+
+注册：`systemctl daemon-reload && systemctl enable --now sol.service`
+
+**macOS**（launchd，`/Library/LaunchDaemons/com.lidiaoo.sol.plist`）：
+
+```xml
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.lidiaoo.sol</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/sol</string>
+    <string>listen</string>
+    <string>--config</string>
+    <string>/etc/sol/sol.yaml</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/usr/local/var/log/sol.log</string>
+</dict>
+</plist>
+```
+
+注册：`launchctl bootstrap system /Library/LaunchDaemons/com.lidiaoo.sol.plist`（旧写法 `load -w`）；看状态 `launchctl print system/com.lidiaoo.sol`。
+
+**Windows**（计划任务，纯 exe 不能注册成服务）：
+
+```powershell
+schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config C:\ProgramData\sol\sol.yaml" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+schtasks /Run /TN sol
+schtasks /Query /TN sol /V /FO LIST
+```
+
+计划任务**不收集 stdout**，所以配置里要让 sol 自己写日志：`logging.output: file`（否则审计记录无处可去）。
+
+三份模板都从**同一份配置的 `run.args`** 生成——这正是把参数放进文件的价值：改一次，三个平台一致。
+
+### 9.2 三平台的首次进入方式（都零参数）
+
+- **Linux / macOS**：`curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh | sh`（或下载后 `sh install.sh`）。
+- **macOS 额外一步（脚本自己处理）**：下载来的二进制带 quarantine 标记，脚本执行 `xattr -d com.apple.quarantine`，否则首次运行会被 Gatekeeper 弹"无法验证开发者"。
+- **Windows**：`irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 | iex`；或双击随附的 `install.cmd`（它内部按正确的执行策略调用 ps1，用户不需要记 `-ExecutionPolicy`）。
+- 三平台一致的部分：**零参数**、生成的配置形态相同（只有 `run.args`）、同样两次问答、默认不需要特权（除非要装服务，或用 <1024 / 保留端口）。
 
 ## 10 验证与证据强度
 
@@ -316,7 +388,7 @@ run:
 | --- | --- | --- |
 | `sol status` / `paths` / `config check` | **真机全量** | 单测 + Linux 真机冒烟（沿用现有 `sNN` 机制） |
 | `scripts/install.sh` | **真机全量** | Linux 真机跑：无二进制时下载回退 / 有二进制时就地使用 / 重跑无变化 / 换二进制（升与降）/ 只改 `run.args` / 异源提醒 / 无台账 / 卸载，并真发一个魔法包确认能起来 |
-| `scripts/install.ps1`、macOS 路径 | **CI 证据**（否则只能标"仅语法级"） | 新增 `.github/workflows/install-smoke.yml`，matrix ubuntu/macos/windows 真跑脚本 + 校验 + `--version` + `ifaces` |
+| `scripts/install.ps1`、macOS 路径、三平台产物模板（unit / plist / 计划任务） | **CI 证据**（否则只能标"仅语法级"） | 新增 `.github/workflows/install-smoke.yml`，matrix ubuntu/macos/windows 真跑脚本 + 校验 + `--version` + `ifaces` + 注册后确认服务真的起来了 |
 | 包管理器清单 | **schema 级** | scoop/winget 的 JSON schema 校验；winget 在 CI 里装不了，只能标 |
 | README 里的安装命令 | **真跑** | 沿用现有 readme 断言脚本（抽 README 片段真执行） |
 

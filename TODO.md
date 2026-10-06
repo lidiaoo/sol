@@ -148,7 +148,8 @@
 - [ ] 二进制来源（§6.2）：**就地发现优先**（脚本旁 `./sol` / 当前目录 / `$PATH`），找不到才回退下载（OS/arch 自动 + 校验）；不因"网上有新版"去动用户放的二进制
 - [ ] `scripts/install.sh`：探测（二进制发现 → 版本/哈希与台账比对 → `run.args` 与服务定义比对 → 异源提醒 → PATH 多命中只报告 → 无台账就地接管）→ **生成配置 → 展示并确认**（答 n = 只生成不执行，文件保留）→ 执行（配置预检不通过不覆盖 + 原子替换留 `sol.bak` + 重新生成服务定义 + 回读运行中版本）+ **零命令行参数**（未安装：`执行吗？[Y/n]`；已安装：`回车=按配置应用 / u=卸载 / r=重新生成 / n=退出`；卸载再问一句"配置文件也删吗？[y/N]"；非交互环境只生成不执行；CI 用管道喂答案 `printf 'y\n' | bash install.sh`）+ `flock`
 - [ ] `scripts/install.ps1`：`C:\ProgramData\sol` + 生成 `%APPDATA%\sol\install.yaml`（只有 `run.args`）并确认——**零参数**，交互问答与 Linux 版一致（装不装服务现场问，默认沿用台账）；替换前先 `schtasks /End`（运行中 exe 有文件锁）
-- [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本（把 macOS / Windows 从"未验证"提到"有 CI 证据"）
+- [ ] 三平台产物模板（§9.1/§9.2）：systemd unit / launchd plist / 计划任务三条注册命令 + `scripts/install.cmd`（Windows 双击入口，内部按对的执行策略调 ps1）+ macOS quarantine 处理（`xattr -d com.apple.quarantine`）+ Windows 上必须 `logging.output: file`（计划任务不收集 stdout）+ 各平台"首次进入方式"一行（§9.2）
+- [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本 + 注册后确认服务真的起来（把 macOS / Windows 从"未验证"提到"有 CI 证据"）
 - [ ] scoop + winget 清单（schema 校验；winget 在 CI 里装不了，只能标 schema 级证据）
 - [ ] Hermes skill `sol-install` + `references/{linux,macos,windows}.md`（决策树：先判断此前是怎么装的，再选路径；装完给摘要，证据取自 `sol status --json` 与台账）
 - [ ] README 一行安装（替换现有 5 段复制粘贴）+ 修正 Windows 那段 `move sol.exe C:\Windows\System32` + 中英文同步（代码块逐字节一致）
