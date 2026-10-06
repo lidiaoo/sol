@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bavix/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/domain/wol"
 )
 
 type factoryMock struct {

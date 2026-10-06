@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/bavix/sol/internal/domain/wol"
-	"github.com/bavix/sol/internal/infra/network"
+	"github.com/lidiaoo/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/infra/network"
 )
 
 var ifacesJSON bool

@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bavix/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/domain/wol"
 )
 
 // fullMatch compiles an allowlist entry the way the loader does.

@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bavix/sol/internal/domain/wol"
-	"github.com/bavix/sol/internal/infra/httpapi"
+	"github.com/lidiaoo/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/infra/httpapi"
 )
 
 // doWithBody is do() plus a request body, for the endpoints that take one.

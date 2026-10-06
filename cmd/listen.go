@@ -13,11 +13,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/bavix/sol/internal/app"
-	"github.com/bavix/sol/internal/config"
-	"github.com/bavix/sol/internal/deps"
-	"github.com/bavix/sol/internal/domain/wol"
-	"github.com/bavix/sol/internal/infra/logging"
+	"github.com/lidiaoo/sol/internal/app"
+	"github.com/lidiaoo/sol/internal/config"
+	"github.com/lidiaoo/sol/internal/deps"
+	"github.com/lidiaoo/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/infra/logging"
 )
 
 var errNoRules = errors.New("no rules configured: pass --port or set rules in the config file")

@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bavix/sol/internal/infra/logging"
+	"github.com/lidiaoo/sol/internal/infra/logging"
 )
 
 // TestLoadLoggingOutput covers the destination rules of §18: the output names a real destination,

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bavix/sol/internal/infra/logging"
+	"github.com/lidiaoo/sol/internal/infra/logging"
 )
 
 func TestParseLevel(t *testing.T) {

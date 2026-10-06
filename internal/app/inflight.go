@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bavix/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/domain/wol"
 )
 
 // inflight deduplicates concurrent runs of the same action: while one is in flight, another

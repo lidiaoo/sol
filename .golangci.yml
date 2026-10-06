@@ -57,7 +57,7 @@ formatters:
       sections:
         - Standard
         - Default
-        - Prefix(github.com/bavix)
+        - Prefix(github.com/lidiaoo)
   exclusions:
     generated: lax
     paths:

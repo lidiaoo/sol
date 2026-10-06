@@ -1,5 +1,5 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -X github.com/bavix/sol/internal/buildinfo.version=$(VERSION)
+LDFLAGS := -X github.com/lidiaoo/sol/internal/buildinfo.version=$(VERSION)
 
 .PHONY: *
 

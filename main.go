@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/bavix/sol/cmd"
+	"github.com/lidiaoo/sol/cmd"
 )
 
 func main() {

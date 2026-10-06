@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bavix/sol/internal/infra/httpapi"
+	"github.com/lidiaoo/sol/internal/infra/httpapi"
 )
 
 func testCommandDeps() httpapi.Deps {

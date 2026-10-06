@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bavix/sol/internal/domain/wol"
-	"github.com/bavix/sol/internal/infra/logging"
+	"github.com/lidiaoo/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/infra/logging"
 )
 
 // schemaPath is the published schema, relative to this package.

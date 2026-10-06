@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bavix/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/domain/wol"
 )
 
 // TestSetInterfacesFollowsTheMachine covers the live identity refresh (§17.2): the NICs that

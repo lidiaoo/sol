@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bavix/sol/internal/domain/wol"
-	"github.com/bavix/sol/internal/infra/exec"
+	"github.com/lidiaoo/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/infra/exec"
 )
 
 func echoDef(args ...string) wol.ActionDef {

@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/bavix/sol/internal/app"
-	"github.com/bavix/sol/internal/infra/httpapi"
+	"github.com/lidiaoo/sol/internal/app"
+	"github.com/lidiaoo/sol/internal/infra/httpapi"
 )
 
 func TestRemoteCommandErrorMapsTheGuardrails(t *testing.T) {

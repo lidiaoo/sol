@@ -1,7 +1,7 @@
 // Package buildinfo reports which binary is running: its version, and the commit it was built
 // from. There are two sources, in order of precedence.
 //
-//   - A link-time stamp: `-X github.com/bavix/sol/internal/buildinfo.version=v1.2.3`. `make
+//   - A link-time stamp: `-X github.com/lidiaoo/sol/internal/buildinfo.version=v1.2.3`. `make
 //     build` does this with `git describe`, so a local build is identifiable as well.
 //   - The metadata the toolchain embeds on its own. A build from a checkout gets a
 //     pseudo-version naming the tree - `v0.0.0-20261006002016-fadb54ddefce+dirty` - and a build

@@ -20,12 +20,12 @@
 项目                     macOS Linux Windows  配置    触发            HTTP   睡眠  自定义命令
 SR-G/sleep-on-lan        ❌    ✅    ✅      中等    反向WoL         ✅    ✅    ✅
 jkmassel/shutdown-on-lan ✅    ✅    ✅      简单    TCP 字符串      ❌    ❌    ❌
-bavix/sol（本仓库）       ✅    ✅    ✅      简单    反向WoL         ❌    ❌    ❌
+lidiaoo/sol（本仓库，fork 自 bavix/sol）       ✅    ✅    ✅      简单    反向WoL         ❌    ❌    ❌
 ```
 
 - SR-G/sleep-on-lan：功能全（REST + 自定义命令 + sleep），配置重，不支持 macOS。定位是"常驻管理 agent"。
 - jkmassel/shutdown-on-lan：TCP 发字符串触发，连 MAC 都不校验。最简，也最不安全（任何能连端口者即可关机）。
-- bavix/sol：本仓库，有 MAC 校验 + 端口路由，只做电源动作。定位是"极简可靠"。
+- lidiaoo/sol（fork 自 bavix/sol）：本仓库，有 MAC 校验 + 端口路由，只做电源动作。定位是"极简可靠"。
 
 本设计把 sol 从"单端口 × 单网卡 × 单动作"扩成"多端口 × 多网卡 × 内容匹配 × 具名动作"，同时用**保留端口**把标准 WOL 端口变成安全边界；HTTP 与自定义命令作为后续阶段，且都强制带安全约束。
 
@@ -1419,7 +1419,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 手动触发走 `ListenService.Dispatch`：实例处于 dry-run 时只记日志不执行；成功后计入 `sol_actions_total`。
 - 冒烟（真机，`127.0.0.1:18080`，token 来自环境变量）：`/healthz` 免认证 200；无 token / 错 token 401；带 token 的 `/v1/status` 显示 `packets=1 matched=1 last_event={port:10040, interface:enp6s0, action:noop}`；`/v1/rules` 回 `{ports:[10040], mac:self, content:none, action:noop}`；`POST /v1/actions/noop` -> 202，未知动作 -> 404，`/v1/reload` -> 501。
 - **构建身份（`internal/buildinfo`）**：`/v1/status` 回 `version` + `revision`，`/metrics` 回 `sol_build_info{version="…",revision="…"} 1`（Prometheus 惯例），`sol --version` 走 cobra 的 `Version`（有提交号时打成 `v1.2.3 (fadb54ddefce-dirty)`）。
-  - 取值优先级：链接期打标 `-X github.com/bavix/sol/internal/buildinfo.version=…`（`make build` / `make build-static` 用 `git describe --tags --always --dirty` 注入，所以本地构建也能自报家门）> 工具链自己嵌入的元数据（checkout 构建 -> 伪版本 `v0.0.0-<时间戳>-<提交>[+dirty]`；`go install …@v1.2.3` -> 该 tag）> `dev`。
+  - 取值优先级：链接期打标 `-X github.com/lidiaoo/sol/internal/buildinfo.version=…`（`make build` / `make build-static` 用 `git describe --tags --always --dirty` 注入，所以本地构建也能自报家门）> 工具链自己嵌入的元数据（checkout 构建 -> 伪版本 `v0.0.0-<时间戳>-<提交>[+dirty]`；`go install …@v1.2.3` -> 该 tag）> `dev`。
   - 为什么不靠发版流水线：仓库的 release 走 `bavix/.github` 的共享 workflow（`go-release-action`，`ldflags: "-s -w"`，inputs 只声明了 `executable_compression`），**不注入版本号**，从这个仓库也塞不进 `ldflags`。Go 工具链的自动 VCS 打标免费给出提交号，共享 workflow 不用改；`-s -w -trimpath` 之后这些信息依然在（真机验证过：strip 后的二进制里找得到打标字节）。
   - `revision` 取 `vcs.revision` 前 12 位，工作区脏时加 `-dirty`（诚实：别把脏树说成干净发布）。
   - 单测：`internal/buildinfo/buildinfo_internal_test.go`（打标优先 / 绝不返回空 / revision 形状，形状而非值——它取决于测试二进制在哪构建）；`internal/infra/httpapi/server_test.go` 断言 `/v1/status` 的 `version`+`revision` 与 `/metrics` 的 `sol_build_info`。

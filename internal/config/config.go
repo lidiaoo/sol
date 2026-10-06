@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/bavix/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/domain/wol"
 )
 
 // Control-plane auth types accepted by server.http.auth.type (§18.1).

@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/bavix/sol/internal/buildinfo"
+	"github.com/lidiaoo/sol/internal/buildinfo"
 )
 
 // buildLabel renders the version cobra prints for --version, naming the commit when the build

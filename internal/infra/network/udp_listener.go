@@ -7,8 +7,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/bavix/sol/internal/app"
-	"github.com/bavix/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/app"
+	"github.com/lidiaoo/sol/internal/domain/wol"
 )
 
 type UDPListenerFactory struct{}

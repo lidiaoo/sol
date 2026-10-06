@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net"
 
-	"github.com/bavix/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/domain/wol"
 )
 
 var (

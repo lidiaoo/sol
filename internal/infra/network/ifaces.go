@@ -6,7 +6,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/bavix/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/domain/wol"
 )
 
 var ErrNoEligibleInterface = errors.New("no eligible interface found")

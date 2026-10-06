@@ -1,4 +1,4 @@
-module github.com/bavix/sol
+module github.com/lidiaoo/sol
 
 go 1.26
 

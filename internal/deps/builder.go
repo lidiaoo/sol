@@ -14,17 +14,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bavix/sol/internal/app"
-	"github.com/bavix/sol/internal/buildinfo"
-	"github.com/bavix/sol/internal/config"
-	"github.com/bavix/sol/internal/domain/wol"
-	"github.com/bavix/sol/internal/infra/exec"
-	"github.com/bavix/sol/internal/infra/httpapi"
-	"github.com/bavix/sol/internal/infra/network"
-	"github.com/bavix/sol/internal/infra/outbound"
-	"github.com/bavix/sol/internal/infra/sequence"
-	"github.com/bavix/sol/internal/infra/system"
-	"github.com/bavix/sol/internal/infra/wolsend"
+	"github.com/lidiaoo/sol/internal/app"
+	"github.com/lidiaoo/sol/internal/buildinfo"
+	"github.com/lidiaoo/sol/internal/config"
+	"github.com/lidiaoo/sol/internal/domain/wol"
+	"github.com/lidiaoo/sol/internal/infra/exec"
+	"github.com/lidiaoo/sol/internal/infra/httpapi"
+	"github.com/lidiaoo/sol/internal/infra/network"
+	"github.com/lidiaoo/sol/internal/infra/outbound"
+	"github.com/lidiaoo/sol/internal/infra/sequence"
+	"github.com/lidiaoo/sol/internal/infra/system"
+	"github.com/lidiaoo/sol/internal/infra/wolsend"
 )
 
 var (
