@@ -189,17 +189,22 @@ function Read-Args {
 	$out
 }
 
-# sol.yaml：最小可用的一份（一条 noop 规则，只记日志不做事）。没有才写，绝不覆盖。
+# sol.yaml：一份开箱即用的配置（纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠）。没有才写，绝不覆盖。
 $RuntimeConfigGenerated = $false
 function Ensure-RuntimeConfig {
 	if (Test-Path $RunConfig) { return }
 	$lines = @(
-		'# 由安装脚本生成的最小配置：一条 noop 规则——匹配到只记日志，什么也不做。',
-		'# 端口、动作按需改；改完重跑安装脚本（或重启计划任务）即可。',
+		'# 纯包 -> 关机；magic+"reboot" -> 重启；magic+"sleep" -> 睡眠',
 		'version: 1',
+		'server:',
+		'  interfaces: []',
 		'rules:',
-		'  - match: { ports: [10010], content: { kind: none } }',
-		'    action: noop'
+		'  - match: { ports: [11], content: { kind: none } }',
+		'    action: power.shutdown',
+		'  - match: { ports: [12], content: { kind: none } }',
+		'    action: power.reboot',
+		'  - match: { ports: [10], content: { kind: none } }',
+		'    action: power.sleep'
 	)
 	if (-not (Test-Path $InstallDir)) { } # 配置跟执行目录走，不动 ProgramData
 	Write-Utf8NoBom $RunConfig $lines
@@ -272,7 +277,7 @@ function Show-State {
 	$st = Task-State
 	if ($st -eq 'installed') { Say "服务        计划任务 $TaskName 已注册" } else { Say "服务        没有（计划任务 $TaskName 不存在）" }
 	if (Test-Path $RunConfig) {
-		if ($script:RuntimeConfigGenerated) { Say "运行配置    $RunConfig（刚生成的最小配置：一条 noop 规则，按需改）" }
+		if ($script:RuntimeConfigGenerated) { Say "运行配置    $RunConfig（刚生成的示例配置：三条规则，按需改）" }
 		else { Say "运行配置    $RunConfig（sol 会读它）" }
 	} else { Say "运行配置    还不存在：$RunConfig" }
 	if ($env:SOL_INSTALL_ROOT) { Say "权限        普通用户 + SOL_INSTALL_ROOT=$env:SOL_INSTALL_ROOT（自己的地盘，不会升权）" }
@@ -614,7 +619,7 @@ function Show-Report($what) {
 			if (Test-Path "$DestBin.bak") { Say "（旧版本留在 $DestBin.bak，回滚就是把它换回去）" }
 			Say ''
 			Say "安装配置   $UserConfig        改这里，然后重跑脚本"
-			Say "运行配置   $RunConfig$(if ($script:RuntimeConfigGenerated) { '（刚生成的最小配置：一条 noop 规则，按需改）' })"
+			Say "运行配置   $RunConfig$(if ($script:RuntimeConfigGenerated) { '（刚生成的示例配置：三条规则，按需改）' })"
 			Say "台账       $Ledger"
 			Say "历史       $History（完整动作清单，带等价命令）"
 			Say ''

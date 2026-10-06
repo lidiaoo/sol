@@ -1,4 +1,4 @@
-﻿# SoL 安装 · 覆盖升级 · 卸载 · 状态查看设计草案
+# SoL 安装 · 覆盖升级 · 卸载 · 状态查看设计草案
 
 状态：设计讨论定稿（待实现）
 范围：安装脚本（Linux / macOS / Windows）、安装台账与安装报告、状态查看子命令、覆盖安装与升级、卸载、包管理器清单、Hermes skill
@@ -65,7 +65,11 @@ skill 不重述命令，只做决策树与验证：调用安装脚本、判断"�
     "created_user": false,
     "cap": "CAP_NET_BIND_SERVICE"
   },
-  "firewall_rules": [{ "tool": "ufw", "spec": "10010/udp", "created_by": "installer" }],
+  "firewall_rules": [
+    { "tool": "ufw", "spec": "10/udp", "created_by": "installer" },
+    { "tool": "ufw", "spec": "11/udp", "created_by": "installer" },
+    { "tool": "ufw", "spec": "12/udp", "created_by": "installer" }
+  ],
   "config_paths": ["/home/you/sol.yaml"],
   "log_paths": ["/var/log/sol/sol.log"],
   "previous": { "installed_version": "v0.2.1", "sha256": "…" },
@@ -88,7 +92,7 @@ skill 不重述命令，只做决策树与验证：调用安装脚本、判断"�
 sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已启用）
 
 安装配置   /home/you/install.yaml        改这里，然后重跑脚本
-运行配置   /home/you/sol.yaml（刚生成的最小配置：一条 noop 规则，按需改）
+运行配置   /home/you/sol.yaml（刚生成的示例配置：三条规则，按需改）
 台账       /usr/local/share/sol/install.json
 历史       /usr/local/share/sol/install.log
 
@@ -144,7 +148,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 - **全平台一致**：自动发现只看上面两个路径。macOS 不是 `/usr/local/etc/sol/…`，Windows 也不是 `C:\ProgramData\sol\…`；要放那里必须显式 `--config`（Windows 的 `~` = `C:\Users\<你>`）。
 - 之后叠加环境变量，最后叠加 CLI 参数（文件 → 环境变量 → CLI，CLI 胜）。
 - **服务场景的坑（已被"产物跟着执行目录走"避开）**：服务有自己的家目录（systemd / launchd 是 root 的，Windows 是 `SYSTEM` 的），相对路径与 `~` 进到服务里全变样。脚本生成 `install.yaml` 时就把 `--config` 写成**执行目录的绝对路径**，所以单元/计划任务里也是绝对路径——这是"装完服务配置莫名不生效"最常见的原因。
-- 安装脚本默认**不创建**配置，只在报告里打印"生效配置：(无) → 将按此顺序查找：…"，并附一段可复制的最小配置；`--write-config` 才落盘，且只在目标不存在时写，绝不覆盖已有配置。
+- 运行配置由脚本**只在它不存在时**生成一份开箱即用的示例（三条规则：纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠），**绝不覆盖**已有文件；路径与查找顺序见 §6。这一节早先写的 `--write-config` 开关属于被撤掉的 CLI 方案，脚本现在是零参数的。
 
 ### 5.5 连带补一个真缺陷
 
@@ -176,12 +180,12 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 在你执行脚本的那个目录里（下面假设是 /home/you）：
 
   install.yaml            # sol 怎么跑（改这里，然后重新跑一遍脚本）
-  sol.yaml                # 刚生成的最小配置：一条 noop 规则，按需改
+  sol.yaml                # 刚生成的示例配置：三条规则，按需改
 
 ```
 == 已生成配置 ==
 /home/you/install.yaml
-/home/you/sol.yaml        # 最小配置，服务因此不会拒绝启动
+/home/you/sol.yaml        # 示例配置，服务因此不会拒绝启动
 
   # install.yaml 的内容
   run: { args: [listen, --config, /home/you/sol.yaml] }
@@ -224,7 +228,8 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 **位置固定**（没有"换个位置"的开关）：**你执行脚本的那个目录**，三平台一致——
 
 - `./install.yaml`：脚本的**输入**（"sol 怎么跑"）。改完重跑脚本即可；已有就一个字都不覆盖。
-- `./sol.yaml`：sol 的**运行配置**。脚本只在它不存在时生成一份**最小可用**的（一条 noop 规则，匹配到只记日志）——服务没有配置文件会直接拒绝启动（crash-loop），而小白最可能的顺序就是先跑起来再改。
+- `./sol.yaml`：sol 的**运行配置**。脚本只在它不存在时生成一份**开箱即用**的——三条规则：纯包 → 关机（端口 11）、magic+"reboot" → 重启（12）、magic+"sleep" → 睡眠（10）；服务没有配置文件会直接拒绝启动（crash-loop），而小白最可能的顺序就是先跑起来再改。
+- **端口 <1024 在 Linux/macOS 上要 root**，所以默认配置意味着：正常安装（动手前会升权）没问题；但"不要 root 的用户级安装"在这种配置下预检会失败（sol 报 `bind: permission denied`），那种场景得把端口改成 ≥1024。Windows 上低端口不需要特权，不受这一条影响。
 
 用 sudo 跑也一样：这两件产物跟的是**当前目录**，不是任何人的家目录（放 `~/.config` 服务反而读不到——服务有自己的家目录）。
 
@@ -307,7 +312,7 @@ run:
 | 二进制 | `/usr/local/bin/sol` | `/usr/local/bin/sol` | `C:\ProgramData\sol\sol.exe` |
 | 二进制落点（脚本决定，不可配） | `/usr/local/bin`；当前用户没写权限时 `~/.local/bin` + 提示 PATH | 同 Linux | `C:\ProgramData\sol` + 机器 PATH |
 | 台账 / 历史 | `/usr/local/share/sol/{install.json,install.log}` | 同 Linux | `C:\ProgramData\sol\{install.json,install.log}` |
-| 安装配置与运行配置（`install.yaml` 只有 `run.args`；`sol.yaml` 是最小可用的一份，只在不存在时生成） | 执行脚本的那个目录：`./install.yaml` + `./sol.yaml` | 同 Linux | 同 Linux |
+| 安装配置与运行配置（`install.yaml` 只有 `run.args`；`sol.yaml` 是一份开箱即用的示例配置（三条规则），只在不存在时生成） | 执行脚本的那个目录：`./install.yaml` + `./sol.yaml` | 同 Linux | 同 Linux |
 | 服务管理器 | systemd | launchd | 计划任务（纯 exe 不能当服务） |
 | 装服务的额外文件 | `/etc/systemd/system/sol.service` | `/Library/LaunchDaemons/com.lidiaoo.sol.plist` | 计划任务 `sol` + 防火墙规则 |
 | 日志去向 | systemd 收 stdout → journald | launchd 要 `StandardErrorPath` → `/usr/local/var/log/sol.log` | **计划任务不收集 stdout** → 必须 `logging.output: file` |

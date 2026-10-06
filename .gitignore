@@ -26,3 +26,11 @@ go.work
 /install.yaml
 /sol.yaml
 /elevated-*.log
+
+# 安装脚本在"你执行它的那个目录"留下的东西：仓库里的 scripts/ 是常见落点（不少人是 cd scripts 再跑），
+# 但那里的 sol / sol.yaml / install.yaml 属于使用者自己的运行时文件，不进仓库。
+/scripts/sol
+/scripts/sol.bak
+/scripts/sol.yaml
+/scripts/install.yaml
+/scripts/elevated-*.log

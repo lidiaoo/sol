@@ -502,8 +502,11 @@ irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile
 
 It uses the `sol` you already have - next to the script, in the current directory, or on `PATH` - and
 never replaces it with a download. In the directory you run it from it writes two files: `install.yaml`,
-whose only content is how to run sol, and `sol.yaml`, a minimal working configuration (one `noop` rule,
-so a service does not refuse to start). It prints the current situation and both files, then asks two
+whose only content is how to run sol, and `sol.yaml`, a small working configuration: a plain magic packet to port 11 shuts the machine
+down, `"reboot"` after the magic packet to 12 reboots it, `"sleep"` to 10 sleeps it. A service with
+no rules refuses to start, so the script writes one that runs; edit the file and re-run the script to
+change it. Ports below 1024 need root on Linux/macOS, which the script sorts out before it touches
+anything - on a user-level install without root, move them to 1024 or above. It prints the current situation and both files, then asks two
 questions: install as a service, and go ahead. Nothing changes until you say yes.
 
 Privileges: it does not run as root from the start. Before any step that needs it (writing

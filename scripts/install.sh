@@ -387,18 +387,24 @@ for tok in $ARGS; do
 done
 [ -n "$RUN_CONFIG" ] || RUN_CONFIG="$DEFAULT_CONFIG_PATH"
 
-# sol.yaml：最小可用的一份（一条 noop 规则，只记日志不做事）。没有才写，绝不覆盖。
+# sol.yaml：一份开箱即用的配置（纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠）。
+# 没有才写，绝不覆盖。
 RUNTIME_CONFIG_GENERATED=no
 ensure_runtime_config() {
 	[ -f "$RUN_CONFIG" ] && return 0
 	runtime_tmp=$(mktemp)
 	cat >"$runtime_tmp" <<'YAML'
-# 由安装脚本生成的最小配置：一条 noop 规则——匹配到只记日志，什么也不做。
-# 端口、动作按需改；改完重跑安装脚本（或重启服务）即可。
+# 纯包 -> 关机；magic+"reboot" -> 重启；magic+"sleep" -> 睡眠
 version: 1
+server:
+  interfaces: []
 rules:
-  - match: { ports: [10010], content: { kind: none } }
-    action: noop
+  - match: { ports: [11], content: { kind: none } }
+    action: power.shutdown
+  - match: { ports: [12], content: { kind: none } }
+    action: power.reboot
+  - match: { ports: [10], content: { kind: none } }
+    action: power.sleep
 YAML
 	mkdir_root "$(dirname "$RUN_CONFIG")"
 	put_root "$runtime_tmp" "$RUN_CONFIG" 0644
@@ -468,7 +474,7 @@ show_state() {
 	fi
 	if [ -f "$RUN_CONFIG" ]; then
 		if [ "$RUNTIME_CONFIG_GENERATED" = yes ]; then
-			say "运行配置    $RUN_CONFIG（刚生成的最小配置：一条 noop 规则，按需改）"
+			say "运行配置    $RUN_CONFIG（刚生成的示例配置：三条规则，按需改）"
 		else
 			say "运行配置    $RUN_CONFIG（sol 会读它）"
 		fi
@@ -572,9 +578,11 @@ precheck() { # 用同一个二进制 + 同一份配置起一次（dry-run：匹�
 		say "预检        通过（sol 用这份配置起来了 3 秒，匹配了也不会真做事：listen 是 dry-run）"
 		return 0
 	fi
-	err=$(cat "$TMPDIR_OUT" 2>/dev/null | head -n3)
-	say "预检        被拒绝："
-	printf '%s\n' "$err" | sed 's/^/            /'
+	# 有用的那行在末尾（比如 bind: permission denied），所以打印**尾部**而不是开头几行：
+	# 只给前 3 行时，报出来的全是 "using interface" 之类的提示，真正的原因被藏在下面。
+	say "预检        被拒绝（sol 用这份配置起来又退出了）："
+	tail -n 15 "$TMPDIR_OUT" 2>/dev/null | sed 's/^/            /'
+	say "            （要改端口/接口就编辑上面那份运行配置，改完重跑这个脚本）"
 	return 1
 }
 
@@ -917,7 +925,7 @@ report() { # report <install|uninstall|none>
 		if [ -f "$DEST_BIN.bak" ]; then say "（旧版本留在 $DEST_BIN.bak，回滚就是把它换回去）"; fi
 		say ""
 		say "安装配置   $USER_CONFIG        改这里，然后重跑脚本"
-		say "运行配置   $RUN_CONFIG$( [ "$RUNTIME_CONFIG_GENERATED" = yes ] && printf '（刚生成的最小配置：一条 noop 规则，按需改）' )"
+		say "运行配置   $RUN_CONFIG$( [ "$RUNTIME_CONFIG_GENERATED" = yes ] && printf '（刚生成的示例配置：三条规则，按需改）' )"
 		say "台账       $LEDGER"
 		say "历史       $HISTORY（完整动作清单，带等价命令）"
 		say ""
