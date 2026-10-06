@@ -159,7 +159,7 @@
 - [x] 三平台产物模板（§9.1/§9.2）：systemd unit / launchd plist / 计划任务三条注册命令 + `scripts/install.cmd`（双击入口，内部按对的执行策略调 ps1）+ macOS quarantine 处理（`xattr -d com.apple.quarantine`）+ Windows 上提醒 `logging.output: file`
 - [x] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本 + 注册后确认服务真的起来（每个 job 都带"升级前先停掉自己那份"的回归断言）——**这是把 install.ps1 与 macOS 分支从"未验证"提上来的唯一办法**。注意：工作流本身只在本机做了 YAML/语法与逐块命令的核对，真跑要等它在 runner 上跑一轮
 - [ ] scoop + winget 清单（schema 校验；winget 在 CI 里装不了，只能标 schema 级证据）
-- [ ] Hermes skill `sol-install` + `references/{linux,macos,windows}.md`（决策树：先判断此前是怎么装的，再选路径；装完给摘要，证据取自安装脚本的输出与台账）
+- [x] Hermes skill `sol-install` + `references/{linux,macos,windows}.md`（决策树：先判断此前是怎么装的，再选路径；装完给摘要，证据取自安装脚本的输出与台账）——已落地在 `~/.hermes/skills/software-development/sol-install/`
 - [x] README 安装段改为"一条命令 + 零参数安装脚本"（release 下载保留在下一节）+ 修掉 Windows 那段 `move sol.exe C:\Windows\System32` + 中英文同步（代码块逐字节一致，由 `TestReadmeTranslationsAgree` 守）
 
 ## P5 未决项
