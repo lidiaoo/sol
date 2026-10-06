@@ -51,6 +51,11 @@ type Config struct {
 	Cooldown time.Duration
 	// ActionCooldowns overrides Cooldown per action name.
 	ActionCooldowns map[wol.Action]time.Duration
+	// Settle is the window during which SettleActions are suppressed after sol starts or after the
+	// machine resumes from suspend; zero disables the guard.
+	Settle time.Duration
+	// SettleActions lists the actions the settle window protects; empty means the power actions.
+	SettleActions []wol.Action
 	// RateLimit is the global cap on action executions per second; zero disables it.
 	RateLimit float64
 	// RateBurst is the size of the rate-limit bucket; zero means one second of RateLimit.

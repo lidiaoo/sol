@@ -39,6 +39,7 @@ var (
 	ErrHTTPUser            = errors.New("server.http.auth.user is required for basic auth")
 	ErrHTTPTLS             = errors.New("invalid server.http.tls configuration")
 	ErrCooldown            = errors.New("invalid security.cooldown")
+	ErrSettle              = errors.New("invalid security.settle")
 	ErrRateLimit           = errors.New("invalid security.rate_limit")
 	ErrRemoteCommandID     = errors.New("invalid remote command id")
 	ErrRemoteCommandType   = errors.New("unsupported remote command type")
@@ -465,15 +466,15 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		SecureOn:             secureOnBytes(f.Security.SecureOn),
 		ExecAllowlist:        f.Security.ExecAllowlist,
 		URLAllowlist:         f.Security.URLAllowlist,
-		Cooldown:             guards.cooldown,
-		ActionCooldowns:      guards.perAction,
-		PacketKey:            guards.packetKey,
-		PacketWindow:         guards.packetWindow,
-		Remote:               remote,
-		Actions:              actions,
-		Logging:              loggingFrom(f.Logging),
-		HTTP:                 httpCfg,
-		Rules:                rules,
+		Cooldown:             guards.cooldown, ActionCooldowns: guards.perAction,
+		Settle: guards.settle, SettleActions: guards.settleActions,
+		PacketKey:    guards.packetKey,
+		PacketWindow: guards.packetWindow,
+		Remote:       remote,
+		Actions:      actions,
+		Logging:      loggingFrom(f.Logging),
+		HTTP:         httpCfg,
+		Rules:        rules,
 	}, nil
 }
 
@@ -1280,18 +1281,89 @@ func buildAllRules(f *fileConfig, actions map[wol.Action]wol.ActionDef) ([]wol.R
 	return slices.Concat(global, scoped), nil
 }
 
-// buildCooldowns resolves security.cooldown and its per-action overrides.
+// The built-in execution windows. A wake-on-LAN sender repeats its packet for reliability - three
+// copies or more - and every copy arrives as an independent trigger. For the power actions a repeat
+// is destructive rather than merely noisy: the first copy puts the machine down, the still-armed NIC
+// wakes it for the second, and the third puts it down again, so the machine ping-pongs until the
+// sender stops. These are defaults, not policy: security.cooldowns.<action> overrides one, an
+// explicit 0s disables it, and security.settle is the window that covers the boot and the resume
+// itself, which a cooldown cannot see (a shutdown wipes the process, and its state with it).
+const (
+	defaultPowerCooldown = 2 * time.Minute
+	defaultSettleWindow  = 2 * time.Minute
+)
+
+// defaultSettleActions is the set security.settle protects when security.settle_actions is absent.
+func defaultSettleActions() []wol.Action {
+	return []wol.Action{wol.ActionSleep, wol.ActionShutdown, wol.ActionReboot}
+}
+
+// defaultPowerCooldowns are the per-action windows filled in for the destructive power actions.
+func defaultPowerCooldowns() map[wol.Action]time.Duration {
+	windows := make(map[wol.Action]time.Duration)
+	for _, action := range defaultSettleActions() {
+		windows[action] = defaultPowerCooldown
+	}
+
+	return windows
+}
+
+// buildSettle resolves security.settle and security.settle_actions. An empty settle means the
+// built-in window, an explicit 0 disables the guard, and a window without protected actions is a
+// configuration mistake rather than a silent no-op.
+func buildSettle(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (time.Duration, []wol.Action, error) {
+	window := defaultSettleWindow
+
+	if raw := strings.TrimSpace(cfg.Settle); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return 0, nil, fmt.Errorf("%w: security.settle: %q: %w", ErrSettle, raw, err)
+		}
+
+		if parsed < 0 {
+			return 0, nil, fmt.Errorf("%w: security.settle: %q", ErrSettle, raw)
+		}
+
+		window = parsed
+	}
+
+	protected := defaultSettleActions()
+
+	if len(cfg.SettleActions) > 0 {
+		if window <= 0 {
+			return 0, nil, fmt.Errorf("%w: security.settle_actions is set without a security.settle", ErrSettle)
+		}
+
+		protected = make([]wol.Action, 0, len(cfg.SettleActions))
+
+		for _, name := range cfg.SettleActions {
+			action := wol.Action(name)
+
+			if _, ok := actions[action]; !ok {
+				return 0, nil, fmt.Errorf("security.settle_actions: %w: %s", wol.ErrUnknownActionRef, name)
+			}
+
+			protected = append(protected, action)
+		}
+	}
+
+	if window <= 0 {
+		return 0, nil, nil
+	}
+
+	return window, protected, nil
+}
+
+// buildCooldowns resolves security.cooldown and its per-action overrides. The destructive power
+// actions fall back to a built-in window when the configuration says nothing about them; a per-action
+// 0s means "no window for this action", which is how the built-in default is turned off.
 func buildCooldowns(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (time.Duration, map[wol.Action]time.Duration, error) {
 	global, err := parseCooldown(cfg.Cooldown, "security.cooldown")
 	if err != nil {
 		return 0, nil, err
 	}
 
-	if len(cfg.Cooldowns) == 0 {
-		return global, nil, nil
-	}
-
-	perAction := make(map[wol.Action]time.Duration, len(cfg.Cooldowns))
+	perAction := defaultPowerCooldowns()
 
 	for name, value := range cfg.Cooldowns {
 		action := wol.Action(name)
@@ -1306,10 +1378,19 @@ func buildCooldowns(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (t
 		}
 
 		if window <= 0 {
-			return 0, nil, fmt.Errorf("%w: security.cooldowns.%s: must be positive", ErrCooldown, name)
+			// An explicit 0s switches the action's window off, including the built-in one.
+			delete(perAction, action)
+
+			continue
 		}
 
 		perAction[action] = window
+	}
+
+	for action, window := range perAction {
+		if window <= 0 {
+			delete(perAction, action)
+		}
 	}
 
 	return global, perAction, nil
@@ -1318,12 +1399,14 @@ func buildCooldowns(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (t
 // guardsConfig is the resolved set of execution guardrails: the per-action cooldowns (§19.6)
 // and the global token bucket (§19.12).
 type guardsConfig struct {
-	cooldown     time.Duration
-	perAction    map[wol.Action]time.Duration
-	rateLimit    float64
-	rateBurst    int
-	packetKey    []byte
-	packetWindow time.Duration
+	cooldown      time.Duration
+	perAction     map[wol.Action]time.Duration
+	rateLimit     float64
+	rateBurst     int
+	settle        time.Duration
+	settleActions []wol.Action
+	packetKey     []byte
+	packetWindow  time.Duration
 }
 
 // buildGuards resolves every guardrail in one step, so the caller stays short.
@@ -1348,13 +1431,20 @@ func buildGuards(cfg securityConfig, actions map[wol.Action]wol.ActionDef) (guar
 		return guardsConfig{}, err
 	}
 
+	settle, settleActions, err := buildSettle(cfg, actions)
+	if err != nil {
+		return guardsConfig{}, err
+	}
+
 	return guardsConfig{
-		cooldown:     cooldown,
-		perAction:    perAction,
-		rateLimit:    rateLimit,
-		rateBurst:    rateBurst,
-		packetKey:    packetKey,
-		packetWindow: packetWindow,
+		cooldown:      cooldown,
+		perAction:     perAction,
+		rateLimit:     rateLimit,
+		rateBurst:     rateBurst,
+		settle:        settle,
+		settleActions: settleActions,
+		packetKey:     packetKey,
+		packetWindow:  packetWindow,
 	}, nil
 }
 

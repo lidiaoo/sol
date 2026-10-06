@@ -1438,6 +1438,11 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 覆盖面：包触发与 HTTP 手动触发（`POST /v1/actions/{name}`）共用同一护栏；手动触发被抑制返回 429（`httpapi.ErrSuppressed`，deps 从 `app.ErrActionSuppressed` 转译），包触发只记日志。
 - 启动日志打印默认窗口与每个按动作窗口。
 - 冒烟（真机，`security.cooldown: 60s`，端口 10041 -> noop，连发 3 个魔法包）：`matched=3, suppressed=2, actions.noop=1`；`/metrics` 出现 `sol_suppressed_total 2`；窗口内 `POST /v1/actions/noop` 得 429 + `action suppressed by cooldown: noop`；日志 3 条抑制告警带 `remaining`。
+- **内置默认窗口（默认开）**：三个会改变状态的电源动作（`power.sleep` / `power.shutdown` / `power.reboot`）在没有任何配置时各自带一个 2 分钟的按动作窗口；`security.cooldowns.<动作名>` 覆盖，显式 `0s` 关闭。理由：WoL 发送方为了可靠会**重复发包**（3 个以上），而每个包都是独立的一次触发——"睡下去 / 关掉"这类动作认了第二个包，就等于把第一个撤销了。全局 `security.cooldown` 仍默认关闭（不干扰 HTTP 手动触发的连续调用语义）。
+- **`security.settle`（默认 2 分钟，默认开）**：窗口内 `security.settle_actions`（默认三个电源动作）被拒绝。窗口从**两类事件**里最近的一次算起：① sol **自己刚启动**（开机 / 重启 / 服务重启；用进程年龄判断——机器关机时进程和它内存里的窗口一起消失，所以"关机 -> 被 WoL 唤醒 -> 又关机"这种乒乓只能靠这个判断，落盘状态也不需要）② 机器**刚从 suspend 回来**（用 wall clock 与单调时钟的差值判断：Linux 上 Go 的 CLOCK_MONOTONIC 在 suspend 期间不走，两个"经过多久"之差就是睡眠时长；发现后立即重新锚定，同一次睡眠不会被算两次）。一整串突发包都落在窗口里。校验失败 -> `ErrSettle`（解析失败、负值、只给 `settle_actions` 不给窗口），`settle_actions` 里的未知动作名 -> `wol.ErrUnknownActionRef`。
+- **顺序**：`settle` -> cooldown -> 限流 -> in-flight。settle 放最前有两个理由：只有它能给出"刚开机/刚唤醒"这个真正的原因；被它拒绝的包也不该顺手占掉 cooldown 的窗口。
+- **可观测**：抑制计入 `settle_skipped`（`/v1/status`）与 `sol_settle_skipped_total`（`/metrics`），日志 `action suppressed: the machine just started or woke up` 带剩余时间；启动日志打印 `settle window`（窗口 + 受保护动作）。
+- **验证**：单测覆盖刚启动 / 老进程 / 检测到 resume / 窗口为 0 / 服务级抑制与计数 / 非保护动作不受影响，配置层覆盖默认值与"显式关闭"两条路径，`schema/sol.schema.json` 的漂移守卫也已同步。**未验证**：真机 suspend/resume 端到端——本机跑着真实 `sol.service`，不能拿它去 suspend，需要在测试机上补一次。
 - 未做：全局速率限制（令牌桶）见 §19.12；执行中再次触发的语义见 §19.12.1（已定义：抑制，不合并等待）。
 
 ---

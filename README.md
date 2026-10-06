@@ -143,6 +143,8 @@ security:
   exec_allowlist: [/usr/bin]
   cooldown: 5s
   cooldowns: { power.shutdown: 30s }
+  settle: 2m                  # after a boot or a resume: no power action for 2m (default; 0 = off)
+  # settle_actions: [power.sleep, power.shutdown]   # default: the three power actions
   rate_limit: 10/s            # global token bucket across every action and trigger
   rate_burst: 20              # bucket size; 0 means one second of rate_limit
 
@@ -399,10 +401,20 @@ it is now.
 
 ### Guards
 
-Two independent limits protect the machine from a broadcast storm:
+Three limits protect the machine from a broadcast storm, and the first two are on by default:
 
 - `security.cooldown` / `security.cooldowns.<action>` — per action: the minimum interval between
-  two executions of the *same* action.
+  two executions of the *same* action. The destructive power actions (`power.sleep`,
+  `power.shutdown`, `power.reboot`) default to **2m**: a wake-on-LAN sender repeats its packet for
+  reliability — three copies or more — and every copy arrives as its own trigger, so honouring the
+  second one would undo the first. Override one with `security.cooldowns.<action>`, switch it off
+  with `0s`.
+- `security.settle` (default **2m**) — the window right after sol started (a boot, a reboot, a
+  service restart) and right after the machine came back from suspend, during which the actions in
+  `security.settle_actions` (`power.sleep`, `power.shutdown`, `power.reboot` by default) are
+  refused. That is exactly where the rest of a magic-packet burst lands — the NIC wakes the machine
+  for the next copy — and this is the only guard that can break that ping-pong, because a machine
+  going down takes the process and its in-memory windows with it. `security.settle: 0` disables it.
 - `security.rate_limit` / `security.rate_burst` — global: a token bucket capping executions
   across *every* action and every trigger (packets, `POST /v1/actions/{name}`, remote commands).
 - and, without any configuration, the in-flight guard: a trigger that arrives while the *same*
@@ -412,11 +424,24 @@ Two independent limits protect the machine from a broadcast storm:
   requests for the same long action; a plain burst of packets is `security.cooldown`'s job, since
   the packet path handles one packet at a time.
 
-A suppressed action is logged (`action suppressed by cooldown` / `by rate limit` / `already
-running`) with the retry delay where there is one, counted in `/v1/status` (`suppressed`,
-`rate_limited`, `inflight`) and `/metrics` (`sol_suppressed_total`, `sol_rate_limited_total`,
-`sol_inflight_total`), and answered with **429** on the control plane. `GET /v1/status` also
-reports the live `rate_limit` when one is configured.
+Both defaults are configuration, not policy. To switch the protection off:
+
+```yaml
+security:
+  settle: 0                     # no window after a boot or a resume
+  cooldowns:
+    power.sleep: 0s             # no built-in window for the power actions
+    power.shutdown: 0s
+    power.reboot: 0s
+```
+
+A suppressed action is logged (`action suppressed by cooldown` / `by rate limit` / `the machine
+just started or woke up` / `already running`) with the retry delay where there is one, counted in
+`/v1/status` (`suppressed`, `rate_limited`, `settle_skipped`, `inflight`) and `/metrics`
+(`sol_suppressed_total`, `sol_rate_limited_total`, `sol_settle_skipped_total`,
+`sol_inflight_total`), and answered with **429** on the control plane. Start-up logs the
+configured windows (`action cooldown`, `settle window`), and `GET /v1/status` reports the live
+`rate_limit` when one is configured.
 
 ## Ports and privileges
 

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +26,9 @@ var (
 
 	// ErrActionRateLimited reports that an action was dropped by the global rate limit.
 	ErrActionRateLimited = errors.New("action suppressed by rate limit")
+	// ErrActionSettle reports that a state-changing action was refused because the machine had just
+	// started or had just come back from suspend, which is where a repeated wake-on-LAN burst lands.
+	ErrActionSettle = errors.New("action suppressed by the settle window")
 )
 
 const packetChannelSize = 2
@@ -68,9 +73,12 @@ type Stats struct {
 	Suppressed  uint64
 	RateLimited uint64
 	// Inflight counts the triggers refused because the same run was already going (§19.12.1).
-	Inflight  uint64
-	Actions   map[string]uint64
-	LastEvent *EventRecord
+	Inflight uint64
+	// SettleSkipped counts the triggers refused because the machine had just started or had just
+	// resumed, i.e. the repeated copies of the packet that woke it (§19.6).
+	SettleSkipped uint64
+	Actions       map[string]uint64
+	LastEvent     *EventRecord
 }
 
 type ListenService struct {
@@ -111,6 +119,12 @@ type ListenService struct {
 	// inflight is not part of the routing snapshot: it holds no configuration, and a reload must
 	// not forget which runs are going.
 	inflight *inflight
+	// settleWindow and settleActions come from the configuration and travel with the snapshot;
+	// settle holds the timing state itself, which a reload must not reset (§19.6).
+	settleWindow  time.Duration
+	settleActions map[wol.Action]struct{}
+	settle        *settleState
+	settleSkipped atomic.Uint64
 	// onReject reports a refused remote segment to the same place the policy reports refused
 	// packets (§19.16). It lives on the service so a reload keeps the counters.
 	onReject func(reason string)
@@ -121,14 +135,17 @@ type ListenService struct {
 // packet so that a concurrent reload cannot split one decision across two rule sets
 // (matching the old rules, dispatching through the new registry).
 type routingSnapshot struct {
-	policy    *wol.RoutingPolicy
-	ifaces    []wol.IfaceInfo
-	registry  *wol.Registry
-	cooldowns *cooldowns
-	limiter   *rateLimiter
-	remote    *remoteRunner
-	rawShell  *rawShellRunner
-	dryRun    bool
+	policy        *wol.RoutingPolicy
+	ifaces        []wol.IfaceInfo
+	registry      *wol.Registry
+	cooldowns     *cooldowns
+	limiter       *rateLimiter
+	settle        *settleState
+	remote        *remoteRunner
+	rawShell      *rawShellRunner
+	settleWindow  time.Duration
+	settleActions map[wol.Action]struct{}
+	dryRun        bool
 }
 
 func NewListenService(
@@ -150,6 +167,7 @@ func NewListenService(
 		cooldowns: newCooldowns(0, nil),
 		limiter:   newRateLimiter(0, 0),
 		inflight:  newInflight(),
+		settle:    newSettleState(),
 	}
 }
 
@@ -189,6 +207,25 @@ func (s *ListenService) WithRateLimit(rate float64, burst int) *ListenService {
 	defer s.rtMu.Unlock()
 
 	s.limiter = newRateLimiter(rate, burst)
+
+	return s
+}
+
+// WithSettle installs the window that suppresses state-changing actions right after sol starts (a
+// boot, a reboot, a service restart) and right after the machine resumes from suspend; zero disables
+// the guard, an empty action list means the power actions. It is on by default because a wake-on-LAN
+// sender repeats its packet for reliability, and the power actions are the ones where honouring the
+// second copy undoes the first.
+func (s *ListenService) WithSettle(window time.Duration, actions []wol.Action) *ListenService {
+	s.rtMu.Lock()
+	defer s.rtMu.Unlock()
+
+	s.settleWindow = window
+	s.settleActions = make(map[wol.Action]struct{}, len(actions))
+
+	for _, action := range actions {
+		s.settleActions[action] = struct{}{}
+	}
 
 	return s
 }
@@ -250,8 +287,10 @@ func (s *ListenService) Stats() Stats {
 		Suppressed:  s.blocked.Load(),
 		RateLimited: s.rateLimited.Load(),
 		Inflight:    s.inFlight.Load(),
-		Actions:     actions,
-		LastEvent:   s.lastSeen,
+
+		SettleSkipped: s.settleSkipped.Load(),
+		Actions:       actions,
+		LastEvent:     s.lastSeen,
 	}
 }
 
@@ -454,14 +493,17 @@ func (s *ListenService) snapshot() routingSnapshot {
 	defer s.rtMu.RUnlock()
 
 	return routingSnapshot{
-		policy:    s.policy,
-		registry:  s.registry,
-		cooldowns: s.cooldowns,
-		limiter:   s.limiter,
-		remote:    s.remote,
-		rawShell:  s.rawShell,
-		ifaces:    s.ifaces,
-		dryRun:    s.dryRun,
+		policy:        s.policy,
+		registry:      s.registry,
+		cooldowns:     s.cooldowns,
+		limiter:       s.limiter,
+		settle:        s.settle,
+		remote:        s.remote,
+		rawShell:      s.rawShell,
+		settleWindow:  s.settleWindow,
+		settleActions: s.settleActions,
+		ifaces:        s.ifaces,
+		dryRun:        s.dryRun,
 	}
 }
 
@@ -503,6 +545,18 @@ func (s *ListenService) logRules(rt routingSnapshot) {
 
 // logCooldowns reports the configured execution windows at startup.
 func (s *ListenService) logCooldowns(rt routingSnapshot) {
+	if rt.settleWindow > 0 && len(rt.settleActions) > 0 {
+		names := make([]string, 0, len(rt.settleActions))
+
+		for action := range rt.settleActions {
+			names = append(names, string(action))
+		}
+
+		sort.Strings(names)
+
+		slog.Info("settle window", "window", rt.settleWindow.String(), "actions", strings.Join(names, ","))
+	}
+
 	if rt.cooldowns.global > 0 {
 		slog.Info("action cooldown", "scope", "default", "window", rt.cooldowns.global.String())
 	}
@@ -692,6 +746,19 @@ func (s *ListenService) handleRemote(ctx context.Context, rt routingSnapshot, pk
 // still counts as an attempt for the cooldown window, which is what the packet path has always
 // done.
 func (s *ListenService) allowAction(rt routingSnapshot, action wol.Action, key string) (func(), error) {
+	// The settle window is checked first: it is the guard that can name the real reason ("the machine
+	// just started or woke up"), and a refused packet should not burn a cooldown window on its way out.
+	if _, protected := rt.settleActions[action]; protected {
+		if remaining := rt.settle.remaining(rt.settleWindow); remaining > 0 {
+			s.blocked.Add(1)
+			s.settleSkipped.Add(1)
+			slog.Warn("action suppressed: the machine just started or woke up",
+				"action", string(action), "settle_in", remaining.String())
+
+			return nil, fmt.Errorf("%w: retry in %s", ErrActionSettle, remaining)
+		}
+	}
+
 	if remaining, allowed := rt.cooldowns.allow(string(action)); !allowed {
 		s.blocked.Add(1)
 		slog.Warn("action suppressed by cooldown", "action", string(action), "retry_in", remaining.String())

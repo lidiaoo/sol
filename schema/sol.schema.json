@@ -210,9 +210,27 @@
         },
         "cooldowns": {
           "type": "object",
-          "description": "Per-action cooldown overrides, keyed by action name (built-in names, configured names, or remote:<id>).",
+          "description": "Per-action cooldown overrides, keyed by action name (built-in names, configured names, or remote:<id>). The power actions (power.sleep, power.shutdown, power.reboot) default to 2m so a repeated wake-on-LAN packet cannot undo the wake; set an action to 0s to switch its window off.",
           "additionalProperties": {
             "$ref": "#/$defs/duration"
+          }
+        },
+        "settle": {
+          "description": "Window right after sol starts (a boot, a reboot, a service restart) and right after the machine resumes from suspend during which settle_actions are suppressed. A wake-on-LAN sender repeats its packet for reliability, and honouring a second copy of a sleep or shutdown packet would put the machine straight back down. Empty means the built-in 2m, an explicit 0 disables the guard.",
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/$defs/duration"
+            }
+          ]
+        },
+        "settle_actions": {
+          "type": "array",
+          "description": "Actions the settle window protects; empty means the power actions (power.sleep, power.shutdown, power.reboot).",
+          "items": {
+            "type": "string"
           }
         },
         "rate_limit": {

@@ -132,6 +132,8 @@ security:
   exec_allowlist: [/usr/bin]
   cooldown: 5s
   cooldowns: { power.shutdown: 30s }
+  settle: 2m                  # after a boot or a resume: no power action for 2m (default; 0 = off)
+  # settle_actions: [power.sleep, power.shutdown]   # default: the three power actions
   rate_limit: 10/s            # global token bucket across every action and trigger
   rate_burst: 20              # bucket size; 0 means one second of rate_limit
 
@@ -366,10 +368,16 @@ token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文�
 
 ### Guards
 
-两个互不干扰的限制保护机器不被广播风暴打穿：
+三道限制保护机器不被广播风暴打穿，前两道**默认就开着**：
 
 - `security.cooldown` / `security.cooldowns.<动作名>` —— 按动作：**同一个**动作两次执行之间的最小
-  间隔。
+  间隔。三个会改变状态的电源动作（`power.sleep`、`power.shutdown`、`power.reboot`）默认 **2 分钟**：
+  Wake-on-LAN 的发送方为了可靠会重复发包（3 个以上），而**每个包都是独立的一次触发**，认了第二个
+  就等于把第一个撤销了。可用 `security.cooldowns.<动作名>` 改窗口，或用 `0s` 关掉。
+- `security.settle`（默认 **2 分钟**）—— 两个时刻之后的窗口：sol **刚启动**（开机、重启、服务重启）
+  和机器**刚从睡眠里回来**。这段时间里 `security.settle_actions` 列出的动作（默认三个电源动作）
+  会被拒绝。因为魔法包突发剩下的那几个包**正落在这里**——网卡会把机器再唤醒一次——而只有这道护栏
+  能真正断掉这种乒乓：机器一旦关机，进程和它内存里的窗口也就都没了。`security.settle: 0` 关闭。
 - `security.rate_limit` / `security.rate_burst` —— 全局：跨**所有**动作与所有触发源
   （包、`POST /v1/actions/{name}`、远端命令）的令牌桶。
 - 以及无需任何配置的"执行中重入护栏"：同一个"要跑的活"还在执行时，再次触发会被拒绝而不是起第二个
@@ -377,10 +385,23 @@ token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文�
   `remote:backup target=home` 不会抑制 `target=work`。两个并发请求打同一个长动作，靠的就是它；
   而纯粹的包突发归 `security.cooldown` 管，因为包路径是一个一个处理的。
 
-被抑制的动作会记日志（`action suppressed by cooldown` / `by rate limit` / `already running`，
-有重试时间就带上），计入 `/v1/status`（`suppressed`、`rate_limited`、`inflight`）与 `/metrics`
-（`sol_suppressed_total`、`sol_rate_limited_total`、`sol_inflight_total`），在控制面回 **429**。
-配了限流时 `GET /v1/status` 也会回显当前的 `rate_limit`。
+两个默认值都是配置，不是写死的策略。想彻底关掉这层保护：
+
+```yaml
+security:
+  settle: 0                     # no window after a boot or a resume
+  cooldowns:
+    power.sleep: 0s             # no built-in window for the power actions
+    power.shutdown: 0s
+    power.reboot: 0s
+```
+
+被抑制的动作会记日志（`action suppressed by cooldown` / `by rate limit` / `the machine just
+started or woke up` / `already running`，有重试时间就带上），计入 `/v1/status`（`suppressed`、
+`rate_limited`、`settle_skipped`、`inflight`）与 `/metrics`（`sol_suppressed_total`、
+`sol_rate_limited_total`、`sol_settle_skipped_total`、`sol_inflight_total`），在控制面回 **429**。
+启动日志会打印生效的窗口（`action cooldown`、`settle window`）；配了限流时 `GET /v1/status`
+也会回显当前的 `rate_limit`。
 
 ## Ports and privileges
 

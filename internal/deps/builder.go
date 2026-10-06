@@ -163,6 +163,7 @@ func (b *Builder) BuildListenService() (*app.ListenService, error) {
 			b.cfg.DryRun,
 		).WithCooldowns(b.cfg.Cooldown, cooldownWindows(b.cfg.ActionCooldowns)).
 			WithRateLimit(b.cfg.RateLimit, b.cfg.RateBurst).
+			WithSettle(b.cfg.Settle, b.cfg.SettleActions).
 			WithRemoteCommands(app.RemoteSettings{
 				Commands: b.cfg.Remote.Commands,
 				Ports:    b.cfg.Remote.Ports,
@@ -303,6 +304,8 @@ func dispatchFunc(service *app.ListenService) func(context.Context, wol.Action) 
 		err := service.Dispatch(ctx, action, wol.Event{})
 
 		switch {
+		case errors.Is(err, app.ErrActionSettle):
+			return fmt.Errorf("%w: %s", httpapi.ErrSettling, action)
 		case errors.Is(err, app.ErrActionSuppressed):
 			return fmt.Errorf("%w: %s", httpapi.ErrSuppressed, action)
 		case errors.Is(err, app.ErrActionRateLimited):
@@ -326,6 +329,8 @@ func shellError(err error) error {
 	case errors.Is(err, app.ErrRawShellSource), errors.Is(err, wol.ErrRawShellNotAllowed),
 		errors.Is(err, wol.ErrRawShellEmpty), errors.Is(err, wol.ErrRawShellTooLong):
 		return fmt.Errorf("%w: %w", httpapi.ErrShellForbidden, err)
+	case errors.Is(err, app.ErrActionSettle):
+		return fmt.Errorf("%w: %w", httpapi.ErrSettling, err)
 	case errors.Is(err, app.ErrActionSuppressed):
 		return fmt.Errorf("%w: %w", httpapi.ErrSuppressed, err)
 	case errors.Is(err, app.ErrActionRateLimited):
@@ -349,6 +354,8 @@ func remoteCommandError(err error, id string) error {
 		return fmt.Errorf("%w: %w", httpapi.ErrCommandForbidden, err)
 	case remoteArgError(err):
 		return fmt.Errorf("%w: %w", httpapi.ErrCommandArgs, err)
+	case errors.Is(err, app.ErrActionSettle):
+		return fmt.Errorf("%w: %w", httpapi.ErrSettling, err)
 	case errors.Is(err, app.ErrActionSuppressed):
 		return fmt.Errorf("%w: %w", httpapi.ErrSuppressed, err)
 	case errors.Is(err, app.ErrActionRateLimited):
@@ -569,15 +576,17 @@ func (b *Builder) statusFunc(svc *app.ListenService) func() httpapi.Status {
 		}
 
 		status := httpapi.Status{
-			Version:       buildinfo.Version(),
-			Revision:      buildinfo.Revision(),
-			Uptime:        uptime.Truncate(time.Second).String(),
-			UptimeSecs:    uptime.Seconds(),
-			Packets:       stats.Packets,
-			Matched:       stats.Matched,
-			Suppressed:    stats.Suppressed,
-			RateLimited:   stats.RateLimited,
-			Inflight:      stats.Inflight,
+			Version:     buildinfo.Version(),
+			Revision:    buildinfo.Revision(),
+			Uptime:      uptime.Truncate(time.Second).String(),
+			UptimeSecs:  uptime.Seconds(),
+			Packets:     stats.Packets,
+			Matched:     stats.Matched,
+			Suppressed:  stats.Suppressed,
+			RateLimited: stats.RateLimited,
+			Inflight:    stats.Inflight,
+
+			SettleSkipped: stats.SettleSkipped,
 			Replayed:      b.rejections.total(),
 			ReplayReasons: b.rejections.reasons(),
 			Actions:       stats.Actions,

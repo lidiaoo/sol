@@ -7,7 +7,7 @@
 
 - 项目：sol（bavix/sol）—— 监听 Wake-on-LAN 魔法包，触发本机电源动作（反向 WoL）。
 - 本次目标：从"单端口 × 单网卡 × 单动作"扩成"多端口 × 多网卡 × 包内容匹配 × 具名动作"，并用**保留端口 {7,9}** 把标准 WOL 端口变成安全边界；HTTP、自定义命令、远端命令列为后续阶段。
-- 现状：**设计定稿**（docs/routing-design.md，21 节 + 背景）；**P1（domain 模型与匹配）、P2（动作模型与 CLI）、P3（配置文件）全部落地**；**P4 主体落地**：exec / HTTP 控制面 / cooldown / 远端命令通道 / HTTP 出站 / mTLS / exec 降权 / 热重载 / `sequence` / 配置文件自动 reload。剩余项见下方未勾选条目。
+- 现状：**设计定稿**（docs/routing-design.md，21 节 + 背景）；**P1（domain 模型与匹配）、P2（动作模型与 CLI）、P3（配置文件）全部落地**；**P4 主体落地**：exec / HTTP 控制面 / cooldown / 远端命令通道 / HTTP 出站 / mTLS / exec 降权 / 热重载 / `sequence` / 配置文件自动 reload / 重复包保护（电源动作内置窗口 + `security.settle`）。剩余项见下方未勾选条目。
 - 怎么读：设计文档讲"为什么这么做 / 具体怎么做"；本文件讲"做到哪了 / 下一步"；README 面向使用者（安装 / CLI / 配置 / 安全），CHANGELOG 面向升级者（breaking 变更）。
 - 阶段：P1 模型 ✅ -> P2 动作与 CLI ✅ -> P3 配置文件 ✅ -> P4 自定义命令 + HTTP + 远端命令（**主体 ✅**，护栏与重入语义已补齐）；`wol.send` 唤醒别的机器 ✅（§19.13）；包级 HMAC ✅（§19.14）；远端原始命令（默认关）✅（§21.6 / §19.15）。
 
@@ -105,6 +105,7 @@
 - [x] 远端原始命令（`allow_raw_shell` 默认关 + `/bin/sh -c` + 认证 / 专用端口 / allowlist / `src_cidrs` + 启动告警 + HTTP `POST /v1/exec`）——见设计 §21.6 / §19.15；冒烟 s20 27/27（含\"默认关\"的实证：去掉开关后同一个包什么都不做、落回该端口规则）
 - [x] `wol.send`（唤醒别的机器：`mac`（必填，只来自配置）+ `broadcast` / `port` / `secure_on` / `repeat` / `interval`（默认广播 255.255.255.255、端口 9、1 份、100ms）；加载期填默认值；与 `ParsePacket` 互为逆的 `EncodeMagicPacket`；广播发送补 `SO_BROADCAST`（否则 `EACCES`）；复用 cooldown / 限流 / dry-run / 审计。顺手修掉 sequence 上 `timeout` 被静默忽略的既有漏洞）——见设计 §19.13
 - [x] 按动作 cooldown（`security.cooldown` + `security.cooldowns.<动作名>`；包触发与手动触发共用，抑制计入 `sol_suppressed_total`，手动触发返回 429）——见设计 §19.6
+- [x] 重复包保护（**默认开**）：三个电源动作内置 2m 按动作窗口（`0s` 可关）+ 新增 `security.settle`（刚启动 / 刚 suspend 回来 2m 内拒绝电源动作；进程年龄 + wall/单调时钟差判断；`settle: 0` 关闭、`settle_actions` 收窄；抑制计入 `settle_skipped` / `sol_settle_skipped_total`；README 双语与 schema 同步）——见设计 §19.6
 - [x] 全局速率限制（令牌桶 / 每秒上限）：`security.rate_limit`（`10/s`、`600/m`、`3600/h`，裸数字 = 每秒；空/0 = 关闭）+ `security.rate_burst`（桶容量，0 = 一秒的 rate_limit；只写 burst 不写 rate 启动报错）。跨所有动作与触发源（包 / 手动 / 远端命令）计数；抑制计入 `sol_suppressed_total` 与新的 `sol_rate_limited_total`，手动触发 429；reload 时限额未变则保留已耗尽的桶；`/v1/status` 回显 `rate_limit{per_second,burst}` + `rate_limited`——见设计 §19.12
 - [x] 执行中的重入（in-flight 去重，替代"cooldown singleflight"）：语义定为**抑制**而非合并等待；身份 = 动作名 + 参数 / 裸 shell 命令行；无条件开启；计入 `suppressed` + `inflight`（`/metrics` 的 `sol_inflight_total`）；三条 HTTP 触发路径回 429。顺带修掉两个真缺陷（远端命令被护栏拒绝回 500、`/v1/exec` 被护栏拒绝回 202 却不执行）——见设计 §19.12.1，冒烟 s24 真机 16/16
 

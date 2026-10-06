@@ -125,21 +125,25 @@ type securityConfig struct {
 	ExecAllowlist            []string          `yaml:"exec_allowlist"`
 	Cooldown                 string            `yaml:"cooldown"`
 	Cooldowns                map[string]string `yaml:"cooldowns"`
-	RateLimit                string            `yaml:"rate_limit"`
-	RateBurst                int               `yaml:"rate_burst"`
-	AllowRemoteCommands      bool              `yaml:"allow_remote_commands"`
-	RemoteCommandAuth        remoteAuthConfig  `yaml:"remote_command_auth"`
-	PacketAuth               packetAuthConfig  `yaml:"packet_auth"`
-	RemoteCommandPorts       []int             `yaml:"remote_command_ports"`
-	URLAllowlist             []string          `yaml:"url_allowlist"`
-	AllowRawShell            bool              `yaml:"allow_raw_shell"`
-	RawShellPorts            []int             `yaml:"raw_shell_ports"`
-	RawShellAuth             remoteAuthConfig  `yaml:"raw_shell_auth"`
-	RawShellSrcCIDRs         []string          `yaml:"raw_shell_src_cidrs"`
-	RawShellAllowlist        []string          `yaml:"raw_shell_allowlist"`
-	RawShellTimeout          string            `yaml:"raw_shell_timeout"`
-	RawShellUser             string            `yaml:"raw_shell_user"`
-	RawShellGroup            string            `yaml:"raw_shell_group"`
+	// Settle is the window right after sol starts (a boot, or a restart) or right after the machine
+	// resumes from suspend during which SettleActions are suppressed; empty means the built-in 2m.
+	Settle              string           `yaml:"settle"`
+	SettleActions       []string         `yaml:"settle_actions"`
+	RateLimit           string           `yaml:"rate_limit"`
+	RateBurst           int              `yaml:"rate_burst"`
+	AllowRemoteCommands bool             `yaml:"allow_remote_commands"`
+	RemoteCommandAuth   remoteAuthConfig `yaml:"remote_command_auth"`
+	PacketAuth          packetAuthConfig `yaml:"packet_auth"`
+	RemoteCommandPorts  []int            `yaml:"remote_command_ports"`
+	URLAllowlist        []string         `yaml:"url_allowlist"`
+	AllowRawShell       bool             `yaml:"allow_raw_shell"`
+	RawShellPorts       []int            `yaml:"raw_shell_ports"`
+	RawShellAuth        remoteAuthConfig `yaml:"raw_shell_auth"`
+	RawShellSrcCIDRs    []string         `yaml:"raw_shell_src_cidrs"`
+	RawShellAllowlist   []string         `yaml:"raw_shell_allowlist"`
+	RawShellTimeout     string           `yaml:"raw_shell_timeout"`
+	RawShellUser        string           `yaml:"raw_shell_user"`
+	RawShellGroup       string           `yaml:"raw_shell_group"`
 }
 
 // remoteAuthConfig is security.remote_command_auth: the shared key authenticating UDP

@@ -578,6 +578,59 @@ rules:
 	require.Equal(t, 30*time.Second, cfg.ActionCooldowns[wol.ActionShutdown])
 }
 
+// The power actions carry built-in execution windows so that a repeated wake-on-LAN packet does not
+// put the machine down again; the configuration can change or switch off each of them.
+func TestLoadGuardDefaults(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `
+version: 1
+rules:
+  - { match: { ports: [8] }, action: power.sleep }
+`))
+
+	require.NoError(t, err)
+	require.Equal(t, 2*time.Minute, cfg.Settle)
+	require.Equal(t, []wol.Action{wol.ActionSleep, wol.ActionShutdown, wol.ActionReboot}, cfg.SettleActions)
+	require.Equal(t, 2*time.Minute, cfg.ActionCooldowns[wol.ActionSleep])
+	require.Equal(t, 2*time.Minute, cfg.ActionCooldowns[wol.ActionShutdown])
+	require.Equal(t, 2*time.Minute, cfg.ActionCooldowns[wol.ActionReboot])
+	require.Zero(t, cfg.Cooldown, "the general cooldown stays off")
+}
+
+func TestLoadGuardOverrides(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `
+version: 1
+security:
+  settle: 45s
+  settle_actions: [power.shutdown]
+  cooldown: 10s
+  cooldowns:
+    power.sleep: 0s
+rules:
+  - { match: { ports: [8] }, action: power.sleep }
+`))
+
+	require.NoError(t, err)
+	require.Equal(t, 45*time.Second, cfg.Settle)
+	require.Equal(t, []wol.Action{wol.ActionShutdown}, cfg.SettleActions)
+	require.Equal(t, 10*time.Second, cfg.Cooldown)
+	require.NotContains(t, cfg.ActionCooldowns, wol.ActionSleep, "0s switches the built-in window off")
+	require.Equal(t, 2*time.Minute, cfg.ActionCooldowns[wol.ActionReboot])
+}
+
+func TestLoadGuardDisabled(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `
+version: 1
+security:
+  settle: 0
+rules:
+  - { match: { ports: [8] }, action: power.sleep }
+`))
+
+	require.NoError(t, err)
+	require.Zero(t, cfg.Settle)
+	require.Empty(t, cfg.SettleActions)
+}
+
 func TestLoadCooldownErrors(t *testing.T) {
 	defaults := "version: 1\nrules:\n  - { match: { ports: [8] }, action: noop }\n"
 
@@ -597,9 +650,25 @@ func TestLoadCooldownErrors(t *testing.T) {
 			security: "security:\n  cooldowns: { nope: 5s }\n",
 			match:    wol.ErrUnknownActionRef,
 		},
-		"zero per-action window": {
-			security: "security:\n  cooldowns: { noop: 0s }\n",
+		"negative per-action window": {
+			security: "security:\n  cooldowns: { noop: -5s }\n",
 			match:    ErrCooldown,
+		},
+		"malformed settle": {
+			security: "security:\n  settle: soon\n",
+			match:    ErrSettle,
+		},
+		"negative settle": {
+			security: "security:\n  settle: -1m\n",
+			match:    ErrSettle,
+		},
+		"unknown settle action": {
+			security: "security:\n  settle_actions: [nope]\n",
+			match:    wol.ErrUnknownActionRef,
+		},
+		"settle actions without a settle window": {
+			security: "security:\n  settle: 0\n  settle_actions: [power.sleep]\n",
+			match:    ErrSettle,
 		},
 	}
 

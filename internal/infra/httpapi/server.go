@@ -31,6 +31,10 @@ const (
 // ErrSuppressed reports that an action was rate-limited by its cooldown.
 var ErrSuppressed = errors.New("action suppressed by cooldown")
 
+// ErrSettling reports that a state-changing action was refused because the machine had just started
+// or had just come back from suspend: the repeated copies of the packet that woke it (§19.6).
+var ErrSettling = errors.New("action suppressed: the machine just started or woke up")
+
 // ErrRateLimited reports that an action was dropped by the global rate limit.
 var ErrRateLimited = errors.New("action suppressed by rate limit")
 
@@ -64,15 +68,16 @@ type Status struct {
 	// Version and Revision identify the running binary (§19.5): the version the build was
 	// stamped with (or the module version), and the commit it came from. Both are reported so a
 	// bug report can name the exact tree.
-	Version     string  `json:"version"`
-	Revision    string  `json:"revision"`
-	Uptime      string  `json:"uptime"`
-	UptimeSecs  float64 `json:"uptime_seconds"`
-	Packets     uint64  `json:"packets"`
-	Matched     uint64  `json:"matched"`
-	Suppressed  uint64  `json:"suppressed"`
-	RateLimited uint64  `json:"rate_limited"`
-	Inflight    uint64  `json:"inflight"`
+	Version       string  `json:"version"`
+	Revision      string  `json:"revision"`
+	Uptime        string  `json:"uptime"`
+	UptimeSecs    float64 `json:"uptime_seconds"`
+	Packets       uint64  `json:"packets"`
+	Matched       uint64  `json:"matched"`
+	Suppressed    uint64  `json:"suppressed"`
+	RateLimited   uint64  `json:"rate_limited"`
+	Inflight      uint64  `json:"inflight"`
+	SettleSkipped uint64  `json:"settle_skipped"`
 	// Replayed counts the authenticated packets refused as stale or as a replay (§19.16);
 	// ReplayReasons breaks that down and stays absent while the count is zero.
 	Replayed      uint64            `json:"replayed"`
@@ -286,7 +291,7 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		case errors.Is(err, ErrSuppressed):
 			status = http.StatusTooManyRequests
-		case errors.Is(err, ErrRateLimited), errors.Is(err, ErrInFlight):
+		case errors.Is(err, ErrRateLimited), errors.Is(err, ErrInFlight), errors.Is(err, ErrSettling):
 			status = http.StatusTooManyRequests
 		}
 
@@ -405,7 +410,8 @@ func shellStatus(err error) int {
 	switch {
 	case errors.Is(err, ErrShellDisabled), errors.Is(err, ErrShellForbidden):
 		return http.StatusForbidden
-	case errors.Is(err, ErrSuppressed), errors.Is(err, ErrRateLimited), errors.Is(err, ErrInFlight):
+	case errors.Is(err, ErrSuppressed), errors.Is(err, ErrRateLimited), errors.Is(err, ErrInFlight),
+		errors.Is(err, ErrSettling):
 		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
@@ -438,7 +444,8 @@ func commandStatus(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, ErrCommandForbidden):
 		return http.StatusForbidden
-	case errors.Is(err, ErrSuppressed), errors.Is(err, ErrRateLimited), errors.Is(err, ErrInFlight):
+	case errors.Is(err, ErrSuppressed), errors.Is(err, ErrRateLimited), errors.Is(err, ErrInFlight),
+		errors.Is(err, ErrSettling):
 		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
@@ -484,6 +491,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "# TYPE sol_packets_total counter\nsol_packets_total %d\n", st.Packets)
 	fmt.Fprintf(w, "# TYPE sol_matched_total counter\nsol_matched_total %d\n", st.Matched)
 	fmt.Fprintf(w, "# TYPE sol_suppressed_total counter\nsol_suppressed_total %d\n", st.Suppressed)
+	fmt.Fprintf(w, "# TYPE sol_settle_skipped_total counter\nsol_settle_skipped_total %d\n", st.SettleSkipped)
 	fmt.Fprintf(w, "# TYPE sol_inflight_total counter\nsol_inflight_total %d\n", st.Inflight)
 	fmt.Fprintf(w, "# TYPE sol_rate_limited_total counter\nsol_rate_limited_total %d\n", st.RateLimited)
 	fmt.Fprintf(w, "# TYPE sol_replayed_total counter\nsol_replayed_total %d\n", st.Replayed)
