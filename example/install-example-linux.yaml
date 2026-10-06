@@ -1,0 +1,14 @@
+# install.sh 在 Linux 上生成的形态（内容按本机填好；这里是示例值）
+# 生成后可以自由编辑；重跑 install.sh 会按这份执行、不覆盖你的改动（要重新生成加 --regenerate）。
+version: 1
+release: latest                       # 也可以写死版本号，如 v0.3.1
+prefix: /usr/local/bin
+service:
+  enabled: true                       # false = 只装二进制，不装服务
+  kind: systemd
+  unit_path: /etc/systemd/system/sol.service
+  user: root
+  capabilities: [CAP_NET_BIND_SERVICE]
+  firewall: [10010/udp]               # 本机可用的工具：ufw
+run:
+  args: [listen, --config, /etc/sol/sol.yaml]

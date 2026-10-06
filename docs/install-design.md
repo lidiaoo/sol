@@ -78,45 +78,35 @@ skill 不重述命令，只做决策树与验证：调用安装脚本、判断"�
 - `previous`：回滚依据（配合 `sol.bak`）。
 - `config_paths` / `log_paths`：**报告用**，卸载默认不删（见 §8）。
 
-## 4 安装报告
+## 4 执行报告
 
-装完当场给三段式报告：
-
-1. **摘要**（人话）：装了什么版本、二进制在哪、期望的配置文件路径、有没有装服务、接下来做什么。
-2. **动作清单**：每行 = 做了什么 + 等价命令 + 是否 root + 结果。
-3. **校验证据**：`sol --version` 的真实输出、下载后重算的 sha256、服务是否 active。
+执行只给**简短**一段：装了什么、文件在哪、怎么验证、接下来做什么。完整动作清单不默认刷屏，`--verbose` 才逐行列出（每行 = 做了什么 + 等价命令 + 是否 root）。
 
 ```
-== 摘要 ==
-已安装 sol v0.3.0 到 /usr/local/bin/sol（无服务，配置仍由你指定）
+== 完成 ==
+sol v0.3.0 -> /usr/local/bin/sol（systemd 服务已启用）
 
-== 做了什么 ==
-  (user) download  sol-v0.3.0-linux-amd64.tar.gz            -> /tmp/sol-XXXX
-  (user) verify    sha256 与 checksums.txt 一致              -> ok
-  (user) verify    /tmp/sol-XXXX/sol --version              -> sol version v0.3.0 (abc1234)
-  (root) install -m 0755 /tmp/sol-XXXX/sol /usr/local/bin/sol
-  (user) write     /usr/local/share/sol/install.json         -> 台账
-  (user) append    /usr/local/share/sol/install.log          -> 安装历史
+安装配置   ~/.config/sol/install.yaml        改这里，然后重跑 install.sh
+运行配置   /etc/sol/sol.yaml（还不存在；示例见 README Quick start）
+台账       /usr/local/share/sol/install.json
+历史       /usr/local/share/sol/install.log
 
-== 校验 ==
-/usr/local/bin/sol --version  -> sol version v0.3.0 (abc1234)
-/usr/local/bin/sol status     -> 未发现服务；配置路径尚未创建
+校验
+  /usr/local/bin/sol --version        -> sol version v0.3.0 (abc1234)
+  systemctl is-active sol.service     -> active
 
-== 接下来 ==
-1) sol ifaces                     看哪张网卡会应答
-2) sudo nano /etc/sol/sol.yaml    写配置（示例见 README Quick start）
-3) sol listen --config /etc/sol/sol.yaml --dry-run   真发一个包试一次
+接下来
+  systemctl status sol.service
+  sol status
 ```
 
-`--dry-run` 用**完全相同的格式**输出，每行前面加 `would`：这就是"它到底要对我系统做什么"的可预览版本。
-
-**落盘**：同一份报告追加写 `install.log`（带时间戳，`install`/`upgrade`/`uninstall` 每次一段），终端滚掉了还能 `--history` 回看。
+**落盘**：同一份内容追加写 `install.log`（带时间戳，install / upgrade / uninstall 每次一段）。
 
 **不说谎规则**（写进脚本实现与单测）：
 
 1. 值必须来自现场：sha256 是下载后**重算**的；版本是**真执行** `sol --version` 拿到的输出，不是把请求的版本号照抄。
 2. 只打印**路径**，绝不打印配置内容与环境变量值（密钥安全）。
-3. 需要 root 的步骤显式标 `(root)`，并列出哪些文件的属主是 root；用户后续需要 root 做的事单独列。
+3. 需要 root 的步骤标 `(root)`；用户后续需要 root 做的事单独列。
 4. 失败也要报告：已完成 / 未完成 / 如何回滚，并把台账置 `incomplete`。
 
 ## 5 状态查看子命令
@@ -183,60 +173,83 @@ SoL 状态
 
 ## 6 安装流程与探测决策
 
-**第一步不是下载，是认出现状**：PATH 上所有命中的 `sol`（`command -v -a` / `where`，各自跑一遍 `--version`）+ 安装台账 + 服务单元/计划任务是否存在 + 包管理器记录（`brew list` / `winget list` / `scoop list`）。
+**安装只做三件事：认出现状 → 给你一份按本机生成的配置 → 你确认之后才动手。**
 
-| 现状 | 行为 |
+1. **认出现状**（什么都不下载）：PATH 上所有命中的 `sol`（`command -v -a` / `where`，各自跑一遍 `--version`）+ 安装台账 + 服务单元/计划任务是否存在 + 包管理器记录（`brew list` / `winget list` / `scoop list`）。
+2. **生成配置**：按本机生成一份安装配置（§6.1），里面已经填好这台机器的真实路径、服务类型、防火墙工具和启动参数。
+3. **确认**：把配置展示出来，问一句"执行这份配置？"。答 n 就什么都不做，文件留着，改完重跑 `install.sh` 就行。
+4. **执行**：按这份配置 + 下面这张探测结论表走。
+5. **报告**：见 §4。
+
+| 探测结论 | 执行时的行为 |
 | --- | --- |
-| 同源（台账在）+ 同版本 | "已安装，无需操作"（退出码 0，不下载）；`--force` 才重装 |
+| 同源（台账在）+ 同版本 | "已安装，无需操作"（退出码 0） |
 | 同源 + 新版本 | 升级流水线（§7） |
-| 同源 + 旧版本（降级） | 默认**拒绝**；`--allow-downgrade` 才做，并打印 breaking 提示 |
+| 同源 + 旧版本（降级） | **拒绝**，要在配置里显式写下降级意图（见 §7 场景） |
 | 异源（brew / winget / scoop 装的） | **拒绝**，告诉用户用对应包管理器升级/卸载（否则两边互相覆盖） |
-| 无台账但二进制存在 | 不猜：打印探测结果，要求 `--force` |
-| PATH 上存在第二个 sol | 报告并指出**哪个生效**，不擅自改 PATH；装到新前缀需显式确认 |
+| 无台账但二进制存在 | 不猜：打印探测结果，要求显式接管（配置里 `adopt: true`） |
+| PATH 上存在第二个 sol | 报告并指出**哪个生效**，不擅自改 PATH |
 
-需要 root 的步骤（写 `/usr/local/bin`、写 unit、enable 服务）在报告里单独列出并逐条 sudo，不做"整个脚本 sudo 跑"。
+**命令行只剩入口开关，参数全在配置文件里**：
 
-并发：加锁（`flock` / Windows 锁文件），避免 CI 与人同时装。装之前清理**自己**的残留（同名 unit/plist/task 且台账标了是它建的），否则 `enable` 会撞上旧单元。
+| 参数 | 作用 |
+| --- | --- |
+| （无参数） | 生成（或读已有的）配置 → 展示 → 确认 → 执行 |
+| `--yes` | 跳过询问直接执行（CI / 非交互用；没有它时非交互环境**只生成不执行**） |
+| `--regenerate` | 重新生成配置（默认**不覆盖**已有文件，保护你的改动） |
+| `--profile <路径>` | 配置换个位置（默认见 §6.1） |
+| `--uninstall [--purge]` | 卸载，同样先列清单再确认 |
+| `--verbose` | 打印完整动作清单（默认只给 §4 那段简短报告） |
 
-### 6.1 安装 profile（可选：一份输入 → 三平台产物）
+`release` / `prefix` / `service` / `capabilities` / `firewall` / `run.args` 这类**没有对应的命令行开关**，只存在于配置文件里——这是刻意的：命令行开关越多，"我到底装了什么"越说不清。
 
-问题：现在"用哪些参数起 sol"写在三套服务定义里——systemd 的 `ExecStart`、launchd 的 `ProgramArguments`、计划任务的 `/TR` 字符串。同一件事写三遍，装服务的人还得记住每个平台怎么写字。
+需要 root 的步骤（写 `/usr/local/bin`、写 unit、enable 服务）在执行阶段逐条 sudo，不做"整个脚本 sudo 跑"。并发用锁（`flock` / Windows 锁文件）。执行前清理**自己**的残留（同名 unit/plist/task 且台账标了是它建的），否则 `enable` 会撞上旧单元。
 
-**支持一份安装 profile 文件，由安装脚本读取。** 它只描述"怎么装、怎么起"，**不是 sol 运行时的配置来源**（sol 运行时仍然只认 `--config` / `$SOL_CONFIG` / 默认两路径，见 §5.4）。
+### 6.1 本机安装配置（安装脚本生成，用户可改）
 
-三层权威，互不重叠：
+**位置**：Linux / macOS `~/.config/sol/install.yaml`；Windows `%APPDATA%\sol\install.yaml`；`--profile` 可换到别处。用 sudo 跑时写到 `$SUDO_USER` 的家目录，而不是 `/root`——否则用户在自己的家目录里根本找不到这份文件。
 
-| 层 | 文件 / 位置 | 回答什么 | 角色 |
-| --- | --- | --- | --- |
-| 安装 profile | `install.yaml`（`--profile` 指定；默认 `~/.config/sol/install.yaml`） | 怎么装、怎么起 | **输入**（可选） |
-| 服务定义 | systemd unit / launchd plist / 计划任务 | 服务怎么被拉起 | **产物**（安装器生成；要改就重跑安装，别手改） |
-| 运行配置 | `/etc/sol/sol.yaml` 等 | 收到包做什么 | **权威**（sol 只认这个 + CLI/env） |
+**内容按本机生成**，所以三个平台长得不一样，这正是它的用处：不用记每个平台的路径怎么写字。
 
-示例见 `example/install-example.yaml`：
+Linux（systemd）：
+
+```yaml
+# 由 install.sh 生成，可以自由编辑；重跑 install.sh 会按这份执行（不覆盖你的改动）
+version: 1
+release: latest                       # 也可以写死版本号，如 v0.3.1
+prefix: /usr/local/bin
+service:
+  enabled: true                       # false = 只装二进制
+  kind: systemd
+  unit_path: /etc/systemd/system/sol.service
+  user: root
+  capabilities: [CAP_NET_BIND_SERVICE]
+  firewall: [10010/udp]               # 本机可用的工具：ufw
+run:
+  args: [listen, --config, /etc/sol/sol.yaml]
+```
+
+Windows（计划任务）：
 
 ```yaml
 version: 1
-release: latest                # 或 v0.3.1（降级需要命令行 --allow-downgrade）
-prefix: /usr/local/bin
-write_config: false            # true = 目标不存在时写一段最小配置
+release: latest
+prefix: C:\ProgramData\sol
 service:
-  enabled: true                # 等价于命令行 --service
-  user: root                   # 可选；给了就写进 unit / plist
-  capabilities: [CAP_NET_BIND_SERVICE]
-  firewall: [10010/udp]        # 只在支持编排的平台动防火墙（ufw / netsh）
+  enabled: true
+  kind: task                          # 纯 exe 不能当服务，用计划任务
+  task_name: sol
+  firewall: [10010/udp]               # 用 netsh
 run:
-  args: [listen, --config, /etc/sol/sol.yaml]   # 启动参数：列表，不是字符串
+  args: [listen, --config, C:\ProgramData\sol\sol.yaml]
 ```
 
-设计要点：
+要点只有四条：
 
-- **`run.args` 是列表而不是一行字符串**。一行字符串没法校验（危险开关能混进来）、没法映射（launchd 要数组）、没法 diff。列表里每个 token 按 `sol listen` 的真实 flag 集合校验，未知 flag 启动期报错。
-- **未知键即报错**（与 sol 配置解析同一个风格 `KnownFields(true)`）：profile 里写错一个键不会静默忽略。
-- **读取顺序**：`--profile <路径>` > `$SOL_INSTALL_PROFILE` > `~/.config/sol/install.yaml`（存在才读）。**绝不读当前目录**——在别人的仓库里跑安装脚本时，cwd 里的文件不该能改你的系统（供应链风险）。
-- **命令行仍可覆盖 profile**：文件 → 环境变量 → CLI，CLI 胜（与 sol 自己的叠加方向一致）。
-- **危险开关不禁止但要留痕**：`run.args` 里出现 `--allow-reserved-actions` 这类，必须进报告（"将用以下参数起服务：…"）并在 `--dry-run` 里显示。
-- **漂移检测**：服务定义是产物，手改 unit 之后就会与 profile / 台账不一致 → `sol status` 发现"unit 里的参数 ≠ 台账记录"时提示"用 `install.sh --service` 重新生成，或把台账更新为现状"。这是 profile 不变成谎言的唯一办法。
-- 没有 profile 时行为完全不变（"一行命令"路径不受影响）。
+- **不覆盖**已有文件：配置存在就按它执行；要重新生成用 `--regenerate`。"改配置 → 重跑 install.sh" 就是唯一的修改回路，用户不需要记任何命令行开关。
+- **未知键即报错**（与 sol 配置解析同一风格）；`run.args` 是**列表**而不是一行字符串——字符串没法校验（危险开关能混进来）、没法映射到 launchd 的 `ProgramArguments` 数组、没法 diff。
+- **三层权威互不重叠**：这份配置是**输入**（怎么装、怎么起）；服务定义是**产物**（安装器生成，别手改）；`/etc/sol/sol.yaml` 是**权威运行配置**（sol 只认这个 + CLI/env，见 §5.4）。
+- **漂移可见**：手改过 unit 之后，`sol status` 会发现"unit 里的参数 ≠ 台账记录"并提示重跑安装，或把台账更新为现状。
 
 ## 7 覆盖安装与升级
 
@@ -258,19 +271,19 @@ run:
 - Windows：**正在运行的 exe 覆盖不了**（文件锁）→ 必须先 `schtasks /End` / 停进程再 `Move-Item`，失败要给明确指引并可重试。
 - macOS：launchd `KeepAlive` 会在替换二进制时把它拉回来 → 先 `launchctl bootout`，替换后再 load。
 
-**场景示例**：
+**场景示例**（行为由配置文件的内容决定，命令行不参与）：
 
-- `install.sh` 直接重跑（同版本）→ "已安装 v0.3.0，无需操作。要强制重装用 --force"。
-- `install.sh --version v0.3.1`（同源升级）→ 停服务 → 预检通过 → 替换 → 重启 → 回读确认 `v0.3.1` → 台账加 `previous`。
-- `install.sh --version v0.2.1`（降级）→ 拒绝："当前 v0.3.0，降到 v0.2.1 需要 --allow-downgrade；注意端口 9 语义变更见 CHANGELOG"。
-- 用户先前用 winget 装的，又跑 `install.sh` → 拒绝："检测到 winget 安装记录；请用 winget upgrade 升级，或用 winget uninstall 卸掉后再用脚本安装"。
-- 用户手工 `cp sol /usr/local/bin/`（无台账）→ "未纳管：/usr/local/bin/sol 存在但无安装台账。要用脚本接管请加 --force（会先列出将要做的操作）"。
+- 重跑 `install.sh`（配置里还是同版本）→ "已安装 v0.3.0，无需操作"。
+- 把配置改成 `release: v0.3.1` → 重跑 → 停服务 → 预检通过 → 替换 → 重启 → 回读确认 `v0.3.1` → 台账加 `previous`。
+- 把配置改成 `release: v0.2.1`（降级）→ **拒绝**："要降级请在配置里加 `allow_downgrade: true`；端口 9 的语义变更见 CHANGELOG"。
+- 先前用 winget 装过，又跑 `install.sh` → **拒绝**："检测到 winget 安装记录；请用 winget upgrade 升级，或先 winget uninstall 再用脚本安装"。
+- 手工 `cp sol /usr/local/bin/`（无台账）→ "未纳管：`/usr/local/bin/sol` 存在但没有安装台账。确认由本脚本接管，请在配置里加 `adopt: true`"。
 
 ## 8 卸载
 
 **四条原则**：
 
-1. **先读台账再动手**；没有台账就拒绝瞎猜，打印如何手工确认，`--force` 需先列清单并确认。
+1. **先读台账再动手**；没有台账就**拒绝**，打印"能看到什么 + 手工删除的确切命令"，不提供一键强删——安装出错是没装上，卸载出错是删了别人的东西。
 2. **只删自己建的**：系统用户、CAP、防火墙规则、PATH 改动——只动台账里标了是安装器创建的那些；用户自己设的 `SOL_TOKEN` 等只报告不动。
 3. **默认不碰配置与日志**：保留 `/etc/sol/sol.yaml`、`~/.config/sol/`、日志，并打印"留了什么、在哪、怎么删"；`--purge` 才删。
 4. **幂等 + 能从半成品恢复**：装到一半失败也要能卸干净（台账在第一个副作用前写入，逐项打勾）。
@@ -289,12 +302,13 @@ run:
 | --- | --- | --- | --- |
 | 二进制 | `/usr/local/bin/sol` | `/usr/local/bin/sol` | `C:\ProgramData\sol\sol.exe` |
 | 台账 / 历史 | `/usr/local/share/sol/{install.json,install.log}` | 同 Linux | `C:\ProgramData\sol\{install.json,install.log}` |
+| 安装配置（用户可改） | `~/.config/sol/install.yaml` | 同 Linux | `%APPDATA%\sol\install.yaml` |
 | 服务管理器 | systemd | launchd | 计划任务（纯 exe 不能当服务） |
 | 装服务的额外文件 | `/etc/systemd/system/sol.service` | `/Library/LaunchDaemons/com.lidiaoo.sol.plist` | 计划任务 `sol` + 防火墙规则 |
 | 覆盖陷阱 | 旧 inode、`Restart=always` | `KeepAlive` 拉回 | 运行中 exe 文件锁 |
 | 特权端口 | root 或 `CAP_NET_BIND_SERVICE` | root | 无特权端口概念 |
 
-默认（不装服务）只产生：二进制 + 台账 + 历史；升级后多一个 `sol.bak`。**配置与日志不由安装脚本创建**，只在报告里打印期望路径。
+默认（不装服务）只产生：二进制 + 台账 + 历史 + 安装配置；升级后多一个 `sol.bak`。**运行配置与日志不由安装脚本创建**，只在报告里打印期望路径。
 
 ## 10 验证与证据强度
 
@@ -327,7 +341,7 @@ run:
 | 1 | 本文档 + TODO 挂条目（本次） |
 | 2 | `sol paths` + `sol config check` + `sol status`（含 `listen` 的配置来源启动日志行） |
 | 3 | 台账 / 报告契约落地（`install.json` schema + `install.log` 格式 + 校验脚本 + 单测） |
-| 4 | `scripts/install.sh`（探测 / 决策矩阵 / 预检 / 覆盖 / `--dry-run` / `--uninstall` / `--purge`）+ 真机冒烟 |
+| 4 | `scripts/install.sh`：探测 → 生成配置（按平台，不覆盖已有）→ 展示并确认 → 执行（预检 / 原子替换 / `--uninstall` / `--purge` / `--yes` / `--regenerate` / `--profile` / `--verbose`）+ 真机冒烟 |
 | 5 | `scripts/install.ps1` |
 | 6 | `.github/workflows/install-smoke.yml`（三平台 matrix） |
 | 7 | scoop + winget 清单 |
