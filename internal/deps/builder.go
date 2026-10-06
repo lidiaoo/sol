@@ -194,6 +194,17 @@ func (b *Builder) WithReloader(fn func(ctx context.Context) error) *Builder {
 	return b
 }
 
+// Validate runs every start-up check on the configuration without building a listener: the
+// interface selection, the action definitions, the outbound allowlist and the rule set. It is
+// what `sol config check` and the installer's pre-upgrade check call, so a configuration is
+// judged by exactly the code that would refuse to start it.
+func (b *Builder) Validate() error {
+	// Three of the four results exist for the listener; a check only needs the refusal.
+	_, _, _, err := b.buildRuntime() //nolint:dogsled // see above
+
+	return err
+}
+
 // ReloadOptions assembles the runtime pieces of the current configuration for a
 // running listener (see ListenService.Reload).
 func (b *Builder) ReloadOptions() (app.ReloadOptions, error) {

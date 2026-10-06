@@ -21,6 +21,18 @@ var (
 	ErrCommandNotFound      = errors.New("command not found")
 	ErrCommandNotExecutable = errors.New("command is not executable")
 	ErrCommandNotAllowed    = errors.New("command is outside security.exec_allowlist")
+
+	// ErrNotRoot and ErrUserUnsupported are the start-up refusals of a configured privilege drop.
+	// They are defined here, outside the build-tagged files that raise them, so that every
+	// platform's build can name them: `sol config check` turns them into advice, and a hint table
+	// that only compiled on one platform would be a trap.
+	//
+	// ErrNotRoot: root is the only accepted setup, because the check is a plain geteuid call - a
+	// process holding CAP_SETUID/CAP_SETGID without root is refused too. The message must not
+	// promise otherwise, since a runbook granting just those two capabilities would be following
+	// our own text.
+	ErrNotRoot         = errors.New("exec user/group requires root")
+	ErrUserUnsupported = errors.New("exec user/group is not supported on this platform")
 )
 
 // DefaultTimeout bounds an exec action when the configuration leaves the timeout unset.

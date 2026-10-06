@@ -446,6 +446,42 @@ time=... level=INFO msg="configuration file" path=/etc/sol/sol.yaml source=syste
 
 注意 **install config 不是运行配置**：`install.yaml` 是安装脚本生成给你改的，sol 启动时读的是 `runtime config` 那一行。
 
+## 在信任一份配置之前先验它
+
+`sol config check` 跑的就是监听进程启动时会跑的那些校验——规则集（保留端口、重复、歧义）、密钥与环境变量、日志目的地、allowlist、动作参数、控制面——并把每条拒绝**连同修法**一起打出来：
+
+```
+$ sol config check
+configuration  /etc/sol/sol.yaml  (source: system default)
+result         1 problem(s)
+  1            rule 1: reserved port only accepts noop on an empty payload: port 9 only accepts noop
+               fix: ports 7 and 9 are reserved for plain Wake-on-LAN and accept only the noop action: move the action to a high port, or pass --allow-reserved-actions to keep the old behaviour
+rules          1  9
+remote ports   -
+named actions  4
+interfaces     auto (every eligible interface)
+log            stderr (default)
+dry run        no
+next           fix the problem above, then run: sol config check
+```
+
+它不打开任何东西、也不需要特权（端口已被别人占用的配置照样通过——这正是"它只读了文件"的证据），所以在正在跑服务的机器上也可以放心执行。退出码：会启动 = 0，不会 = 1，因此可以直接当升级预检或 CI 门禁；`--json` 给脚本同一份结果（`ok`、`loaded`、带 hint 的 `problems[]`、以及摘要）。
+
+通过的检查会回答"我刚验的是什么"，而不是只保持沉默：
+
+```
+$ sol config check
+configuration  /etc/sol/sol.yaml  (source: system default)
+result         ok - this configuration would start
+rules          3  11, 12, 10
+remote ports   -
+named actions  4
+interfaces     auto (every eligible interface)
+log            stderr (default)
+dry run        no
+next           sol listen          (start listening)
+```
+
 ## Installation
 
 ### Quick Install
