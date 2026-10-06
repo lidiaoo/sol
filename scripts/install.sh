@@ -941,7 +941,11 @@ ensure_runtime_config
 # 已经被升权重跑（带答案进来的）：不重复展示、也不再问，直接执行。
 if [ -n "$ELEVATED_ACTION" ]; then
 	SERVICE_CHOSEN=false
-	[ "${SERVICE_ARG:-${SOL_INSTALL_SERVICE:-no}}" = yes ] && SERVICE_CHOSEN=true
+	SERVICE_WANTED=false
+	if [ "${SERVICE_ARG:-${SOL_INSTALL_SERVICE:-no}}" = yes ]; then
+		SERVICE_CHOSEN=true
+		SERVICE_WANTED=true
+	fi
 	case "$ELEVATED_ACTION" in
 	install)
 		say "（已用 sudo 升权执行：安装）"
@@ -982,7 +986,16 @@ if [ "$LEDGER_EXISTS" = yes ]; then
 		report none
 		;;
 	*)
-		if [ "$LEDGER_CREATED_UNIT" = true ]; then SERVICE_WANTED=true; else SERVICE_WANTED=false; fi
+		if [ "$LEDGER_CREATED_UNIT" = true ]; then
+			SERVICE_WANTED=true
+		elif [ -n "$ROOT" ] || [ "$SERVICE_KIND" = none ]; then
+			SERVICE_WANTED=false
+		else
+			# 台账没说建过单元：可能当时你选了"不装服务"，也可能上次没跑完（单元不在）。
+			# 那就再问一次——否则"我想装服务"在这条路上永远没机会说出口。
+			SERVICE_WANTED=false
+			if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
+		fi
 		escalate install
 		do_install
 		if [ "$NOOP" = yes ]; then

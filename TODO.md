@@ -150,7 +150,9 @@
 - [x] `scripts/install.sh`（**已实现，真机冒烟 `scratch/s35` 57 条断言全过**，含真注册 systemd 服务 + 真发魔法包（journald 里能看到审计记录）+ 真卸载 + 换二进制升/降级 + 预检不过就什么都不动）：探测 → **生成配置 → 展示并确认** → 执行（预检 + 原子替换留 `sol.bak` + 服务定义单渲染器 + 回读）→ 卸载（先读台账，只删自己建的，配置默认留）+ **零命令行参数**（未安装：`执行吗？[Y/n]`；已安装：`回车=按配置应用 / u=卸载 / r=重新生成 / n=退出`；读不到答案（EOF / 无人值守）时**绝不执行**；CI 用管道喂答案 `printf 'y\n' | sh install.sh`）+ 目录锁
 - [x] `scripts/install.ps1` + `install.cmd`（**未在真机跑过**：本机没有 Windows / pwsh，只做了逐行审查与结构校验）：二进制落 `C:\ProgramData\sol`，`install.yaml` + 最小 `sol.yaml` 跟执行目录走并确认；替换前先 `schtasks /End`（运行中 exe 有文件锁）；机器 PATH 只加一次；防火墙规则从运行配置里的端口推导
 - [x] 升权（**不半路一条条 sudo**）：Linux/macOS 动手前用 `sudo` 重跑自己并把答案带过去（内部参数，不再问一遍；管道执行退化为逐条 sudo）；Windows 用 `Start-Process -Verb RunAs` 触发 UAC 重跑自己；`SOL_INSTALL_ROOT` 下永不升权；升权失败明确报错 + 给替代路径。**真机验证待批准**（会在 /usr/local 落二进制+台账并注册一个带 pid 的临时单元，跑完卸载干净）
-- [ ] 权限/升权的真机验证（需要用户点头或用 CI matrix 补）
+- [x] 升权开关全过墙（`--sol-unit-name` / `--sol-root`：凡是改变行为的开关都必须显式穿过 sudo，环境会被清掉）+ 升权分支同时设 `SERVICE_WANTED`（`do_install` 会用它覆盖 `SERVICE_CHOSEN`）
+- [x] "已安装但单元不在"时再问一次服务问题（台账 `created_unit: false` 不等于"用户不要服务"）
+- [ ] 升权路径在**干净机器**上的完整验证（本机已有真实安装，K 会自动跳过；落点不可配，只能靠 CI matrix 或一次性容器）
 - [x] 三平台产物模板（§9.1/§9.2）：systemd unit / launchd plist / 计划任务三条注册命令 + `scripts/install.cmd`（双击入口，内部按对的执行策略调 ps1）+ macOS quarantine 处理（`xattr -d com.apple.quarantine`）+ Windows 上提醒 `logging.output: file`
 - [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本 + 注册后确认服务真的起来——**这是把 install.ps1 与 macOS 分支从"未验证"提上来的唯一办法**
 - [ ] scoop + winget 清单（schema 校验；winget 在 CI 里装不了，只能标 schema 级证据）
