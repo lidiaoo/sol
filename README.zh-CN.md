@@ -482,8 +482,9 @@ sol ifaces
 1. **先看哪几张网卡会应答。** `sol ifaces` 里标 `AUTO yes` 的就是：这是这台机器的**身份**（它真实的
    网卡），不是"此刻恰好 up 的网卡"的快照。
 
-2. **写一份配置。** 路径随意，用 `--config` 指定；约定俗成的位置是 `/etc/sol/sol.yaml`（Linux）、
-   `/usr/local/etc/sol/sol.yaml`（macOS）、`C:\ProgramData\sol\sol.yaml`（Windows）。
+2. **写一份配置。** sol 先看 `/etc/sol/sol.yaml`，再看 `~/.config/sol/sol.yaml`——三个平台都是这两个
+   位置，`~` 就是你的主目录。要放别处用 `--config`（或 `$SOL_CONFIG`）指过去；显式给的路径不存在
+   会**报错**，不会静默回退。一个都没有时它**拒绝启动**（`no rules configured`），而不是假装在监听。
 
    ```yaml
    version: 1
@@ -692,6 +693,9 @@ $udp.Close()
 - `After=network-online.target` 保证服务在网络就绪之后才启动。
 - `Restart=always` 在崩溃后自动拉起。
 - 配置放 `/etc/sol/sol.yaml`，密钥放环境变量或配置引用的 0600 文件——绝不写进 YAML 本身。
+- 服务有自己的家目录（systemd/launchd 是 root 的，Windows 是 `SYSTEM` 的），所以那里的
+  `~/.config/sol/sol.yaml` 不是你的那份：单元里要用 `--config` 给绝对路径（上面的例子就是这么写的），
+  或者把文件放在 `/etc/sol/sol.yaml`。
 - unit 只有在用特权端口或需要 `exec` 降权时才需要 root；其它情况下"专用用户 +
   `CAP_NET_BIND_SERVICE`"是更好的默认。macOS 上对应的做法是往 plist 里加 `UserName`；Windows 上
   `exec` 根本没有 user/group 降权。

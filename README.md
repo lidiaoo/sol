@@ -522,9 +522,11 @@ sol ifaces
 1. **See which interfaces will answer.** `sol ifaces` marks them `AUTO yes`: that is the machine's
    identity (its real NICs), not a snapshot of what happens to be up at that moment.
 
-2. **Write a configuration.** Any path works, and `--config` picks it up; the conventional places
-   are `/etc/sol/sol.yaml` (Linux), `/usr/local/etc/sol/sol.yaml` (macOS) and
-   `C:\ProgramData\sol\sol.yaml` (Windows).
+2. **Write a configuration.** `sol` looks for `/etc/sol/sol.yaml` first, then
+   `~/.config/sol/sol.yaml` - the same two places on every platform, `~` being your home
+   directory. `--config` (or `$SOL_CONFIG`) points it somewhere else, and an explicit path that
+   does not exist is an error, not a silent fallback. With none of them it refuses to start
+   (`no rules configured`) instead of listening for nothing.
 
    ```yaml
    version: 1
@@ -741,6 +743,9 @@ with a machine-level environment variable for the token:
 - `Restart=always` automatically restarts the service if it crashes.
 - Keep the configuration in `/etc/sol/sol.yaml` and keep secrets in environment variables or
   0600 files referenced by the configuration - never in the YAML itself.
+- A service gets its own home directory (root's for systemd and launchd, `SYSTEM`'s on Windows),
+  so `~/.config/sol/sol.yaml` there is not yours: give the unit an absolute path with `--config`
+  (as the examples do) or keep the file at `/etc/sol/sol.yaml`.
 - The unit needs root only for privileged ports and for `exec` privilege drops; otherwise a
   dedicated user plus `CAP_NET_BIND_SERVICE` is the better default. On macOS the equivalent is
   dropping `UserName` into the plist; on Windows `exec` has no user/group drop at all.

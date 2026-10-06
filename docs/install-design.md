@@ -160,7 +160,24 @@ SoL 状态
 
 与 `--dry-run` 的分工：`check` 只验配置；`--dry-run` 会真的起服务收包但不执行动作。
 
-### 5.4 连带补一个真缺陷
+### 5.4 配置发现顺序（以及安装 / 服务场景的坑）
+
+实测顺序（`internal/config/load.go` 的 `resolvePath`）：
+
+| 优先级 | 来源 | 显式路径不存在时 |
+| --- | --- | --- |
+| 1 | `--config <路径>` | **直接报错** `read config …: no such file or directory`（不回退） |
+| 2 | `$SOL_CONFIG` | 同上（不回退） |
+| 3 | `/etc/sol/sol.yaml` | 不存在则看下一个 |
+| 4 | `~/.config/sol/sol.yaml` | 不存在则用内置默认 |
+| 5 | 内置默认（只有动作注册表、零规则） | `sol listen` 报 `no rules configured: pass --port or set rules in the config file`，**拒绝启动** |
+
+- **全平台一致**：自动发现只看上面两个路径。macOS 不是 `/usr/local/etc/sol/…`，Windows 也不是 `C:\ProgramData\sol\…`；要放那里必须显式 `--config`（Windows 的 `~` = `C:\Users\<你>`）。
+- 之后叠加环境变量，最后叠加 CLI 参数（文件 → 环境变量 → CLI，CLI 胜）。
+- **服务场景的坑**：服务有自己的家目录（systemd / launchd 是 root 的，Windows 是 `SYSTEM` 的），`~/.config/sol/sol.yaml` 会变成 `/root/.config/sol/sol.yaml`。所以服务单元必须用 `--config` 给**绝对路径**，或把文件放在 `/etc/sol/sol.yaml`——这是"装完服务配置莫名不生效"最常见的原因。
+- 安装脚本默认**不创建**配置，只在报告里打印"生效配置：(无) → 将按此顺序查找：…"，并附一段可复制的最小配置；`--write-config` 才落盘，且只在目标不存在时写，绝不覆盖已有配置。
+
+### 5.5 连带补一个真缺陷
 
 `sol listen` 启动时**没有**打出它读的是哪份配置。补一行启动日志：`msg="configuration" path=/etc/sol/sol.yaml source=--config`。这样 journald 里能直接看出"它读的是哪份"，也让 status 与安装报告的结论可被独立核对。
 
