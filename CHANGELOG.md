@@ -75,6 +75,10 @@ tagged release.
   cache. Refusals are counted: `/v1/status` reports `replayed` with a `replay_reasons` breakdown
   and `/metrics` exports `sol_replayed_total` (plus a line per reason), so a channel under replay
   is visible without scraping logs.
+- `type: http` actions take an optional `proxy` (http, https or socks5), so a webhook can go out
+  through the corporate proxy instead of depending on HTTP_PROXY in the service environment. A
+  proxy URL is validated at start-up, and it is not a way around `security.url_allowlist`: the
+  destination is still checked before anything is sent.
 - Interface identity is re-read while sol runs: a NIC that is down at start-up is no longer
   excluded (identity is not availability), a NIC that appears later - or one whose MAC changes when
   it comes up, which is what a wireless card does - starts matching without a restart, and a NIC

@@ -782,6 +782,7 @@ func buildHTTPDef(entry actionConfig, def wol.ActionDef) (wol.ActionDef, error) 
 		Body:    entry.Body,
 		Timeout: timeout,
 		Retries: entry.Retries,
+		Proxy:   entry.Proxy,
 	}
 
 	return def, nil

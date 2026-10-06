@@ -46,7 +46,7 @@ sol 用 [cobra](https://github.com/spf13/cobra) 做 CLI，其余是 Go 标准库
 | `power.shutdown` | 关机 |
 | `power.reboot` | 重启 |
 | `exec` | 执行配置好的命令（argv，默认不走 shell；可选 `shell: true`、命令白名单、超时、workdir、env，以及 `user`/`group` 降权） |
-| `http` | 调用 webhook（method、url、headers、body、timeout、retries；目的地受 `security.url_allowlist` 限制） |
+| `http` | 调用 webhook（method、url、headers、body、timeout、retries、proxy；目的地受 `security.url_allowlist` 限制） |
 | `sequence` | 把上面这些按顺序串成一个动作（某一步失败不会跳过它后面的步骤） |
 | `wol.send` | 唤醒另一台机器：向固定目标发魔法包（`mac`，可选 `broadcast`、`port`、`secure_on`、`repeat`、`interval`） |
 | `remote:<id>` | 白名单里的远端命令，注册成普通动作 |
@@ -128,6 +128,7 @@ actions:
     body: '{"action":"{{.Action}}","src":"{{.SrcIP}}","port":"{{.DstPort}}"}'
     timeout: 5s
     retries: 2
+    # proxy: http://proxy.internal:3128   # optional: http, https or socks5
 
   - name: shutdown-then-notify
     type: sequence

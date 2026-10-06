@@ -55,7 +55,7 @@ configured, a 6-byte password follows (108 bytes).
 | `power.shutdown` | Shuts the machine down |
 | `power.reboot` | Reboots the machine |
 | `exec` | Runs a configured command (argv, no shell by default; optional `shell: true`, command allow-list, timeout, workdir, env, and `user`/`group` privilege drop) |
-| `http` | Calls a webhook (method, url, headers, body, timeout, retries; destination restricted by `security.url_allowlist`) |
+| `http` | Calls a webhook (method, url, headers, body, timeout, retries, proxy; destination restricted by `security.url_allowlist`) |
 | `sequence` | Runs an ordered list of the above as one action (a failing step never skips the ones behind it) |
 | `wol.send` | Wakes another machine: sends a magic packet to a fixed target (`mac`, optional `broadcast`, `port`, `secure_on`, `repeat`, `interval`) |
 | `remote:<id>` | A whitelisted remote command, registered as an ordinary action |
@@ -139,6 +139,7 @@ actions:
     body: '{"action":"{{.Action}}","src":"{{.SrcIP}}","port":"{{.DstPort}}"}'
     timeout: 5s
     retries: 2
+    # proxy: http://proxy.internal:3128   # optional: http, https or socks5
 
   - name: shutdown-then-notify
     type: sequence

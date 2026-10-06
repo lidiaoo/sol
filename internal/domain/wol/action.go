@@ -72,6 +72,9 @@ type HTTPParams struct {
 	Timeout time.Duration
 	// Retries is the number of extra attempts after a failure.
 	Retries int
+	// Proxy is the proxy this action's requests go through (§18.2); empty keeps the
+	// default client, which honours the environment (HTTP_PROXY and friends).
+	Proxy string
 }
 
 // SequenceParams describes a sequence action: an ordered list of other actions.

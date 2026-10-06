@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bavix/sol/internal/domain/wol"
@@ -38,6 +39,8 @@ var (
 	ErrRequest = errors.New("http action request failed")
 	// ErrStatus reports a response outside the 2xx range.
 	ErrStatus = errors.New("http action returned a non-success status")
+	// ErrProxy reports a proxy URL the transport cannot use.
+	ErrProxy = errors.New("invalid http action proxy")
 )
 
 const (
@@ -57,6 +60,11 @@ type Executor struct {
 	// allowlistErr keeps a malformed entry: Validate reports it at startup, so a typo
 	// cannot silently turn into a wider (or narrower) allowlist.
 	allowlistErr error
+	// proxyMu guards the per-proxy clients. They are built once per distinct proxy and
+	// reused, so an action that names a proxy does not pay for a connection pool per
+	// packet, and the set stays bounded by the configuration.
+	proxyMu sync.Mutex
+	proxies map[string]*http.Client
 }
 
 // NewExecutor builds the executor; an empty allowlist permits any http(s) host.
@@ -72,7 +80,30 @@ func NewExecutor(allowlist []string) *Executor {
 		},
 		allowlist:    entries,
 		allowlistErr: err,
+		proxies:      map[string]*http.Client{},
 	}
+}
+
+// parseProxy validates an operator supplied proxy URL. Go's transport speaks http, https and
+// socks5 by itself, so no dependency is needed; anything else, or a URL without a host, is a
+// start-up error rather than a silent direct connection.
+func parseProxy(raw string) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrProxy, err)
+	}
+
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+	default:
+		return nil, fmt.Errorf("%w: %q (want http://, https:// or socks5://)", ErrProxy, raw)
+	}
+
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("%w: %q has no host", ErrProxy, raw)
+	}
+
+	return parsed, nil
 }
 
 // Validate checks an http action at startup: present destination with a literal
@@ -88,24 +119,56 @@ func (e *Executor) Validate(def wol.ActionDef) error {
 		return ErrEmptyURL
 	}
 
-	if err := checkMethod(params.Method); err != nil {
-		return err
-	}
-
-	if params.Retries < 0 || params.Retries > maxRetries {
-		return fmt.Errorf("%w: %d (max %d)", ErrRetries, params.Retries, maxRetries)
-	}
-
-	if params.Timeout < 0 || params.Timeout > maxTimeout {
-		return fmt.Errorf("%w: %s (max %s)", ErrTimeout, params.Timeout, maxTimeout)
-	}
-
-	templates := slices.Concat([]string{params.URL, params.Body}, headerValues(params.Headers))
-	if err := wol.ParseTemplates(templates); err != nil {
-		return err
+	// One check per rule, so a start-up error names exactly one thing to fix.
+	for _, check := range []error{
+		checkMethod(params.Method),
+		checkRetries(params.Retries),
+		checkTimeout(params.Timeout),
+		checkTemplates(params),
+		checkProxy(params.Proxy),
+	} {
+		if check != nil {
+			return check
+		}
 	}
 
 	return e.validateDestination(params.URL)
+}
+
+// checkRetries bounds the retry count.
+func checkRetries(retries int) error {
+	if retries < 0 || retries > maxRetries {
+		return fmt.Errorf("%w: %d (max %d)", ErrRetries, retries, maxRetries)
+	}
+
+	return nil
+}
+
+// checkTimeout bounds one attempt.
+func checkTimeout(timeout time.Duration) error {
+	if timeout < 0 || timeout > maxTimeout {
+		return fmt.Errorf("%w: %s (max %s)", ErrTimeout, timeout, maxTimeout)
+	}
+
+	return nil
+}
+
+// checkTemplates parses every value that may interpolate event data.
+func checkTemplates(params *wol.HTTPParams) error {
+	templates := slices.Concat([]string{params.URL, params.Body}, headerValues(params.Headers))
+
+	return wol.ParseTemplates(templates)
+}
+
+// checkProxy refuses a proxy the transport cannot use.
+func checkProxy(proxy string) error {
+	if strings.TrimSpace(proxy) == "" {
+		return nil
+	}
+
+	_, err := parseProxy(proxy)
+
+	return err
 }
 
 // Execute performs the request, interpolating the whitelisted event values, retrying
@@ -117,6 +180,13 @@ func (e *Executor) Execute(ctx context.Context, def wol.ActionDef, ev wol.Event)
 	}
 
 	request, err := interpolateRequest(wol.EventVars(def.Name, ev), params)
+	if err != nil {
+		return err
+	}
+
+	// The proxy is resolved once, before the first attempt: an unusable one is an error
+	// the operator should see at start-up, not a retry loop.
+	client, err := e.clientFor(params.Proxy)
 	if err != nil {
 		return err
 	}
@@ -141,7 +211,7 @@ func (e *Executor) Execute(ctx context.Context, def wol.ActionDef, ev wol.Event)
 			)
 		}
 
-		lastErr = e.attempt(ctx, def, request, timeout)
+		lastErr = e.attempt(ctx, def, client, request, timeout)
 		if lastErr == nil {
 			return nil
 		}
@@ -152,6 +222,45 @@ func (e *Executor) Execute(ctx context.Context, def wol.ActionDef, ev wol.Event)
 	}
 
 	return lastErr
+}
+
+// clientFor returns the client an action should use: the shared one, which honours the
+// environment like Go's default transport does, unless the action names its own proxy.
+func (e *Executor) clientFor(proxy string) (*http.Client, error) {
+	if strings.TrimSpace(proxy) == "" {
+		return e.client, nil
+	}
+
+	e.proxyMu.Lock()
+	defer e.proxyMu.Unlock()
+
+	if client, ok := e.proxies[proxy]; ok {
+		return client, nil
+	}
+
+	parsed, err := parseProxy(proxy)
+	if err != nil {
+		return nil, err
+	}
+
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		base = &http.Transport{}
+	}
+
+	transport := base.Clone()
+	transport.Proxy = http.ProxyURL(parsed)
+
+	client := &http.Client{
+		Transport: transport,
+		// Redirects stay unfollowed here too: a 3xx could leave the allowlist.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	e.proxies[proxy] = client
+
+	return client, nil
 }
 
 // request is one interpolated HTTP request.
@@ -166,6 +275,7 @@ type request struct {
 func (e *Executor) attempt(
 	ctx context.Context,
 	def wol.ActionDef,
+	client *http.Client,
 	req request,
 	timeout time.Duration,
 ) error {
@@ -193,7 +303,7 @@ func (e *Executor) attempt(
 
 	started := time.Now()
 
-	resp, err := e.client.Do(httpReq)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		slog.Error("http action failed",
 			"action", string(def.Name),

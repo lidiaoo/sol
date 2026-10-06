@@ -1229,9 +1229,10 @@ actions:
     body: '{"event":"{{.Action}}","src":"{{.SrcIP}}","port":{{.DstPort}}}'
     timeout: 5s
     retries: 2
+    # proxy: http://proxy.internal:3128   # 可选：http / https / socks5（§19.8）
 ```
 
-参数：`method / url / headers / body(模板) / timeout / retries`。
+参数：`method / url / headers / body(模板) / timeout / retries / proxy`。
 
 安全：出站可被用来打内网（SSRF），可选 `url_allowlist`；默认校验 TLS；日志不打印 header 里的密钥。
 
@@ -1464,7 +1465,7 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 
 代码位置：`internal/domain/wol/{action,interpolate}.go`（`HTTPParams` + 统一插值 `Vars`/`Interpolate`/`ParseTemplates`）、`internal/config/load.go`（`buildHTTPDef`）、`internal/infra/outbound/http_action.go`（执行器）、`internal/deps/builder.go`（注册 `ActionTypeHTTP` + 启动期校验）。
 
-- 参数：`actions[].{method, url, headers, body, timeout, retries}`。`method` 缺省 POST，允许 GET/POST/PUT/PATCH/DELETE/HEAD；`timeout` 上限 1m；`retries` 0..5（默认 0）。非 http 类型写这些字段、或 http 类型写 exec 字段 -> `ErrActionParams`；http 动作缺 `url` -> `ErrHTTPURLRequired`。
+- 参数：`actions[].{method, url, headers, body, timeout, retries, proxy}`。`method` 缺省 POST，允许 GET/POST/PUT/PATCH/DELETE/HEAD；`timeout` 上限 1m；`retries` 0..5（默认 0）。非 http 类型写这些字段、或 http 类型写 exec 字段 -> `ErrActionParams`；http 动作缺 `url` -> `ErrHTTPURLRequired`。
 - 插值：url/headers/body 与 exec 共用同一套白名单变量（`{{.Action}} {{.SrcIP}} {{.SrcPort}} {{.DstPort}} {{.Interface}} {{.MAC}} {{.Time}} {{.Arg.<name>}}`），`missingkey=error`；启动期先 parse（`wol.ParseTemplates`），模板语法错 fail fast。exec 的 `Vars`/插值已从 `internal/infra/exec` 上移到 domain，两个执行器共用一份实现。
 - SSRF 防护：`security.url_allowlist`（三种写法：裸串 = 前缀、`=` 开头 = 整串精确、`~` 开头 = 正则）。**前缀不再按字符串前缀比**，而是 scheme + host 作为整体比较、path 再按边界比较，所以 `https://hooks.example.com` 不会放行 `https://hooks.example.com.evil.net`（这条是修掉的真实漏洞：条目 `http://127.0.0.1:18092` 以前会放行 `http://127.0.0.1:18092.attacker.example`），也不会放行 `https://api.example.com/v10`（条目是 `/v1`）；host 含端口，所以 `https://hooks.example.com` 不覆盖 `:8443`。启动校验只取 url 中第一个 `{{` 之前的静态前缀——scheme+host 必须字面量（整段写成 `{{.X}}` 会被拒）；运行时每次尝试前再校验一遍完整 URL。条目本身写错（空串、非 http(s) scheme、非法正则）启动即报 `ErrAllowlistEntry`——即使当前没配任何 http 动作也会报（`deps.Builder.validateActions` 单独校验一遍），避免"以后加动作才发现"。
 - 传输安全：默认校验 TLS；**不跟随重定向**（`CheckRedirect` 返回 `ErrUseLastResponse`），避免 3xx 跳到 allowlist 之外；每次尝试 `context.WithTimeout`；响应体最多读 64 KiB 后丢弃。
@@ -1472,7 +1473,8 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - 审计：成功与失败都记 `action` / `method` / `url` / `status` / `duration`；**headers 从不打印**（可能含 token）。
 - dry-run / cooldown / 手动触发复用：http 动作就是普通动作，规则命中走同一条 `runDecision` 路径，`POST /v1/actions/<name>` 也能手动触发。
 - 冒烟（真机，本地 webhook 探针 `127.0.0.1:18090`，端口 10041 -> `notify-ok`、10042 -> `notify-fail`）：探针收到 `POST /hook/notify-ok`，`Authorization: Bearer ***`（来自 `${HOOK_TOKEN}`），body `{"action":"notify-ok","src":"127.0.0.1","port":10041,"mac":"58:11:22:bc:78:66"}`；`/fail` 收到 **2** 次请求（1 次 + 1 次重试），sol 日志有 `http action retrying` 与最终 `status=500` + `action failed`；把 url 换成 allowlist 之外的 `https://evil.example/oops` 时启动直接 `exit 1`（`url is not in security.url_allowlist`）。allowlist 三写法单独冒烟（`=http://127.0.0.1:18092/notify-only` + `~^http://127\.0\.0\.1:18092/re/`，端口 10091/10092）：两个动作都到达探针（`/notify-only`、`/re/thing`，body 带 `which`）；精确条目不覆盖 `/other` -> 启动 `exit 1`；lookalike host `https://hooks.example.com.evil.net/hook`（条目 `https://hooks.example.com`）-> 启动 `exit 1`；非法正则条目 `~[` 即使没配 http 动作也 `exit 1`（`invalid url_allowlist entry`）。
-- 未做：请求级代理配置、响应体内容过滤。allowlist 的精确 / 正则匹配与 `sequence` 已落地（本行曾把它们列为未做）。
+- **代理（已落地）**：`actions[].proxy` 让这条动作的请求走代理，取值校验在启动期做（scheme 必须是 `http`/`https`/`socks5`/`socks5h`、必须有 host，否则 `ErrProxy`）。Go 的 transport 自带这三种代理支持，所以没有新增依赖。为空时用共享 client——它和 Go 默认 transport 一样**会读环境变量**（`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`），`proxy` 则按动作覆盖它。每个不同代理串只建一次 client（`Executor.proxyMu` + map，上界就是配置里的条数），且不跟随重定向的约束在代理 client 上同样生效。**代理不是 allowlist 的后门**：目的地仍按 `security.url_allowlist` 校验，启动期 `Validate` 与每次尝试都会查，被拒的目的地一个字节都不会到代理（单测 `TestProxyDoesNotBypassTheAllowlist` 断言代理零命中）。
+- 未做：响应体内容过滤（响应体当前读完 64 KiB 就丢弃，只按状态码判成败）。allowlist 的精确 / 正则匹配、`sequence`、请求级代理均已落地。
 
 ### 19.9 P4 部分落地（热重载 / `/v1/reload` + `SIGHUP`）
 

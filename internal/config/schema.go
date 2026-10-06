@@ -200,6 +200,7 @@ type actionConfig struct {
 	Headers   map[string]string `yaml:"headers"`
 	Body      string            `yaml:"body"`
 	Retries   int               `yaml:"retries"`
+	Proxy     string            `yaml:"proxy"`
 	Steps     []string          `yaml:"steps"`
 	MAC       string            `yaml:"mac"`
 	Broadcast string            `yaml:"broadcast"`
