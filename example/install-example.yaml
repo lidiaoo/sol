@@ -1,0 +1,14 @@
+# 安装示例（安装脚本的输入，不是 sol 的运行配置）：
+# 最新版 -> /usr/local/bin，装成服务，服务以 /etc/sol/sol.yaml 启动，并放行 10010/udp。
+# 只想先试试的写法：去掉 service 段、run.args 留 [listen, --config, /etc/sol/sol.yaml] 即可。
+version: 1
+release: latest            # 或 v0.3.1（降级需要命令行 --allow-downgrade）
+prefix: /usr/local/bin
+write_config: false            # true = 目标不存在时写一段最小配置
+service:
+  enabled: true                # 等价于命令行 --service
+  user: root                   # 可选；给了就写进 unit / plist
+  capabilities: [CAP_NET_BIND_SERVICE]
+  firewall: [10010/udp]        # 只在支持编排的平台动防火墙（ufw / netsh）
+run:
+  args: [listen, --config, /etc/sol/sol.yaml]   # 启动参数：列表，不是字符串

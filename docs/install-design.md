@@ -198,6 +198,46 @@ SoL 状态
 
 并发：加锁（`flock` / Windows 锁文件），避免 CI 与人同时装。装之前清理**自己**的残留（同名 unit/plist/task 且台账标了是它建的），否则 `enable` 会撞上旧单元。
 
+### 6.1 安装 profile（可选：一份输入 → 三平台产物）
+
+问题：现在"用哪些参数起 sol"写在三套服务定义里——systemd 的 `ExecStart`、launchd 的 `ProgramArguments`、计划任务的 `/TR` 字符串。同一件事写三遍，装服务的人还得记住每个平台怎么写字。
+
+**支持一份安装 profile 文件，由安装脚本读取。** 它只描述"怎么装、怎么起"，**不是 sol 运行时的配置来源**（sol 运行时仍然只认 `--config` / `$SOL_CONFIG` / 默认两路径，见 §5.4）。
+
+三层权威，互不重叠：
+
+| 层 | 文件 / 位置 | 回答什么 | 角色 |
+| --- | --- | --- | --- |
+| 安装 profile | `install.yaml`（`--profile` 指定；默认 `~/.config/sol/install.yaml`） | 怎么装、怎么起 | **输入**（可选） |
+| 服务定义 | systemd unit / launchd plist / 计划任务 | 服务怎么被拉起 | **产物**（安装器生成；要改就重跑安装，别手改） |
+| 运行配置 | `/etc/sol/sol.yaml` 等 | 收到包做什么 | **权威**（sol 只认这个 + CLI/env） |
+
+示例见 `example/install-example.yaml`：
+
+```yaml
+version: 1
+release: latest                # 或 v0.3.1（降级需要命令行 --allow-downgrade）
+prefix: /usr/local/bin
+write_config: false            # true = 目标不存在时写一段最小配置
+service:
+  enabled: true                # 等价于命令行 --service
+  user: root                   # 可选；给了就写进 unit / plist
+  capabilities: [CAP_NET_BIND_SERVICE]
+  firewall: [10010/udp]        # 只在支持编排的平台动防火墙（ufw / netsh）
+run:
+  args: [listen, --config, /etc/sol/sol.yaml]   # 启动参数：列表，不是字符串
+```
+
+设计要点：
+
+- **`run.args` 是列表而不是一行字符串**。一行字符串没法校验（危险开关能混进来）、没法映射（launchd 要数组）、没法 diff。列表里每个 token 按 `sol listen` 的真实 flag 集合校验，未知 flag 启动期报错。
+- **未知键即报错**（与 sol 配置解析同一个风格 `KnownFields(true)`）：profile 里写错一个键不会静默忽略。
+- **读取顺序**：`--profile <路径>` > `$SOL_INSTALL_PROFILE` > `~/.config/sol/install.yaml`（存在才读）。**绝不读当前目录**——在别人的仓库里跑安装脚本时，cwd 里的文件不该能改你的系统（供应链风险）。
+- **命令行仍可覆盖 profile**：文件 → 环境变量 → CLI，CLI 胜（与 sol 自己的叠加方向一致）。
+- **危险开关不禁止但要留痕**：`run.args` 里出现 `--allow-reserved-actions` 这类，必须进报告（"将用以下参数起服务：…"）并在 `--dry-run` 里显示。
+- **漂移检测**：服务定义是产物，手改 unit 之后就会与 profile / 台账不一致 → `sol status` 发现"unit 里的参数 ≠ 台账记录"时提示"用 `install.sh --service` 重新生成，或把台账更新为现状"。这是 profile 不变成谎言的唯一办法。
+- 没有 profile 时行为完全不变（"一行命令"路径不受影响）。
+
 ## 7 覆盖安装与升级
 
 ```

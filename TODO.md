@@ -144,6 +144,7 @@
 - [ ] `sol status` 子命令（**默认入口**：版本 / 二进制 sha256 与台账比对 / 安装方式 / 服务线索（`INVOCATION_ID`、`XPC_SERVICE_NAME`）/ 配置有效性 / 监听端口与权限告警；未纳管时也输出；退出码 0/1；`--json`）
 - [ ] `sol listen` 启动日志补配置来源行（`msg="configuration" path=... source=...`）
 - [ ] 台账 / 报告契约：`install.json` schema + `install.log` 格式 + 防漂移校验（报告值必须来自现场：重算 sha256、真跑 `--version`；不打印配置内容与密钥）
+- [ ] 安装 profile（§6.1）：`example/install-example.yaml`（已加）+ `--profile` / `$SOL_INSTALL_PROFILE` / `~/.config/sol/install.yaml` 三级发现（**不读 cwd**）+ 未知键报错 + `run.args` 按真实 flag 集合校验 + `run.args` 生成三平台服务定义 + 「unit 参数 ≠ 台账」漂移提示（`sol status`）
 - [ ] `scripts/install.sh`：探测决策矩阵（同源同版本 / 新版本升级 / 降级默认拒绝 / 异源拒绝 / 无台账要 `--force` / PATH 多命中只报告）+ 配置预检（不通过不覆盖）+ 原子替换留 `sol.bak` + 回读运行中版本 + `--dry-run`（同格式加 `would`）+ `--uninstall` / `--purge` / `--history` / `--force` / `--allow-downgrade` + `flock`
 - [ ] `scripts/install.ps1`：`C:\ProgramData\sol` + `-Service`（计划任务 + 防火墙规则）+ `-Uninstall` / `-Purge`；替换前先 `schtasks /End`（运行中 exe 有文件锁）
 - [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本（把 macOS / Windows 从"未验证"提到"有 CI 证据"）
