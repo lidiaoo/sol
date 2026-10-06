@@ -9,12 +9,21 @@
 # ⚠ 证据强度：本机没有 Windows 实机，这份脚本**只做过构造级校验（逐行审查）**，未在真机上跑过。
 #    设计文档 §10 要求由 .github/workflows/install-smoke.yml 的 windows matrix 补上真机证据。
 #
+# ⚠ 升权重跑时带的内部参数必须是 PowerShell 原生写法（-SolAction install，不是 --sol-action=install）：
+#   `powershell -File script.ps1 --sol-action=install` 会被当成参数名，子进程直接死在这一行。
+#   用户不需要、也不应该记这些；正常执行时一个参数都不用给。
+[CmdletBinding()]
+param(
+	[string]$SolAction = '',
+	[string]$SolService = '',
+	[string]$SolRunDir = '',
+	[string]$SolUnitName = '',
+	[string]$SolRoot = ''
+)
+
 # 环境变量（都有默认值；测试与多实例用）：
 #   SOL_INSTALL_ROOT  把落点挂到另一个目录下（默认 C:\ProgramData）
 #   SOL_UNIT_NAME     计划任务名（默认 sol）
-
-[CmdletBinding()]
-param()
 
 $ErrorActionPreference = 'Stop'
 
@@ -54,9 +63,11 @@ $History = Join-Path $InstallDir 'install.log'
 # 也就没法用 UAC 重跑自己——那种情况下要明说，而不是装到一半失败。
 $Piped = [string]::IsNullOrEmpty($PSCommandPath)
 
-$ActionArg = ''
-$ServiceArg = ''
-$RunDirArg = ''
+$ActionArg = $SolAction
+$ServiceArg = $SolService
+$RunDirArg = $SolRunDir
+if ($SolUnitName) { $env:SOL_UNIT_NAME = $SolUnitName }
+if ($SolRoot) { $env:SOL_INSTALL_ROOT = $SolRoot }
 foreach ($a in $args) {
 	if ($a -like '--sol-action=*') { $ActionArg = $a -replace '^--sol-action=', '' }
 	elseif ($a -like '--sol-service=*') { $ServiceArg = $a -replace '^--sol-service=', '' }
@@ -120,7 +131,7 @@ function Binary-Version($path) {
 $LedgerExists = Test-Path $Ledger
 $LedgerJson = $null
 if ($LedgerExists) {
-	try { $LedgerJson = Get-Content -Raw $Ledger | ConvertFrom-Json } catch { $LedgerJson = $null }
+	try { $LedgerJson = Get-Content -Raw -Encoding UTF8 $Ledger | ConvertFrom-Json } catch { $LedgerJson = $null }
 }
 
 function Task-State {
@@ -149,7 +160,7 @@ function Write-UserConfig {
 function Read-Args {
 	$out = @()
 	# 注意：调用处必须 @(...) 包一层——PowerShell 会把单元素数组拆成标量。
-	foreach ($line in (Get-Content $UserConfig)) {
+	foreach ($line in (Get-Content -Encoding UTF8 $UserConfig)) {
 		if ($line -match '^\s*args:\s*(.*)$') {
 			$val = $Matches[1].Trim().Trim('[', ']')
 			foreach ($tok in ($val -split ',')) {
@@ -207,7 +218,7 @@ function Get-ThresholdPorts {
 	if (-not (Test-Path $RunConfig)) { return $ports }
 	# 行内（`- match: { ports: [10010] }`）和块写法都要认：只认行首会让行内写法静默失效，
 	# 于是防火墙规则没加、包被挡在外面——"装完了但收不到魔法包"就是这个原因。
-	foreach ($line in (Get-Content $RunConfig)) {
+	foreach ($line in (Get-Content -Encoding UTF8 $RunConfig)) {
 		foreach ($m in [regex]::Matches($line, 'ports:\s*\[([0-9,\s]*)\]')) {
 			foreach ($n in ($m.Groups[1].Value -split ',')) { if ($n.Trim()) { $ports += [int]$n.Trim() } }
 		}
@@ -255,7 +266,7 @@ function Show-Config {
 	Head2 '== 安装配置 =='
 	Say $UserConfig
 	Say ''
-	foreach ($l in (Get-Content $UserConfig)) { Say "  $l" }
+	foreach ($l in (Get-Content -Encoding UTF8 $UserConfig)) { Say "  $l" }
 	Say ''
 	if ($ConfigGenerated) { Say '（刚生成的。改它，然后重新运行脚本；脚本不会覆盖已存在的这份文件。）' }
 }
@@ -345,7 +356,8 @@ function Invoke-Precheck {
 		PassThru = $true
 		RedirectStandardError = $errFile
 	}
-	if ($IsWindows) { $spArgs['WindowStyle'] = 'Hidden' }
+	# $IsWindows 是 PowerShell 7+ 才有的自变量；5.1 里它是 $null，会被当成$false。
+	if ((Get-Variable -Name IsWindows -ErrorAction SilentlyContinue -ValueOnly) -or $PSVersionTable.PSEdition -eq 'Desktop') { $spArgs['WindowStyle'] = 'Hidden' }
 	try {
 		$p = Start-Process @spArgs
 		Start-Sleep -Seconds 3
@@ -395,13 +407,26 @@ function Escalate-IfNeeded([string]$action) {
 	$hostExe = (Get-Process -Id $PID).Path
 	if (-not $hostExe) { $hostExe = Join-Path $PSHOME 'powershell.exe' }
 	$svc = if ($script:ServiceChosen) { 'yes' } else { 'no' }
-	$argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
-		"--sol-action=$action", "--sol-service=$svc", "--sol-run-dir=$RunDir", "--sol-unit-name=$TaskName")
-	if ($env:SOL_INSTALL_ROOT) { $argList += "--sol-root=$env:SOL_INSTALL_ROOT" }
+	# 带空格的取值要自己加引号：PowerShell 拼命令行时不会替你加，路径里有空格就会把参数切断。
+	$rawArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
+		'-SolAction', $action, '-SolService', $svc, '-SolRunDir', $RunDir, '-SolUnitName', $TaskName)
+	if ($env:SOL_INSTALL_ROOT) { $rawArgs += @('-SolRoot', $env:SOL_INSTALL_ROOT) }
+	$argList = @($rawArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
 
 	$env:SOL_INSTALL_ELEVATED = '1'
 	try {
+		# UAC 子进程有自己的窗口，它的输出在父进程里一个字都看不到——失败也是静悄悄的，
+		# 而这正是"服务没注册"最难查的地方。子进程把全程写进 transcript，父进程随后打印出来。
+		$elevLog = Join-Path $RunDir "elevated-$action.log"
+		if (Test-Path $elevLog) { Remove-Item $elevLog -Force -ErrorAction SilentlyContinue }
 		$p = Start-Process -FilePath $hostExe -Verb RunAs -PassThru -Wait -WorkingDirectory $RunDir -ArgumentList $argList
+		Say ''
+		if (Test-Path $elevLog) {
+			Say '以管理员身份那一步的输出：'
+			foreach ($l in (Get-Content -Encoding UTF8 $elevLog)) { Say "  $l" }
+		} else {
+			Warn2 "以管理员身份那一步没有留下输出（$elevLog 不存在）。退出码：$($p.ExitCode)"
+		}
 		exit $p.ExitCode
 	} catch {
 		Die "这一步需要管理员权限，但 UAC 提权没成功（被拒绝或不可用）。请右键 install.cmd 选“以管理员身份运行”，或在管理员 PowerShell 里再跑一次。原因：$_"
@@ -467,7 +492,7 @@ function Invoke-Install {
 
 	# 计划任务不收集 stdout：审计日志只能靠 sol 自己写文件，配置里没写就提醒一句。
 	if ($script:ServiceChosen -and (Test-Path $RunConfig)) {
-		$hasFileLog = (Get-Content $RunConfig) | Where-Object { $_ -match 'output:\s*file' }
+		$hasFileLog = (Get-Content -Encoding UTF8 $RunConfig) | Where-Object { $_ -match 'output:\s*file' }
 		if (-not $hasFileLog) {
 			Warn2 "计划任务不收集 stdout：$RunConfig 里建议写 logging: { output: file, file: $($InstallDir)\sol.log }，否则审计记录无处可去。"
 		}
@@ -499,10 +524,23 @@ function Invoke-Install {
 
 function Register-SolService {
 	$tr = '"' + $DestBin + '" ' + (($ArgsList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
-	schtasks /Create /TN $TaskName /TR $tr /SC ONSTART /RU SYSTEM /RL HIGHEST /F 2>$null | Out-Null
-	if ($LASTEXITCODE -ne 0) { Warn2 "schtasks /Create 失败（要管理员）。手动：schtasks /Create /TN $TaskName /TR $tr /SC ONSTART /RU SYSTEM /RL HIGHEST /F" }
-	schtasks /Run /TN $TaskName 2>$null | Out-Null
-	Act 'admin' '注册并启动计划任务' "schtasks /Create /TN $TaskName /TR `"$tr`" /SC ONSTART /RU SYSTEM /RL HIGHEST /F; schtasks /Run /TN $TaskName"
+	# schtasks 自己的报错是"为什么没注册上"的唯一线索：绝不能吞掉它。
+	$out = & schtasks /Create /TN $TaskName /TR $tr /SC ONSTART /RU SYSTEM /RL HIGHEST /F 2>&1
+	$code = $LASTEXITCODE
+	if ($code -ne 0) {
+		Warn2 "schtasks /Create（带 /RL HIGHEST）失败，退出码 $code：$out"
+		# 部分 Windows 上 /RL HIGHEST 与 /RU SYSTEM 不能同时给（SYSTEM 本身就是最高权限）。
+		$out = & schtasks /Create /TN $TaskName /TR $tr /SC ONSTART /RU SYSTEM /F 2>&1
+		$code = $LASTEXITCODE
+		if ($code -ne 0) {
+			Warn2 "schtasks /Create 仍然失败，退出码 $code：$out`n  手动来一遍：schtasks /Create /TN $TaskName /TR `"$tr`" /SC ONSTART /RU SYSTEM /F"
+			return
+		}
+		Say '（去掉 /RL HIGHEST 后注册成功：/RU SYSTEM 的任务本身就是最高权限）'
+	}
+	$run = & schtasks /Run /TN $TaskName 2>&1
+	if ($LASTEXITCODE -ne 0) { Warn2 "schtasks /Run 失败，退出码 $LASTEXITCODE：$run（任务已注册，只是这次没立刻起来；重启后会自动跑）" }
+	Act 'admin' '注册并启动计划任务' "schtasks /Create /TN $TaskName /TR `"$tr`" /SC ONSTART /RU SYSTEM /F; schtasks /Run /TN $TaskName"
 }
 
 function Invoke-Uninstall {
@@ -594,11 +632,25 @@ if ($ElevatedAction) {
 	$svc = $ServiceArg
 	if (-not $svc) { $svc = $env:SOL_INSTALL_SERVICE }
 	$script:ServiceChosen = ($svc -eq 'yes')
-	Say "（已用管理员权限重跑：$ElevatedAction）"
-	switch ($ElevatedAction) {
-		'install' { Invoke-Install; if ($script:Noop) { Say '（什么都没改。）' } else { Show-Report 'install' } }
-		'uninstall' { Invoke-Uninstall; Show-Report 'uninstall' }
-		default { Die "未知的 SOL_INSTALL_ACTION：$ElevatedAction" }
+	# 父进程看不见这个窗口：全程写进 transcript，交给它打印。
+	$elevLog = Join-Path $RunDir "elevated-$ElevatedAction.log"
+	$transcript = $false
+	try {
+		Start-Transcript -Path $elevLog -Append -Force | Out-Null
+		$transcript = $true
+	} catch { }
+	try {
+		Say "（已用管理员权限重跑：$ElevatedAction）"
+		switch ($ElevatedAction) {
+			'install' { Invoke-Install; if ($script:Noop) { Say '（什么都没改。）' } else { Show-Report 'install' } }
+			'uninstall' { Invoke-Uninstall; Show-Report 'uninstall' }
+			default { Die "未知的 SOL_INSTALL_ACTION：$ElevatedAction" }
+		}
+	} catch {
+		Say "出错了：$_"
+		Say $_.ScriptStackTrace
+	} finally {
+		if ($transcript) { try { Stop-Transcript | Out-Null } catch { } }
 	}
 	exit 0
 }

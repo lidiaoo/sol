@@ -22,3 +22,7 @@ go.work
 /sol.exe
 /sol-*
 /sol.yaml
+# 安装脚本在"你执行它的那个目录"生成的产物（含 UAC 那一步的日志）
+/install.yaml
+/sol.yaml
+/elevated-*.log
