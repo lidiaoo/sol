@@ -74,13 +74,13 @@ skill 不重述命令，只做决策树与验证：调用安装脚本、判断"�
 
 为什么它在**设计期**就要定：卸载、升级、状态查询三件事全部依赖它；台账不在就只能靠猜，而猜着删别人的系统是最糟的失败模式。
 
-- `incomplete: true`：安装/升级中途失败时置位，`--uninstall` 据此收尾，`sol status` 据此提示。
+- `incomplete: true`：安装/升级中途失败时置位，卸载时据此收尾，`sol status` 据此提示。
 - `previous`：回滚依据（配合 `sol.bak`）。
 - `config_paths` / `log_paths`：**报告用**，卸载默认不删（见 §8）。
 
 ## 4 执行报告
 
-执行只给**简短**一段：装了什么、文件在哪、怎么验证、接下来做什么。完整动作清单不默认刷屏，`--verbose` 才逐行列出（每行 = 做了什么 + 等价命令 + 是否 root）。
+执行只给**简短**一段：装了什么、文件在哪、怎么验证、接下来做什么。完整动作清单不刷屏，而是写进 `install.log`（每行 = 做了什么 + 等价命令 + 是否 root），报告里给路径。
 
 ```
 == 完成 ==
@@ -100,7 +100,7 @@ sol v0.3.0 -> /usr/local/bin/sol（systemd 服务已启用）
   sol status
 ```
 
-**落盘**：同一份内容追加写 `install.log`（带时间戳，install / upgrade / uninstall 每次一段）。
+**落盘**：简短报告 + 完整动作清单追加写 `install.log`（带时间戳，install / upgrade / uninstall 每次一段）。
 
 **不说谎规则**（写进脚本实现与单测）：
 
@@ -190,24 +190,42 @@ SoL 状态
 | 无台账但二进制存在 | 不猜：打印探测结果，要求显式接管（配置里 `adopt: true`） |
 | PATH 上存在第二个 sol | 报告并指出**哪个生效**，不擅自改 PATH |
 
-**命令行只剩入口开关，参数全在配置文件里**：
+**安装脚本没有任何命令行参数。** 一个都不加：用户不需要记任何东西，所有选择都由"生成的文件 + 交互问答"完成。
 
-| 参数 | 作用 |
-| --- | --- |
-| （无参数） | 生成（或读已有的）配置 → 展示 → 确认 → 执行 |
-| `--yes` | 跳过询问直接执行（CI / 非交互用；没有它时非交互环境**只生成不执行**） |
-| `--regenerate` | 重新生成配置（默认**不覆盖**已有文件，保护你的改动） |
-| `--profile <路径>` | 配置换个位置（默认见 §6.1） |
-| `--uninstall [--purge]` | 卸载，同样先列清单再确认 |
-| `--verbose` | 打印完整动作清单（默认只给 §4 那段简短报告） |
+未安装时：
 
-`release` / `prefix` / `service` / `capabilities` / `firewall` / `run.args` 这类**没有对应的命令行开关**，只存在于配置文件里——这是刻意的：命令行开关越多，"我到底装了什么"越说不清。
+```
+== 已生成安装配置 ==
+/home/you/.config/sol/install.yaml
 
-需要 root 的步骤（写 `/usr/local/bin`、写 unit、enable 服务）在执行阶段逐条 sudo，不做"整个脚本 sudo 跑"。并发用锁（`flock` / Windows 锁文件）。执行前清理**自己**的残留（同名 unit/plist/task 且台账标了是它建的），否则 `enable` 会撞上旧单元。
+  release: latest
+  prefix: /usr/local/bin
+  service: { enabled: true, kind: systemd, unit_path: /etc/systemd/system/sol.service }
+  run: { args: [listen, --config, /etc/sol/sol.yaml] }
+
+可以现在编辑它（另开一个窗口也行），改完回车继续。
+
+执行这份配置？[Y/n]
+```
+
+已安装时（同一份文件就是"当前配置"）：
+
+```
+检测到已安装 sol v0.3.0（systemd 服务在运行）
+
+请选择：[回车 = 按配置应用 / u = 卸载 / r = 重新生成配置 / n = 退出]
+```
+
+卸载时会再问一句，危险动作默认否：`配置文件也一起删掉吗？[y/N]`。
+
+- **想看上次做了什么**：报告里印出 `install.log` 的路径，完整动作清单都在里面（不需要 `--verbose` 这种开关）。
+- **CI / 无人值守**：不给参数，用管道喂答案即可（`printf 'y\n' | bash install.sh`）。**检测到没有终端时只生成配置、不执行任何操作**——绝不猜"用户大概是想装"。
+- 需要 root 的步骤（写 `/usr/local/bin`、写 unit、enable 服务）在执行阶段逐条 sudo，不做"整个脚本 sudo 跑"。
+- 并发用锁（`flock` / Windows 锁文件）。执行前清理**自己**的残留（同名 unit/plist/task 且台账标了是它建的），否则 `enable` 会撞上旧单元。
 
 ### 6.1 本机安装配置（安装脚本生成，用户可改）
 
-**位置**：Linux / macOS `~/.config/sol/install.yaml`；Windows `%APPDATA%\sol\install.yaml`；`--profile` 可换到别处。用 sudo 跑时写到 `$SUDO_USER` 的家目录，而不是 `/root`——否则用户在自己的家目录里根本找不到这份文件。
+**位置固定**（没有"换个位置"的开关）：Linux / macOS `~/.config/sol/install.yaml`；Windows `%APPDATA%\sol\install.yaml`。用 sudo 跑时写到 `$SUDO_USER` 的家目录，而不是 `/root`——否则用户在自己的家目录里根本找不到这份文件。
 
 **内容按本机生成**，所以三个平台长得不一样，这正是它的用处：不用记每个平台的路径怎么写字。
 
@@ -246,7 +264,7 @@ run:
 
 要点只有四条：
 
-- **不覆盖**已有文件：配置存在就按它执行；要重新生成用 `--regenerate`。"改配置 → 重跑 install.sh" 就是唯一的修改回路，用户不需要记任何命令行开关。
+- **不覆盖**已有文件：配置存在就按它执行；要重新生成就在脚本的问答里选 `r`。"改配置 → 重跑 install.sh" 是唯一的修改回路，用户不需要记任何命令行开关。
 - **未知键即报错**（与 sol 配置解析同一风格）；`run.args` 是**列表**而不是一行字符串——字符串没法校验（危险开关能混进来）、没法映射到 launchd 的 `ProgramArguments` 数组、没法 diff。
 - **三层权威互不重叠**：这份配置是**输入**（怎么装、怎么起）；服务定义是**产物**（安装器生成，别手改）；`/etc/sol/sol.yaml` 是**权威运行配置**（sol 只认这个 + CLI/env，见 §5.4）。
 - **漂移可见**：手改过 unit 之后，`sol status` 会发现"unit 里的参数 ≠ 台账记录"并提示重跑安装，或把台账更新为现状。
@@ -285,14 +303,14 @@ run:
 
 1. **先读台账再动手**；没有台账就**拒绝**，打印"能看到什么 + 手工删除的确切命令"，不提供一键强删——安装出错是没装上，卸载出错是删了别人的东西。
 2. **只删自己建的**：系统用户、CAP、防火墙规则、PATH 改动——只动台账里标了是安装器创建的那些；用户自己设的 `SOL_TOKEN` 等只报告不动。
-3. **默认不碰配置与日志**：保留 `/etc/sol/sol.yaml`、`~/.config/sol/`、日志，并打印"留了什么、在哪、怎么删"；`--purge` 才删。
+3. **默认不碰配置与日志**：保留 `/etc/sol/sol.yaml`、`~/.config/sol/`、日志，并打印"留了什么、在哪、怎么删"；卸载时会问一句"配置文件也一起删掉吗？[y/N]"，默认否。
 4. **幂等 + 能从半成品恢复**：装到一半失败也要能卸干净（台账在第一个副作用前写入，逐项打勾）。
 
 **各平台拆解**：
 
 - Linux：`systemctl disable --now sol.service` → 删 unit → `daemon-reload` → `reset-failed`；装过 CAP 就 `setcap -r`；台账标了安装器建的系统用户才 `userdel`。
 - macOS：`launchctl bootout system /Library/LaunchDaemons/com.lidiaoo.sol.plist` → 删 plist（顺序反了 `KeepAlive` 会把它拉回来）。
-- Windows：`schtasks /Delete /TN sol /F` → `Remove-NetFirewallRule -DisplayName "sol (WoL)"` → 撤 PATH 项 → 删 `%ProgramData%\sol` 下的二进制与台账（配置保留，`-Purge` 全删）。
+- Windows：`schtasks /Delete /TN sol /F` → `Remove-NetFirewallRule -DisplayName "sol (WoL)"` → 撤 PATH 项 → 删 `%ProgramData%\sol` 下的二进制与台账（配置保留，问过之后才删）。
 
 **验收三条硬标准**：① 端口不再监听；② 服务单元/计划任务不存在；③ 配置文件仍在且脚本已打印其路径与删除方法。
 
@@ -315,7 +333,7 @@ run:
 | 交付物 | 证据强度 | 方式 |
 | --- | --- | --- |
 | `sol status` / `paths` / `config check` | **真机全量** | 单测 + Linux 真机冒烟（沿用现有 `sNN` 机制） |
-| `scripts/install.sh` | **真机全量** | Linux 真机跑：装 / 重跑 / 升级 / 降级被拒 / 异源被拒 / 卸载 / `--purge`，并真发一个魔法包确认能起来 |
+| `scripts/install.sh` | **真机全量** | Linux 真机跑：装 / 重跑 / 升级 / 降级被拒 / 异源被拒 / 卸载，并真发一个魔法包确认能起来 |
 | `scripts/install.ps1`、macOS 路径 | **CI 证据**（否则只能标"仅语法级"） | 新增 `.github/workflows/install-smoke.yml`，matrix ubuntu/macos/windows 真跑脚本 + 校验 + `--version` + `ifaces` |
 | 包管理器清单 | **schema 级** | scoop/winget 的 JSON schema 校验；winget 在 CI 里装不了，只能标 |
 | README 里的安装命令 | **真跑** | 沿用现有 readme 断言脚本（抽 README 片段真执行） |
@@ -341,8 +359,8 @@ run:
 | 1 | 本文档 + TODO 挂条目（本次） |
 | 2 | `sol paths` + `sol config check` + `sol status`（含 `listen` 的配置来源启动日志行） |
 | 3 | 台账 / 报告契约落地（`install.json` schema + `install.log` 格式 + 校验脚本 + 单测） |
-| 4 | `scripts/install.sh`：探测 → 生成配置（按平台，不覆盖已有）→ 展示并确认 → 执行（预检 / 原子替换 / `--uninstall` / `--purge` / `--yes` / `--regenerate` / `--profile` / `--verbose`）+ 真机冒烟 |
-| 5 | `scripts/install.ps1` |
+| 4 | `scripts/install.sh`：探测 → 生成配置（按平台，不覆盖已有）→ 展示并确认 → 执行 / 卸载（预检 / 原子替换留 `sol.bak` / 回读运行版本）；**零命令行参数**，交互问答完成全部选择 + 真机冒烟 |
+| 5 | `scripts/install.ps1`（同上一行：零参数、交互问答） |
 | 6 | `.github/workflows/install-smoke.yml`（三平台 matrix） |
 | 7 | scoop + winget 清单 |
 | 8 | Hermes skill `sol-install` + `references/{linux,macos,windows}.md` |
