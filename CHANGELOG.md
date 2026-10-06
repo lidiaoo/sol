@@ -8,6 +8,14 @@ The design document ([docs/routing-design.md](docs/routing-design.md)) records t
 and the real-machine smoke evidence behind each of these entries; [TODO.md](TODO.md) tracks what
 is still open.
 
+## Fork notice
+
+This repository is a fork of [bavix/sol](https://github.com/bavix/sol) at its last tag, v0.0.2,
+under the same MIT licence. Both copyright notices live in [LICENSE](LICENSE) - the original one
+from bavix, untouched, and this fork's - and the upstream project remains the work of its authors.
+The module path here is `github.com/lidiaoo/sol`, releases are built and published from this
+repository, and everything under `[Unreleased]` below was developed here, on top of v0.0.2.
+
 ## [Unreleased]
 
 Since v0.0.2 sol grew from "shutdown or reboot on a magic packet" into a configurable

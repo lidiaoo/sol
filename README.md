@@ -70,6 +70,26 @@ goes through the same cooldown, rate limit, dry-run and audit path as every othe
 The trust ladder is documented in §20 of the design: log only < outbound wake-up < sleep/lock <
 shutdown/reboot < custom command < outbound HTTP < raw remote command (off by default).
 
+### Platform support
+
+The listening side is the same everywhere: one UDP socket per port, bound to `0.0.0.0`, and the
+same rule engine behind it. What differs per platform is the power actions and the privilege rules.
+
+| | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| `power.shutdown` | `shutdown -h now` | `shutdown -h now` | `shutdown -s -t 0 -f` |
+| `power.reboot` | `shutdown -r now` | `shutdown -r now` | `shutdown -r -t 0 -f` |
+| `power.sleep` | `systemctl suspend` | `pmset sleepnow` | `rundll32 powrprof.dll,SetSuspendState 0,1,0` |
+| reserved ports 7/9, anything below 1024 | root or `CAP_NET_BIND_SERVICE` | root | no privileged ports |
+| `exec` with `user:`/`group:` | yes (needs root) | yes (needs root) | refused: `exec user/group requires root` is unix only |
+| `exec`, `http`, `sequence`, `wol.send`, control plane, reload, guards | yes | yes | yes |
+
+Other systems (a BSD, for instance) build and listen; a power action there fails with
+`unsupported operating system`, which is when an `exec` action is the way to do it.
+
+One thing worth saying plainly: sol acts on the machine it runs on, and only while it runs. It is a
+shutdown-on-LAN receiver, not something that wakes a sleeping box.
+
 ## Run the service
 
 ### Simple mode (command line)
@@ -167,7 +187,7 @@ Editors with YAML support can complete and validate the file against the publish
 Schema. Either point the editor at the local `schema/sol.schema.json`, or start the file with:
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/bavix/sol/master/schema/sol.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lidiaoo/sol/master/schema/sol.schema.json
 ```
 
 The schema mirrors the loader exactly — unknown keys, wrong types and the allowed enum values
@@ -420,7 +440,7 @@ useful before trusting an `--iface`-less startup:
 ```
 NAME             TYPE      STATUS  MAC                IPV4           AUTO
 lo               loopback  up                         127.0.0.1      no
-enp6s0           physical  up      58:11:22:bc:78:66  192.168.0.120  yes
+enp6s0           physical  up      00:11:22:33:44:55  192.168.0.120  yes
 wlp5s0           physical  down    0a:e8:9e:0f:d3:8d  -              yes
 docker0          virtual   up      02:42:4e:d9:8c:14  172.17.0.1     no
 ```
@@ -446,32 +466,32 @@ Download the latest release for your platform and architecture:
 
 **Linux AMD64:**
 ```bash
-curl -L https://github.com/bavix/sol/releases/download/v0.0.2/sol-v0.0.2-linux-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **Linux ARM64:**
 ```bash
-curl -L https://github.com/bavix/sol/releases/download/v0.0.2/sol-v0.0.2-linux-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **macOS Intel:**
 ```bash
-curl -L https://github.com/bavix/sol/releases/download/v0.0.2/sol-v0.0.2-darwin-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **macOS Apple Silicon:**
 ```bash
-curl -L https://github.com/bavix/sol/releases/download/v0.0.2/sol-v0.0.2-darwin-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **Windows (PowerShell):**
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/bavix/sol/releases/download/v0.0.2/sol-v0.0.2-windows-amd64.zip" -OutFile "sol.zip"
+Invoke-WebRequest -Uri "https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-windows-amd64.zip" -OutFile "sol.zip"
 Expand-Archive -Path "sol.zip" -DestinationPath "." -Force
 move sol.exe C:\Windows\System32\sol.exe
 ```
 
-> v0.0.2 predates the configuration file, the extra actions and the port-9 change; read the
+> Upstream's last tagged release, v0.0.2, predates the configuration file, the extra actions and the port-9 change; read the
 > [CHANGELOG](CHANGELOG.md) before upgrading an existing installation.
 
 ### Build from source
@@ -497,7 +517,89 @@ sol listen --help
 sol ifaces
 ```
 
-## Systemd Service Setup
+## Quick start
+
+1. **See which interfaces will answer.** `sol ifaces` marks them `AUTO yes`: that is the machine's
+   identity (its real NICs), not a snapshot of what happens to be up at that moment.
+
+2. **Write a configuration.** Any path works, and `--config` picks it up; the conventional places
+   are `/etc/sol/sol.yaml` (Linux), `/usr/local/etc/sol/sol.yaml` (macOS) and
+   `C:\ProgramData\sol\sol.yaml` (Windows).
+
+   ```yaml
+   version: 1
+   rules:
+     - match: { ports: [10010] }
+       action: power.shutdown
+   ```
+
+3. **Try it without consequences.** `--dry-run` logs what would happen and performs nothing, which
+   is also the quickest way to check that a packet is matched at all.
+
+   ```bash
+   sol listen --config /etc/sol/sol.yaml --dry-run
+   ```
+
+4. **Send a magic packet from another machine** and watch for
+   `magic packet matched ... action=power.shutdown` - see [Testing your setup](#testing-your-setup).
+
+5. **Install it as a service** so it survives a reboot and keeps running with nobody logged in - see
+   [Running as a service](#running-as-a-service).
+
+6. **Confirm what is running**: `sol --version`, `journalctl -u sol.service -f` (Linux),
+   `tail -f /usr/local/var/log/sol.log` (macOS), or `GET /v1/status` when the control plane is on.
+
+Secrets never belong in the YAML: put them in environment variables (`SOL_TOKEN`, `SOL_CMD_KEY`,
+`SOL_PACKET_KEY`) or in a file only the service account can read, and reference that from the
+configuration.
+
+## Testing your setup
+
+On the machine that should react, start sol in the foreground with `--dry-run`:
+
+```bash
+sol listen --config /etc/sol/sol.yaml --dry-run
+```
+
+Then, from another machine on the same network, send one magic packet: six `0xff` bytes followed by
+the target MAC repeated sixteen times, 102 bytes in total, and it has to start at offset 0. Use the
+MAC that `sol ifaces` prints, replacing `00:11:22:33:44:55`, `192.168.0.120` and port `10010` with
+your own values.
+
+Linux and macOS, with the `wakeonlan` tool:
+
+```bash
+wakeonlan -i 192.168.0.120 -p 10010 00:11:22:33:44:55
+```
+
+Anywhere with Python 3 - no tools to install:
+
+```bash
+python3 -c "import socket; mac=bytes.fromhex('001122334455'); socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b'\xff'*6+mac*16, ('192.168.0.120', 10010))"
+```
+
+Windows, in PowerShell:
+
+```powershell
+$mac = 0x00,0x11,0x22,0x33,0x44,0x55
+$packet = [byte[]]((1..6 | ForEach-Object { 0xff }) + (1..16 | ForEach-Object { $mac }))
+$udp = New-Object Net.Sockets.UdpClient
+$null = $udp.Send($packet, $packet.Length, "192.168.0.120", 10010)
+$udp.Close()
+```
+
+What to look for:
+
+- in the log: `magic packet matched` with the port, the interface and the action, or
+  `non-matching packet` with the length - a length other than 102 (108 with `secure_on`, plus 8 more
+  with `auth: hmac`) means the payload is not a plain magic packet;
+- in `/v1/status` when the control plane is on: `packets`, `matched` and the per-action counters;
+- with `--dry-run`, the action line is logged and nothing is executed - that is the safe end of the
+  test. Run it again without `--dry-run` when you trust the rule set.
+
+## Running as a service
+
+### Linux (systemd)
 
 1. **Create the unit file**
 
@@ -544,15 +646,121 @@ sol ifaces
    journalctl -u sol.service -f
    ```
 
-### Service Configuration Notes
+4. **Open the ports you use** if a firewall is running - the listeners are UDP:
+
+   ```bash
+   sudo ufw allow 10010/udp comment 'sol'
+   ```
+
+### macOS (launchd)
+
+1. **Install the binary and a configuration**
+
+   ```bash
+   sudo cp sol /usr/local/bin/sol && sudo mkdir -p /usr/local/etc/sol
+   sudo cp sol.yaml /usr/local/etc/sol/sol.yaml
+   ```
+
+2. **Create the launchd daemon**
+
+   ```bash
+   sudo nano /Library/LaunchDaemons/com.lidiaoo.sol.plist
+   ```
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+     <key>Label</key>
+     <string>com.lidiaoo.sol</string>
+     <key>ProgramArguments</key>
+     <array>
+       <string>/usr/local/bin/sol</string>
+       <string>listen</string>
+       <string>--config</string>
+       <string>/usr/local/etc/sol/sol.yaml</string>
+     </array>
+     <key>RunAtLoad</key>
+     <true/>
+     <key>KeepAlive</key>
+     <true/>
+     <key>StandardErrorPath</key>
+     <string>/usr/local/var/log/sol.log</string>
+   </dict>
+   </plist>
+   ```
+
+3. **Load it and watch the log**
+
+   ```bash
+   sudo launchctl load -w /Library/LaunchDaemons/com.lidiaoo.sol.plist
+   sudo launchctl list | grep sol
+   tail -f /usr/local/var/log/sol.log
+   ```
+
+   `launchctl unload -w` stops it, and `RunAtLoad` brings it back after a reboot. A LaunchDaemon
+   runs as root, which is what ports below 1024 need; to run as a dedicated user instead, add
+   `UserName` to the plist and stay on high ports.
+
+### Windows (Task Scheduler)
+
+A plain `.exe` cannot be a Windows service, so the reliable low-friction option is Task Scheduler
+with a machine-level environment variable for the token:
+
+1. **Install to a stable path and start it at boot, as SYSTEM**
+
+   ```powershell
+   New-Item -ItemType Directory -Force -Path C:\ProgramData\sol | Out-Null
+   Move-Item .\sol.exe C:\ProgramData\sol\sol.exe -Force
+   schtasks /Create /TN sol /TR "C:\ProgramData\sol\sol.exe listen --config C:\ProgramData\sol\sol.yaml" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+   schtasks /Run /TN sol
+   ```
+
+2. **Let the packets in** (listeners are UDP; Windows has no privileged ports, so 7 and 9 work too)
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "sol (WoL)" -Direction Inbound -Protocol UDP -LocalPort 10010,7,9 -Action Allow
+   ```
+
+3. **Check it** - the task's history, or the log file the configuration names:
+
+   ```powershell
+   schtasks /Query /TN sol /V /FO LIST
+   Get-Content C:\ProgramData\sol\audit.log -Wait
+   ```
+
+   The `SYSTEM` account reads machine environment variables, so a secret set once with
+   `[Environment]::SetEnvironmentVariable('SOL_TOKEN','...','Machine')` is available to it. Keep in
+   mind that machine variables are readable by administrators; a file ACL'd to `SYSTEM` plus a
+   0600-style reference in the configuration is the stronger option.
+
+### Service configuration notes
 
 - `After=network-online.target` ensures the service starts after the network is fully online.
 - `Restart=always` automatically restarts the service if it crashes.
 - Keep the configuration in `/etc/sol/sol.yaml` and keep secrets in environment variables or
-  0600 files referenced by the configuration — never in the YAML itself.
+  0600 files referenced by the configuration - never in the YAML itself.
 - The unit needs root only for privileged ports and for `exec` privilege drops; otherwise a
-  dedicated user plus `CAP_NET_BIND_SERVICE` is the better default.
+  dedicated user plus `CAP_NET_BIND_SERVICE` is the better default. On macOS the equivalent is
+  dropping `UserName` into the plist; on Windows `exec` has no user/group drop at all.
 - When using multiple ports, repeat `--port` (or list `rules` in the configuration file).
+- The console output is the audit log: with `logging.output: file` it goes to
+  `logging.file` instead, and it is never rotated - pair it with `logrotate` on Linux, `newsyslog`
+  on macOS, or a size-limited task on Windows.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| `bind: permission denied` | ports 7/9 and anything below 1024: run as root or grant `CAP_NET_BIND_SERVICE` (a high port needs neither) |
+| the packet arrives and nothing happens | `sol ifaces` (is that NIC `AUTO yes`?), the rule's `ports` and `mac`, and the log: `non-matching packet` names the port and the payload length |
+| the log says `length=...` and skips it | a magic packet starts at offset 0 and is exactly 102 bytes (108 with `secure_on`, 8 more with `auth: hmac`); a payload on a reserved port is refused by design |
+| `--port 9` no longer shuts down | 7 and 9 are reserved for plain WOL and mean `noop`; move the action to a high port or pass `--allow-reserved-actions` |
+| `exec user/group requires root` | `user:`/`group:` drops need root, and do not exist on Windows at all |
+| a wireless or hot-plugged NIC is not matched | the identity set is re-read while sol runs (`interface set changed` in the log); `SIGHUP` applies the current list immediately |
+| the control plane answers 401 | it binds `127.0.0.1` and always authenticates: export `SOL_TOKEN` and send `Authorization: Bearer ...` |
+| a reload seems to do nothing | a rejected reload keeps the previous configuration on purpose; the error is in the log (`POST /v1/reload` reports it too) |
 
 ## Security Notes
 
@@ -584,6 +792,21 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list. The two that bite existing i
 - **`--iface` is no longer required.** Without it, every eligible interface participates in
   matching; use `sol ifaces` to confirm which ones that is.
 
+## Attribution
+
+SoL was written by [bavix](https://github.com/bavix) and is MIT licensed. This repository is a fork
+of it, [lidiaoo/sol](https://github.com/lidiaoo/sol), and keeps the original copyright notice and
+licence text untouched - both notices live in [LICENSE](LICENSE).
+
+On top of upstream, this fork carries the work described in
+[docs/routing-design.md](docs/routing-design.md) and [CHANGELOG.md](CHANGELOG.md): the rule and
+action model with a configuration file, multi-port and multi-NIC routing, the remote command and raw
+shell channels, the HTTP control plane, outbound HTTP actions, hot reload, the guards
+(cooldown, rate limit, in-flight dedup, replay windows), and the module path of its own
+(`github.com/lidiaoo/sol`) with release artifacts built from it. Upstream's own last tagged release,
+v0.0.2, predates all of it - read the CHANGELOG before upgrading an existing installation.
+
 ## License
 
-See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE) for both copyright notices: the original one from
+[bavix](https://github.com/bavix), and this fork's.

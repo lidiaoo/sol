@@ -59,6 +59,26 @@ sol 也能唤醒**别的**机器。`wol.send` 向固定目标发魔法包（`mac
 信任阶梯见设计文档 §20：只记日志 < 出站唤醒 < 睡眠/锁屏 < 关机/重启 < 自定义命令 < 出站 HTTP <
 远端原始命令（默认关闭）。
 
+### Platform support
+
+监听这一侧各平台完全一样：每个端口一个 UDP socket、绑 `0.0.0.0`，后面跑同一套规则引擎。平台之间
+真正的差别是电源动作和特权规则。
+
+| | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| `power.shutdown` | `shutdown -h now` | `shutdown -h now` | `shutdown -s -t 0 -f` |
+| `power.reboot` | `shutdown -r now` | `shutdown -r now` | `shutdown -r -t 0 -f` |
+| `power.sleep` | `systemctl suspend` | `pmset sleepnow` | `rundll32 powrprof.dll,SetSuspendState 0,1,0` |
+| 保留端口 7/9、以及任何 <1024 的端口 | 需要 root 或 `CAP_NET_BIND_SERVICE` | 需要 root | 没有特权端口的概念 |
+| `exec` 带 `user:`/`group:` | 支持（需要 root） | 支持（需要 root） | 不支持：`exec user/group requires root` 只在 unix 上存在 |
+| `exec`、`http`、`sequence`、`wol.send`、控制面、重载、各类护栏 | 支持 | 支持 | 支持 |
+
+其它系统（比如 BSD）也能编译、也能监听；只是电源动作会报 `unsupported operating system`，那种平台上
+用 `exec` 动作来做。
+
+有件事值得直说：sol 作用在**它自己运行的那台机器**上，而且只在它运行时生效。它是"收到 WoL 就关机"的
+接收端，不是叫醒一台睡着机器的东西。
+
 ## Run the service
 
 ### Simple mode (command line)
@@ -155,7 +175,7 @@ rules:
 `schema/sol.schema.json`，或在文件开头加一行：
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/bavix/sol/master/schema/sol.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lidiaoo/sol/master/schema/sol.schema.json
 ```
 
 Schema 与加载器严格一致——未知字段、类型不对、枚举值超出范围都会被拒；只要配置字段和 schema
@@ -383,7 +403,7 @@ token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文�
 ```
 NAME             TYPE      STATUS  MAC                IPV4           AUTO
 lo               loopback  up                         127.0.0.1      no
-enp6s0           physical  up      58:11:22:bc:78:66  192.168.0.120  yes
+enp6s0           physical  up      00:11:22:33:44:55  192.168.0.120  yes
 wlp5s0           physical  down    0a:e8:9e:0f:d3:8d  -              yes
 docker0          virtual   up      02:42:4e:d9:8c:14  172.17.0.1     no
 ```
@@ -406,32 +426,33 @@ AUTO 列说的是**身份，不是当下可用性**：现在 down 的网卡仍�
 
 **Linux AMD64：**
 ```bash
-curl -L https://github.com/bavix/sol/releases/download/v0.0.2/sol-v0.0.2-linux-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **Linux ARM64：**
 ```bash
-curl -L https://github.com/bavix/sol/releases/download/v0.0.2/sol-v0.0.2-linux-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **macOS Intel：**
 ```bash
-curl -L https://github.com/bavix/sol/releases/download/v0.0.2/sol-v0.0.2-darwin-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **macOS Apple Silicon：**
 ```bash
-curl -L https://github.com/bavix/sol/releases/download/v0.0.2/sol-v0.0.2-darwin-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **Windows (PowerShell)：**
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/bavix/sol/releases/download/v0.0.2/sol-v0.0.2-windows-amd64.zip" -OutFile "sol.zip"
+Invoke-WebRequest -Uri "https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-windows-amd64.zip" -OutFile "sol.zip"
 Expand-Archive -Path "sol.zip" -DestinationPath "." -Force
 move sol.exe C:\Windows\System32\sol.exe
 ```
 
-> v0.0.2 早于配置文件、额外动作和端口 9 的变更；升级既有安装前请先读
+> 上游最后一个 tag 是 v0.0.2，配置文件、额外动作和端口 9 的变更都在它之后；升级既有安装前
+> 请先读、额外动作和端口 9 的变更；升级既有安装前请先读
 > [CHANGELOG](CHANGELOG.md)。
 
 ### Build from source
@@ -456,7 +477,84 @@ sol listen --help
 sol ifaces
 ```
 
-## Systemd Service Setup
+## Quick start
+
+1. **先看哪几张网卡会应答。** `sol ifaces` 里标 `AUTO yes` 的就是：这是这台机器的**身份**（它真实的
+   网卡），不是"此刻恰好 up 的网卡"的快照。
+
+2. **写一份配置。** 路径随意，用 `--config` 指定；约定俗成的位置是 `/etc/sol/sol.yaml`（Linux）、
+   `/usr/local/etc/sol/sol.yaml`（macOS）、`C:\ProgramData\sol\sol.yaml`（Windows）。
+
+   ```yaml
+   version: 1
+   rules:
+     - match: { ports: [10010] }
+       action: power.shutdown
+   ```
+
+3. **先无副作用地试一遍。** `--dry-run` 只把"本来会发生什么"写进日志、什么都不做；它同时也是确认
+   "包到底有没有被匹配上"的最快办法。
+
+   ```bash
+   sol listen --config /etc/sol/sol.yaml --dry-run
+   ```
+
+4. **从另一台机器发一个魔法包**，然后看日志里有没有
+   `magic packet matched ... action=power.shutdown`——见 [Testing your setup](#testing-your-setup)。
+
+5. **装成服务**，这样重启后还在、没人登录时也跑——见 [Running as a service](#running-as-a-service)。
+
+6. **确认跑起来的是什么**：`sol --version`、`journalctl -u sol.service -f`（Linux）、
+   `tail -f /usr/local/var/log/sol.log`（macOS），或者控制面开着时的 `GET /v1/status`。
+
+密钥绝不进 YAML：放进环境变量（`SOL_TOKEN`、`SOL_CMD_KEY`、`SOL_PACKET_KEY`），或放进只有服务账号
+能读的文件里，再由配置引用它。
+
+## Testing your setup
+
+在"应该做出反应"的那台机器上，前台带 `--dry-run` 起 sol：
+
+```bash
+sol listen --config /etc/sol/sol.yaml --dry-run
+```
+
+再从同一网络里的另一台机器发**一个**魔法包：6 个 `0xff` 字节后面跟目标 MAC 重复 16 次，一共 102
+字节，而且必须从偏移 0 开始。MAC 用 `sol ifaces` 打出来的那个，把下面的 `00:11:22:33:44:55`、
+`192.168.0.120` 和端口 `10010` 换成你自己的。
+
+Linux 与 macOS，用 `wakeonlan`：
+
+```bash
+wakeonlan -i 192.168.0.120 -p 10010 00:11:22:33:44:55
+```
+
+任何有 Python 3 的地方——不用装工具：
+
+```bash
+python3 -c "import socket; mac=bytes.fromhex('001122334455'); socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b'\xff'*6+mac*16, ('192.168.0.120', 10010))"
+```
+
+Windows，PowerShell：
+
+```powershell
+$mac = 0x00,0x11,0x22,0x33,0x44,0x55
+$packet = [byte[]]((1..6 | ForEach-Object { 0xff }) + (1..16 | ForEach-Object { $mac }))
+$udp = New-Object Net.Sockets.UdpClient
+$null = $udp.Send($packet, $packet.Length, "192.168.0.120", 10010)
+$udp.Close()
+```
+
+该看什么：
+
+- 日志里：`magic packet matched`，带端口、网卡和动作；或者 `non-matching packet` 带长度——长度不是
+  102（配了 `secure_on` 是 108，再加 `auth: hmac` 再多 8 字节）就说明这不是一个纯魔法包；
+- 控制面开着时看 `/v1/status`：`packets`、`matched` 以及各动作的计数；
+- 带 `--dry-run` 时动作行会记日志但不会执行——测试就安全地停在这里。确认规则可信之后，去掉
+  `--dry-run` 再跑一次。
+
+## Running as a service
+
+### Linux (systemd)
 
 1. **创建 unit 文件**
 
@@ -502,14 +600,117 @@ sol ifaces
    journalctl -u sol.service -f
    ```
 
-### Service Configuration Notes
+4. **如果开了防火墙，把用到的端口放行**——监听的是 UDP：
+
+   ```bash
+   sudo ufw allow 10010/udp comment 'sol'
+   ```
+
+### macOS (launchd)
+
+1. **装二进制与配置**
+
+   ```bash
+   sudo cp sol /usr/local/bin/sol && sudo mkdir -p /usr/local/etc/sol
+   sudo cp sol.yaml /usr/local/etc/sol/sol.yaml
+   ```
+
+2. **创建 launchd daemon**
+
+   ```bash
+   sudo nano /Library/LaunchDaemons/com.lidiaoo.sol.plist
+   ```
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+     <key>Label</key>
+     <string>com.lidiaoo.sol</string>
+     <key>ProgramArguments</key>
+     <array>
+       <string>/usr/local/bin/sol</string>
+       <string>listen</string>
+       <string>--config</string>
+       <string>/usr/local/etc/sol/sol.yaml</string>
+     </array>
+     <key>RunAtLoad</key>
+     <true/>
+     <key>KeepAlive</key>
+     <true/>
+     <key>StandardErrorPath</key>
+     <string>/usr/local/var/log/sol.log</string>
+   </dict>
+   </plist>
+   ```
+
+3. **加载并看日志**
+
+   ```bash
+   sudo launchctl load -w /Library/LaunchDaemons/com.lidiaoo.sol.plist
+   sudo launchctl list | grep sol
+   tail -f /usr/local/var/log/sol.log
+   ```
+
+   `launchctl unload -w` 停掉它，`RunAtLoad` 会在重启后拉回来。LaunchDaemon 以 root 运行，这正是
+   <1024 端口需要的；想改用专用用户就在 plist 里加 `UserName`，同时把端口留在高位。
+
+### Windows (Task Scheduler)
+
+纯 `.exe` 不能直接当 Windows 服务，所以省事又可靠的做法是用计划任务，令牌放机器级环境变量：
+
+1. **装到固定路径，并以 SYSTEM 在开机时启动**
+
+   ```powershell
+   New-Item -ItemType Directory -Force -Path C:\ProgramData\sol | Out-Null
+   Move-Item .\sol.exe C:\ProgramData\sol\sol.exe -Force
+   schtasks /Create /TN sol /TR "C:\ProgramData\sol\sol.exe listen --config C:\ProgramData\sol\sol.yaml" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+   schtasks /Run /TN sol
+   ```
+
+2. **让包进得来**（监听是 UDP；Windows 没有特权端口，所以 7、9 也能用）
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "sol (WoL)" -Direction Inbound -Protocol UDP -LocalPort 10010,7,9 -Action Allow
+   ```
+
+3. **检查**——看计划任务的历史，或配置里指定的日志文件：
+
+   ```powershell
+   schtasks /Query /TN sol /V /FO LIST
+   Get-Content C:\ProgramData\sol\audit.log -Wait
+   ```
+
+   `SYSTEM` 账号读得到机器级环境变量，所以用
+   `[Environment]::SetEnvironmentVariable('SOL_TOKEN','...','Machine')` 设一次密钥，它就可用。注意
+   机器级变量管理员可读；更稳的做法是把密钥放一个只有 `SYSTEM` 有权限的文件里，再在配置里按
+   0600 的语义引用它。
+
+### Service configuration notes
 
 - `After=network-online.target` 保证服务在网络就绪之后才启动。
 - `Restart=always` 在崩溃后自动拉起。
 - 配置放 `/etc/sol/sol.yaml`，密钥放环境变量或配置引用的 0600 文件——绝不写进 YAML 本身。
 - unit 只有在用特权端口或需要 `exec` 降权时才需要 root；其它情况下"专用用户 +
-  `CAP_NET_BIND_SERVICE`"是更好的默认。
+  `CAP_NET_BIND_SERVICE`"是更好的默认。macOS 上对应的做法是往 plist 里加 `UserName`；Windows 上
+  `exec` 根本没有 user/group 降权。
 - 用多端口时重复写 `--port`（或在配置文件里列 `rules`）。
+- 控制台输出就是审计日志：配 `logging.output: file` 时改写到 `logging.file`，而且**不做轮转**——
+  Linux 上配 `logrotate`、macOS 上配 `newsyslog`、Windows 上配一个限大小的任务。
+
+## Troubleshooting
+
+| 现象 | 该查什么 |
+| --- | --- |
+| `bind: permission denied` | 端口 7/9 与任何 <1024：要么 root，要么给 `CAP_NET_BIND_SERVICE`（高位端口两者都不需要） |
+| 包到了但什么都没发生 | `sol ifaces`（那张网卡是不是 `AUTO yes`？）、规则的 `ports` 与 `mac`，以及日志：`non-matching packet` 会写出端口和载荷长度 |
+| 日志说 `length=...` 然后跳过 | 魔法包必须从偏移 0 开始、正好 102 字节（配 `secure_on` 是 108，配 `auth: hmac` 再多 8）；保留端口上带载荷的包按设计会被拒 |
+| `--port 9` 不再关机了 | 7 与 9 保留给纯 WOL、恒为 `noop`；把动作挪到高位端口，或加 `--allow-reserved-actions` |
+| `exec user/group requires root` | `user:`/`group:` 降权需要 root，Windows 上则完全不存在 |
+| 无线网卡或热插拔的网卡匹配不上 | 身份集合在 sol 运行期会重读（日志里的 `interface set changed`）；`SIGHUP` 可以立刻应用当前列表 |
+| 控制面回 401 | 它只听 `127.0.0.1` 且强制认证：导出 `SOL_TOKEN`，并带 `Authorization: Bearer ...` |
+| reload 好像没生效 | 被拒的 reload 会**故意**保留旧配置；原因在日志里（`POST /v1/reload` 也会回给你） |
 
 ## Security Notes
 
@@ -536,6 +737,19 @@ Wake-on-LAN 是无认证广播：任何能摸到监听端口的人都能发出�
   （推荐），或加 `--allow-reserved-actions` 保留旧行为。
 - **`--iface` 不再必填。** 不写它时，每张合格网卡都参与匹配；用 `sol ifaces` 确认具体是哪几张。
 
+## Attribution
+
+SoL 由 [bavix](https://github.com/bavix) 编写，MIT 许可。本仓库是它的 fork：
+[lidiaoo/sol](https://github.com/lidiaoo/sol)，**完整保留**原始的版权声明与许可证正文——两份声明都在
+[LICENSE](LICENSE) 里。
+
+在上游之上，这个 fork 承载了 [docs/routing-design.md](docs/routing-design.md) 与
+[CHANGELOG.md](CHANGELOG.md) 里记录的工作：带配置文件的规则/动作模型、多端口与多网卡路由、远端命令
+通道与裸 shell 通道、HTTP 控制面、出站 HTTP 动作、热重载、各类护栏（冷却、限流、执行中去重、重放
+窗口），以及它自己的 module 路径（`github.com/lidiaoo/sol`）与由此构建的发布产物。上游最后一个
+tag 是 v0.0.2，上述全部都在它之后——升级既有安装前请先读 CHANGELOG。
+
 ## License
 
-见 [LICENSE](LICENSE)。
+MIT。两份版权声明都在 [LICENSE](LICENSE) 里：原始的那份来自
+[bavix](https://github.com/bavix)，另一份属于本 fork。
