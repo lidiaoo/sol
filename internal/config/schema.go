@@ -35,7 +35,18 @@ type fileConfig struct {
 type loggingConfig struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
+	// Output is where the audit log goes: stderr (default), stdout, or the file named by File
+	// (§18). The names are duplicated in internal/infra/logging on purpose -- config does not
+	// depend on infra -- and a test keeps the two sets equal.
+	Output string `yaml:"output"`
+	File   string `yaml:"file"`
 }
+
+const (
+	loggingOutputStderr = "stderr"
+	loggingOutputStdout = "stdout"
+	loggingOutputFile   = "file"
+)
 
 // serverConfig is the server section: the control plane, the interfaces and the rules.
 type serverConfig struct {

@@ -169,7 +169,7 @@ func buildConfig(command *cobra.Command) (*config.Config, error) {
 	}
 
 	// Install the configured logger before anything else logs.
-	if _, logErr := logging.Setup(cfg.Logging.Level, cfg.Logging.Format); logErr != nil {
+	if _, logErr := logging.Setup(cfg.Logging.Level, cfg.Logging.Format, cfg.Logging.Output, cfg.Logging.File); logErr != nil {
 		return nil, logErr
 	}
 

@@ -82,7 +82,7 @@ func TestNewUnknownFormat(t *testing.T) {
 }
 
 func TestSetupInstallsDefaultLogger(t *testing.T) {
-	logger, err := logging.Setup("debug", logging.FormatText)
+	logger, err := logging.Setup("debug", logging.FormatText, "", "")
 	require.NoError(t, err)
 	require.Equal(t, logger, slog.Default())
 }

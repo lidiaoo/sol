@@ -99,7 +99,8 @@ server:
     listen: 127.0.0.1:8080
     auth: { type: bearer, token_env: SOL_TOKEN }
 
-logging: { level: info, format: text }
+logging: { level: info, format: text }   # level: debug|info|warn|error; format: text|json
+# logging: { level: info, format: json, output: file, file: /var/log/sol/audit.log }
 
 security:
   dry_run: false
@@ -323,6 +324,15 @@ token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文�
 `"revision"`（提交号，工作区有未提交改动时带 `-dirty` 后缀）；`/metrics` 把同一对信息暴露成
 `sol_build_info{version="...",revision="..."} 1`。这样两份配置不同的进程，光凭一份 bug 报告就能
 区分开。
+
+### Audit log destination
+
+审计日志默认进 stderr，交给服务管理器管（`journalctl -u sol`）。`logging.output` 可以改：`stdout`，
+或 `file` 加 `logging.file`（写了 `output: file` 却没有路径、或写了路径却没有 `output: file`，
+都是启动期错误）。日志文件以追加方式打开、权限 0600——里面会写来源地址、执行了哪个动作，`exec`
+与裸 shell 还会写命令行——而且**不做轮转**：请配 `logrotate`，或者保留默认让 journald 去管。目的地
+只在启动时读取；reload 会热换的是 `logging.level`。`SOL_LOG_OUTPUT` 与 `SOL_LOG_FILE` 可覆盖这两个
+字段。
 
 ### Reloading
 

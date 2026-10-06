@@ -123,4 +123,8 @@ type RawShell struct {
 type Logging struct {
 	Level  string
 	Format string
+	// Output is the audit log destination (§18): stderr (default), stdout, or the file named
+	// by File.
+	Output string
+	File   string
 }

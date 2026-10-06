@@ -150,6 +150,19 @@
             "json"
           ],
           "description": "Log format; empty defaults to text."
+        },
+        "output": {
+          "enum": [
+            "",
+            "stderr",
+            "stdout",
+            "file"
+          ],
+          "description": "Where the audit log goes: stderr (default), stdout, or the file named by `file`."
+        },
+        "file": {
+          "type": "string",
+          "description": "Log file path; required with `output: file` and unused otherwise. Opened append-only with mode 0600."
         }
       }
     },

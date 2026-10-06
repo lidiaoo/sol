@@ -75,6 +75,10 @@ tagged release.
   cache. Refusals are counted: `/v1/status` reports `replayed` with a `replay_reasons` breakdown
   and `/metrics` exports `sol_replayed_total` (plus a line per reason), so a channel under replay
   is visible without scraping logs.
+- `logging.output` chooses the audit log destination: `stderr` (default), `stdout`, or `file` with
+  `logging.file`. A log file is append-only and mode 0600 (it names source addresses, actions and
+  command lines), unbuffered, and not rotated - pair it with logrotate. `SOL_LOG_OUTPUT` and
+  `SOL_LOG_FILE` override both fields. A destination that cannot be used fails at start-up.
 - The build identifies itself: `sol --version`, `version` and `revision` in `GET /v1/status`, and
   `sol_build_info{version,revision} 1` in `/metrics`. `make build` / `make build-static` stamp the
   version with `git describe`; an unstamped build still reports the toolchain's own metadata (a

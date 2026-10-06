@@ -110,7 +110,8 @@ server:
     listen: 127.0.0.1:8080
     auth: { type: bearer, token_env: SOL_TOKEN }
 
-logging: { level: info, format: text }
+logging: { level: info, format: text }   # level: debug|info|warn|error; format: text|json
+# logging: { level: info, format: json, output: file, file: /var/log/sol/audit.log }
 
 security:
   dry_run: false
@@ -351,6 +352,16 @@ toolchain's pseudo-version) and `"revision"` (the commit, with a `-dirty` suffix
 had uncommitted changes) - and `/metrics` exposes the same pair as
 `sol_build_info{version="...",revision="..."} 1`. Two processes with different configs are then
 distinguishable from a bug report alone.
+
+### Audit log destination
+
+The audit trail goes to stderr by default, so a service manager owns it (`journalctl -u sol`).
+`logging.output` moves it: `stdout`, or `file` together with `logging.file` (`output: file` without
+a path is a start-up error, and so is a path without `output: file`). A log file is opened
+append-only with mode 0600 — it names source addresses, the action that ran and, for `exec` and the
+raw shell, the command line — and it is never rotated: pair it with `logrotate`, or leave the
+default and let journald do it. The destination is read at start-up only; `logging.level` is the
+part that reloads. `SOL_LOG_OUTPUT` and `SOL_LOG_FILE` override both fields.
 
 ### Reloading
 

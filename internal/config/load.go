@@ -20,33 +20,35 @@ import (
 )
 
 var (
-	ErrEnvValue              = errors.New("invalid environment override")
-	ErrMissingEnvVar         = errors.New("environment variable referenced by the config is not set")
-	ErrActionRequired        = errors.New("rule requires an action")
-	ErrInterfaceDryRun       = errors.New("dry_run on an interface block requires block-level rules")
-	ErrActionNameRequired    = errors.New("actions[] entry requires a name")
-	ErrExecCommandRequired   = errors.New("exec action requires command")
-	ErrSendMAC               = errors.New("invalid wol.send mac")
-	ErrSendBroadcast         = errors.New("invalid wol.send broadcast address")
-	ErrSendPort              = errors.New("invalid wol.send port")
-	ErrSendRepeat            = errors.New("invalid wol.send repeat")
-	ErrSendInterval          = errors.New("invalid wol.send interval")
-	ErrExecTimeout           = errors.New("invalid exec timeout")
-	ErrActionParams          = errors.New("action parameters do not match its type")
-	ErrHTTPListen            = errors.New("invalid server.http.listen address")
-	ErrHTTPAuthType          = errors.New("unknown server.http.auth.type")
-	ErrSecret                = errors.New("cannot resolve a configured secret")
-	ErrHTTPUser              = errors.New("server.http.auth.user is required for basic auth")
-	ErrHTTPTLS               = errors.New("invalid server.http.tls configuration")
-	ErrCooldown              = errors.New("invalid security.cooldown")
-	ErrRateLimit             = errors.New("invalid security.rate_limit")
-	ErrRemoteCommandID       = errors.New("invalid remote command id")
-	ErrRemoteCommandType     = errors.New("unsupported remote command type")
-	ErrRemoteCommandDef      = errors.New("invalid remote command definition")
-	ErrRemoteArgSpec         = errors.New("invalid remote command argument spec")
-	ErrRemoteAuth            = errors.New("remote command authorization is required")
-	ErrPacketAuth            = errors.New("packet authorization is invalid")
-	ErrRawShell              = errors.New("raw shell configuration is invalid")
+	ErrEnvValue            = errors.New("invalid environment override")
+	ErrMissingEnvVar       = errors.New("environment variable referenced by the config is not set")
+	ErrActionRequired      = errors.New("rule requires an action")
+	ErrInterfaceDryRun     = errors.New("dry_run on an interface block requires block-level rules")
+	ErrActionNameRequired  = errors.New("actions[] entry requires a name")
+	ErrExecCommandRequired = errors.New("exec action requires command")
+	ErrSendMAC             = errors.New("invalid wol.send mac")
+	ErrSendBroadcast       = errors.New("invalid wol.send broadcast address")
+	ErrSendPort            = errors.New("invalid wol.send port")
+	ErrSendRepeat          = errors.New("invalid wol.send repeat")
+	ErrSendInterval        = errors.New("invalid wol.send interval")
+	ErrExecTimeout         = errors.New("invalid exec timeout")
+	ErrActionParams        = errors.New("action parameters do not match its type")
+	ErrHTTPListen          = errors.New("invalid server.http.listen address")
+	ErrHTTPAuthType        = errors.New("unknown server.http.auth.type")
+	ErrSecret              = errors.New("cannot resolve a configured secret")
+	ErrHTTPUser            = errors.New("server.http.auth.user is required for basic auth")
+	ErrHTTPTLS             = errors.New("invalid server.http.tls configuration")
+	ErrCooldown            = errors.New("invalid security.cooldown")
+	ErrRateLimit           = errors.New("invalid security.rate_limit")
+	ErrRemoteCommandID     = errors.New("invalid remote command id")
+	ErrRemoteCommandType   = errors.New("unsupported remote command type")
+	ErrRemoteCommandDef    = errors.New("invalid remote command definition")
+	ErrRemoteArgSpec       = errors.New("invalid remote command argument spec")
+	ErrRemoteAuth          = errors.New("remote command authorization is required")
+	ErrPacketAuth          = errors.New("packet authorization is invalid")
+	ErrRawShell            = errors.New("raw shell configuration is invalid")
+	// ErrLogOutput reports a logging section that names no usable destination (§18).
+	ErrLogOutput             = errors.New("logging output is invalid")
 	ErrRemotePorts           = errors.New("invalid security.remote_command_ports")
 	ErrRemotePort            = errors.New("remote command port must not be a reserved port")
 	ErrSequenceStepsRequired = errors.New("sequence action requires steps")
@@ -74,6 +76,8 @@ const (
 	EnvSecureOn                 = "SOL_SECURE_ON"
 	EnvLogLevel                 = "SOL_LOG_LEVEL"
 	EnvLogFormat                = "SOL_LOG_FORMAT"
+	EnvLogOutput                = "SOL_LOG_OUTPUT"
+	EnvLogFile                  = "SOL_LOG_FILE"
 )
 
 // DefaultPaths returns the configuration file locations checked in order.
@@ -101,7 +105,40 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// Last, so the file, the environment and the defaults are judged as one resolved value.
+	if err := validateLogging(cfg.Logging); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// loggingFrom maps the file-level logging section onto the resolved configuration: the two types
+// carry the same fields, so this is a conversion rather than a field-by-field copy.
+func loggingFrom(f loggingConfig) Logging {
+	return Logging(f)
+}
+
+// validateLogging checks the logging section (§18): the output names a destination, and only a
+// file output carries a path. Both mistakes are start-up errors instead of a surprise at the
+// first audit line.
+func validateLogging(logging Logging) error {
+	switch strings.ToLower(strings.TrimSpace(logging.Output)) {
+	case "", loggingOutputStderr, loggingOutputStdout:
+		if strings.TrimSpace(logging.File) != "" {
+			return fmt.Errorf("%w: logging.file is only used with output: %s",
+				ErrLogOutput, loggingOutputFile)
+		}
+	case loggingOutputFile:
+		if strings.TrimSpace(logging.File) == "" {
+			return fmt.Errorf("%w: output: %s needs logging.file", ErrLogOutput, loggingOutputFile)
+		}
+	default:
+		return fmt.Errorf("%w: %q (want %s|%s|%s)", ErrLogOutput, logging.Output,
+			loggingOutputStderr, loggingOutputStdout, loggingOutputFile)
+	}
+
+	return nil
 }
 
 // ResolvePath returns the configuration file Load would read for path: an explicit path
@@ -353,6 +390,14 @@ func applyEnv(cfg *Config) error {
 		cfg.Logging.Format = value
 	}
 
+	if value, ok := os.LookupEnv(EnvLogOutput); ok {
+		cfg.Logging.Output = value
+	}
+
+	if value, ok := os.LookupEnv(EnvLogFile); ok {
+		cfg.Logging.File = value
+	}
+
 	return nil
 }
 
@@ -426,7 +471,7 @@ func (f *fileConfig) toConfig() (*Config, error) {
 		PacketWindow:         guards.packetWindow,
 		Remote:               remote,
 		Actions:              actions,
-		Logging:              Logging{Level: f.Logging.Level, Format: f.Logging.Format},
+		Logging:              loggingFrom(f.Logging),
 		HTTP:                 httpCfg,
 		Rules:                rules,
 	}, nil

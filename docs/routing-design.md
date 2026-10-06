@@ -613,6 +613,7 @@ server:
 logging:
   level: info                  # debug | info | warn | error，默认 info
   format: text                 # text | json，默认 text
+  output: stderr               # stderr（默认）| stdout | file；file 需要 file: <路径>（§18）
 
 security:
   dry_run: false               # true = 只记日志不执行
@@ -739,6 +740,8 @@ match.secure_on             可选：这条规则要求的口令（覆盖块级�
 server.rules                可选，全局规则（对本实例所有网卡生效）；顶层 rules 为其简写，二者同现报错
 logging.level               可选，默认 info
 logging.format              可选，默认 text
+logging.output              可选，默认 stderr；stderr | stdout | file（file 必须配 logging.file，反之亦然；非法值启动即报错）
+logging.file                可选：日志文件路径；仅与 output: file 同用，追加写入、权限 0600、不做轮转
 security.dry_run            可选，默认 false
 security.reserved_ports     可选，默认 [7, 9]
 security.allow_reserved_port_actions  可选，默认 false
@@ -1343,13 +1346,18 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
 - `version: 1` 校验，其它值 -> `ErrUnsupportedVersion`。
 - 发现顺序：`--config` > `$SOL_CONFIG` > `/etc/sol/sol.yaml` > `~/.config/sol/sol.yaml`；都不存在则用内置默认（此时无规则，CLI 报 `no rules configured`）。
 - `${VAR}` / `$VAR` 插值：引用了未设置的变量直接报错（避免凭据静默变空）。插值是**逐行**做的并且跳过 YAML 注释——注释里写 `${SOME_VAR}` 不会变成必填（否则把 `secure_on: "${X}"` 注释掉就没法启动，README 示例自己就会打挂）；`#` 在引号内不算注释；块标量（`|` / `>`）的正文整段都算数据，其中的 `#` 行也照常插值。
-- 环境变量覆盖（在文件之后、CLI flag 之前）：`SOL_DRY_RUN`、`SOL_ALLOW_RESERVED_PORT_ACTIONS`、`SOL_INTERFACES`（逗号分隔）、`SOL_SECURE_ON`、`SOL_LOG_LEVEL`、`SOL_LOG_FORMAT`。
+- 环境变量覆盖（在文件之后、CLI flag 之前）：`SOL_DRY_RUN`、`SOL_ALLOW_RESERVED_PORT_ACTIONS`、`SOL_INTERFACES`（逗号分隔）、`SOL_SECURE_ON`、`SOL_LOG_LEVEL`、`SOL_LOG_FORMAT`、`SOL_LOG_OUTPUT`、`SOL_LOG_FILE`。
 - 规则来源：`server.rules`（规范写法）与顶层 `rules` 等价，二者同现 -> `ErrRulesConflict`。
 - `server.interfaces`：字符串简写或块 `{name, dry_run?, rules?}`；块内规则在加载期展开为 `MACSelector{Kind: interface, Ifaces: [块名]}`（即 §17.8/17.9 的"等价写法"），块级 `dry_run` 落成 `Rule.DryRun`——命中仍打印 action，但打 `DRY-RUN` 不执行。
 - `match` 全字段接线：`ports` / `interfaces` / `mac`（标量 `self|any|<MAC>` 或块 `{kind, address, interfaces}`）/ `content`（`kind`、`value`、`value_hex`、`offset`）/ `src_cidrs`。
 - `security`：`dry_run`、`reserved_ports`、`allow_reserved_port_actions`、`secure_on`（现为**默认口令**，可被 `server.interfaces[].secure_on` 与 `match.secure_on` 覆盖；长度必须 6 字节，否则 `ErrSecureOnLength`——旧实现里长度不对会**静默永不匹配**，现在 fail fast。§19.18）。
 - `actions` 段：命名动作 `{name, type}`，type 暂限四种内置类型；定义会注册进 Registry，`rules[].action` 可直接引用；重名 -> `ErrDuplicateAction`（内置名不可重定义）。
-- `logging` 段：`level`（debug|info|warn|error，默认 info）+ `format`（text|json，默认 text）。程序日志已从 stdlib `log` 迁到 `log/slog` 结构化日志（`internal/infra/logging.Setup`，启动时装载、`slog.SetDefault`），非法 level/format fail fast。
+- `logging` 段：`level`（debug|info|warn|error，默认 info）+ `format`（text|json，默认 text）+ **`output`（stderr 默认 | stdout | file）+ `file`（仅与 `output: file` 同用）**（§18）。程序日志已从 stdlib `log` 迁到 `log/slog` 结构化日志（`internal/infra/logging.Setup`，启动时装载、`slog.SetDefault`），非法 level/format/output fail fast。
+  - **为什么不引 syslog**：标准库 `log/slog` 没有 syslog handler，引第三方库会越过本项目"除 cobra/yaml/testify 外只用标准库"的边界；需要 syslog 就让 journald/rsyslog 去转发 stderr 或日志文件，这也是 systemd 下的默认姿势。
+  - 文件语义：追加打开（`O_APPEND|O_CREATE|O_WRONLY`）、**权限 0600**（审计行含来源地址、动作名，`exec`/裸 shell 还含命令行）、**不缓冲**（进程被杀不丢已写内容）、**不轮转**（交给 logrotate/journald）。目的地只在启动时读一次；reload 热换的是 `logging.level`。
+  - 三层校验各守一段：`config` 的 `validateLogging`（文件/环境合并后判"file 必须配路径、路径必须配 output: file、取值必须在枚举内"）、`logging.OpenOutput`（同一不变量对任何调用者成立，且开不了的文件直接报错）、`logging.Setup`（装载）。
+  - 取值集合出现在三处（config 常量、infra 常量、schema enum），防止漂移靠 `TestLoggingOutputNamesAgreeEverywhere`（三者逐一比对）；schema 字段本身由既有的 `TestSchemaMirrorsTheConfigStructs` 盯着——这次加字段时它当场就红了。
+  - 冒烟 s29（真机 14/14）：`output: file` -> 文件里有启动行与命中行的审计记录、权限 600、**进程 stderr 完全为空**；重启后**追加**不截断（5 -> 9 行）；`output: stdout` -> 审计行在 stdout、stderr 干净；路径不可用 -> 启动即 `cannot open the log file`（exit 1）；`output: syslog` / `output: file` 缺路径 / 有路径却没 `output: file` -> 三种都在启动期被拒。
 - 语义校验仍在 policy 构造期 fail fast：保留端口非 noop / 带内容、未知动作、端口范围、CIDR、重复与歧义规则等。
 - 冲突检测：同作用域同分且可能同时命中 -> `ErrDuplicatePort` / `ErrAmbiguousRule`（P1 已有）；**跨作用域**相交（per-NIC 规则 + 不限网卡的兜底、`mac: any` + `mac: self`）且 ports/content/src_cidrs 完全相同 -> `ErrRuleConflict`，错误信息带上两个 scopeKey，拒绝静默覆盖；块内规则把自己的 `match.interfaces` 指到别的网卡 -> `ErrInterfaceScopeConflict`。
 - 冲突冒烟：§13.8 的"每网卡规则 + 兜底一条"确实报 `ErrRuleConflict`；去掉兜底即通过；`enp6s0` 的块规则不能写成 `match.interfaces: [enp9s0f3u1]`；§13.9 的"全局规则 + 多个 interfaces 块（端口不重叠）"可用，且 enp6s0 的魔法包在只属于 enp9s0f3u1 的端口上判为不匹配。
