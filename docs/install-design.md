@@ -84,9 +84,9 @@ skill 不重述命令，只做决策树与验证：调用安装脚本、判断"�
 
 ```
 == 完成 ==
-sol v0.3.0 -> /usr/local/bin/sol（systemd 服务已启用）
+sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已启用）
 
-安装配置   ~/.config/sol/install.yaml        改这里，然后重跑 install.sh
+安装配置   ~/.config/sol/install.yaml        改这里，然后重跑脚本
 运行配置   /etc/sol/sol.yaml（还不存在；示例见 README Quick start）
 台账       /usr/local/share/sol/install.json
 历史       /usr/local/share/sol/install.log
@@ -173,21 +173,21 @@ SoL 状态
 
 ## 6 安装流程与探测决策
 
-**安装只做三件事：认出现状 → 给你一份按本机生成的配置 → 你确认之后才动手。**
+**安装只做三件事：认出现状 → 生成一份"怎么跑"的配置 → 你确认之后才动手。**
 
-1. **认出现状**（什么都不下载）：PATH 上所有命中的 `sol`（`command -v -a` / `where`，各自跑一遍 `--version`）+ 安装台账 + 服务单元/计划任务是否存在 + 包管理器记录（`brew list` / `winget list` / `scoop list`）。
-2. **生成配置**：按本机生成一份安装配置（§6.1），里面已经填好这台机器的真实路径、服务类型、防火墙工具和启动参数。
-3. **确认**：把配置展示出来，问一句"执行这份配置？"。答 n 就什么都不做，文件留着，改完重跑 `install.sh` 就行。
-4. **执行**：按这份配置 + 下面这张探测结论表走。
+1. **认出现状**：找 sol 二进制（脚本旁边、当前目录、`$PATH` 里就地用；都没有才去下载对应平台的最新版）+ PATH 上所有命中的 `sol`（`command -v -a` / `where`，各自跑一遍 `--version`）+ 安装台账 + 服务单元/计划任务是否存在 + 包管理器记录（`brew list` / `winget list` / `scoop list`）。
+2. **生成配置**：只写"怎么跑"——`run.args`（§6.1）。服务类型、单元路径、CAP、防火墙工具都由脚本按平台自己推导，不进文件（用户不需要记平台差异）。
+3. **确认**：把配置展示出来，问一句"执行吗？"。答 n 就什么都不做，文件留着，改完重跑即可。
+4. **执行**：用现成的二进制 + 下面这张表；**要不要装成服务是现场问的**，默认沿用台账里上次的选择。
 5. **报告**：见 §4。
 
 | 探测结论 | 执行时的行为 |
 | --- | --- |
-| 同源（台账在）+ 同版本 | "已安装，无需操作"（退出码 0） |
-| 同源 + 新版本 | 升级流水线（§7） |
-| 同源 + 旧版本（降级） | **拒绝**，要在配置里显式写下降级意图（见 §7 场景） |
-| 异源（brew / winget / scoop 装的） | **拒绝**，告诉用户用对应包管理器升级/卸载（否则两边互相覆盖） |
-| 无台账但二进制存在 | 不猜：打印探测结果，要求显式接管（配置里 `adopt: true`） |
+| 台账在 + 二进制版本/哈希与台账一致 + `run.args` 与服务定义一致 | "已是最新，无需操作"（退出码 0） |
+| 台账在 + 你换过二进制（哈希不同） | 提示"检测到二进制换了：v0.2.1 → v0.3.0"，更新服务定义并重启（§7） |
+| 台账在 + 只改了 `run.args` | 重新生成服务定义并重启 |
+| 异源（brew / winget / scoop 装的二进制） | 提醒"包管理器升级会覆盖它"，问是否继续 |
+| 无台账但二进制存在 | 正常开始——它就是"你已有的二进制"，执行后写台账 |
 | PATH 上存在第二个 sol | 报告并指出**哪个生效**，不擅自改 PATH |
 
 **安装脚本没有任何命令行参数。** 一个都不加：用户不需要记任何东西，所有选择都由"生成的文件 + 交互问答"完成。
@@ -198,14 +198,15 @@ SoL 状态
 == 已生成安装配置 ==
 /home/you/.config/sol/install.yaml
 
-  release: latest
-  prefix: /usr/local/bin
-  service: { enabled: true, kind: systemd, unit_path: /etc/systemd/system/sol.service }
+  # sol 怎么跑（改这里，然后重新跑一遍脚本）
   run: { args: [listen, --config, /etc/sol/sol.yaml] }
 
-可以现在编辑它（另开一个窗口也行），改完回车继续。
+二进制：用你这里的 ./sol（v0.3.0，sha256 1a2b…）；想换版本就把它换掉
+服务：装成 systemd 服务？[Y/n]
 
-执行这份配置？[Y/n]
+可以现在编辑配置（另开一个窗口也行），改完回车继续。
+
+执行吗？[Y/n]
 ```
 
 已安装时（同一份文件就是"当前配置"）：
@@ -227,54 +228,34 @@ SoL 状态
 
 **位置固定**（没有"换个位置"的开关）：Linux / macOS `~/.config/sol/install.yaml`；Windows `%APPDATA%\sol\install.yaml`。用 sudo 跑时写到 `$SUDO_USER` 的家目录，而不是 `/root`——否则用户在自己的家目录里根本找不到这份文件。
 
-**内容按本机生成**，所以三个平台长得不一样，这正是它的用处：不用记每个平台的路径怎么写字。
-
-Linux（systemd）：
+**内容只有一个 `run`**，它回答"sol 用什么参数跑"。其余的东西都不进文件：二进制从哪来由脚本自己找（§6.2），装不装服务现场问，服务类型 / 单元路径 / CAP / 防火墙工具按平台推导。
 
 ```yaml
-# 由 install.sh 生成，可以自由编辑；重跑 install.sh 会按这份执行（不覆盖你的改动）
-version: 1
-release: latest                       # 也可以写死版本号，如 v0.3.1
-prefix: /usr/local/bin
-service:
-  enabled: true                       # false = 只装二进制
-  kind: systemd
-  unit_path: /etc/systemd/system/sol.service
-  user: root
-  capabilities: [CAP_NET_BIND_SERVICE]
-  firewall: [10010/udp]               # 本机可用的工具：ufw
+# 由 install.sh 生成：sol 怎么跑。改这里，然后重新跑一遍脚本。
 run:
   args: [listen, --config, /etc/sol/sol.yaml]
 ```
 
-Windows（计划任务）：
+- `run.args` 是**列表**而不是一行字符串——字符串没法校验（危险开关能混进来）、没法映射到 launchd 的 `ProgramArguments` 数组、没法 diff。每个 token 按 `sol listen` 的真实 flag 集合校验，未知 flag 报错。
+- **未知键即报错**（与 sol 配置解析同一风格）。
+- **不覆盖**已有文件：配置在就按它执行；要重新生成就在问答里选 `r`。"改配置 → 重跑脚本"是唯一的修改回路。
+- **三层权威互不重叠**：这份配置是**输入**（怎么跑）；服务定义是**产物**（脚本生成，别手改）；`/etc/sol/sol.yaml` 是**权威运行配置**（sol 只认这个 + CLI/env，见 §5.4）。
+- **漂移可见**：手改过 unit 之后，`sol status` 发现"unit 里的参数 ≠ 台账记录"就提示重跑脚本。
 
-```yaml
-version: 1
-release: latest
-prefix: C:\ProgramData\sol
-service:
-  enabled: true
-  kind: task                          # 纯 exe 不能当服务，用计划任务
-  task_name: sol
-  firewall: [10010/udp]               # 用 netsh
-run:
-  args: [listen, --config, C:\ProgramData\sol\sol.yaml]
-```
+### 6.2 二进制从哪来
 
-要点只有四条：
+**用户已经有 sol 时脚本就地使用，什么都不下载**：依次找 ① 脚本所在目录的 `./sol`（Windows 是 `sol.exe`）② 当前目录 ③ `$PATH`。都没有才回退到下载对应平台的最新版 release（自动判 OS/arch + 校验，见 §10 的证据要求）。
 
-- **不覆盖**已有文件：配置存在就按它执行；要重新生成就在脚本的问答里选 `r`。"改配置 → 重跑 install.sh" 是唯一的修改回路，用户不需要记任何命令行开关。
-- **未知键即报错**（与 sol 配置解析同一风格）；`run.args` 是**列表**而不是一行字符串——字符串没法校验（危险开关能混进来）、没法映射到 launchd 的 `ProgramArguments` 数组、没法 diff。
-- **三层权威互不重叠**：这份配置是**输入**（怎么装、怎么起）；服务定义是**产物**（安装器生成，别手改）；`/etc/sol/sol.yaml` 是**权威运行配置**（sol 只认这个 + CLI/env，见 §5.4）。
-- **漂移可见**：手改过 unit 之后，`sol status` 会发现"unit 里的参数 ≠ 台账记录"并提示重跑安装，或把台账更新为现状。
+想钉版本就自己放一个二进制——脚本不替用户决定版本，也不会因为"网上有新版"就去动你放的那个。
 
 ## 7 覆盖安装与升级
 
 ```
-停服务 → 配置预检（新版本 sol config check）→ 下载 + 校验 → 原子替换（旧的留 sol.bak）
-      → 重启服务 → 回读运行中的 version/revision → 更新台账
+认二进制（版本 + sha256）→ 配置预检（sol config check）→ 停服务 → 原子替换（旧的留 sol.bak）
+      → 重新生成服务定义（run.args 变了才需要）→ 重启 → 回读运行中的 version/revision → 更新台账
 ```
+
+没有"下载新版本"这一步：换版本就是**你换掉那个二进制**，脚本负责把它放到最终位置、更新服务定义、重启，并把变化说清楚。
 
 **四个硬校验**：
 
@@ -289,13 +270,14 @@ run:
 - Windows：**正在运行的 exe 覆盖不了**（文件锁）→ 必须先 `schtasks /End` / 停进程再 `Move-Item`，失败要给明确指引并可重试。
 - macOS：launchd `KeepAlive` 会在替换二进制时把它拉回来 → 先 `launchctl bootout`，替换后再 load。
 
-**场景示例**（行为由配置文件的内容决定，命令行不参与）：
+**场景示例**：
 
-- 重跑 `install.sh`（配置里还是同版本）→ "已安装 v0.3.0，无需操作"。
-- 把配置改成 `release: v0.3.1` → 重跑 → 停服务 → 预检通过 → 替换 → 重启 → 回读确认 `v0.3.1` → 台账加 `previous`。
-- 把配置改成 `release: v0.2.1`（降级）→ **拒绝**："要降级请在配置里加 `allow_downgrade: true`；端口 9 的语义变更见 CHANGELOG"。
-- 先前用 winget 装过，又跑 `install.sh` → **拒绝**："检测到 winget 安装记录；请用 winget upgrade 升级，或先 winget uninstall 再用脚本安装"。
-- 手工 `cp sol /usr/local/bin/`（无台账）→ "未纳管：`/usr/local/bin/sol` 存在但没有安装台账。确认由本脚本接管，请在配置里加 `adopt: true`"。
+- 重跑脚本、什么都没有变 → "已是最新，无需操作"。
+- 你把 `./sol` 换成新版本 → "检测到二进制换了：v0.2.1 → v0.3.0"，预检 → 替换（旧的留 `sol.bak`）→ 重启 → 回读确认运行的是 `v0.3.0` → 台账加 `previous`。
+- 你把二进制换成旧版本（降级）→ 不阻止但要说清："版本从 v0.3.0 降到 v0.2.1；端口 9 的语义已变更，见 CHANGELOG"。
+- 只改了 `run.args`（比如加了 `--port`）→ 只重新生成服务定义并重启，二进制不动。
+- 二进制是 winget 装的 → 提醒"下次 winget upgrade 会覆盖它"，问是否继续（继续就用它，不继续就退出）。
+- 没有台账（你手工拷进来的）→ 正常开始，执行完写台账——不需要"接管"这种开关。
 
 ## 8 卸载
 
@@ -320,20 +302,20 @@ run:
 | --- | --- | --- | --- |
 | 二进制 | `/usr/local/bin/sol` | `/usr/local/bin/sol` | `C:\ProgramData\sol\sol.exe` |
 | 台账 / 历史 | `/usr/local/share/sol/{install.json,install.log}` | 同 Linux | `C:\ProgramData\sol\{install.json,install.log}` |
-| 安装配置（用户可改） | `~/.config/sol/install.yaml` | 同 Linux | `%APPDATA%\sol\install.yaml` |
+| 安装配置（只有 `run.args`，用户可改） | `~/.config/sol/install.yaml` | 同 Linux | `%APPDATA%\sol\install.yaml` |
 | 服务管理器 | systemd | launchd | 计划任务（纯 exe 不能当服务） |
 | 装服务的额外文件 | `/etc/systemd/system/sol.service` | `/Library/LaunchDaemons/com.lidiaoo.sol.plist` | 计划任务 `sol` + 防火墙规则 |
 | 覆盖陷阱 | 旧 inode、`Restart=always` | `KeepAlive` 拉回 | 运行中 exe 文件锁 |
 | 特权端口 | root 或 `CAP_NET_BIND_SERVICE` | root | 无特权端口概念 |
 
-默认（不装服务）只产生：二进制 + 台账 + 历史 + 安装配置；升级后多一个 `sol.bak`。**运行配置与日志不由安装脚本创建**，只在报告里打印期望路径。
+二进制来源：你放的（脚本就地使用）或脚本回退下载（§6.2）。默认（不装服务）产生：二进制 + 台账 + 历史 + 安装配置；换过二进制后多一个 `sol.bak`。**运行配置与日志不由安装脚本创建**，只在报告里打印期望路径。
 
 ## 10 验证与证据强度
 
 | 交付物 | 证据强度 | 方式 |
 | --- | --- | --- |
 | `sol status` / `paths` / `config check` | **真机全量** | 单测 + Linux 真机冒烟（沿用现有 `sNN` 机制） |
-| `scripts/install.sh` | **真机全量** | Linux 真机跑：装 / 重跑 / 升级 / 降级被拒 / 异源被拒 / 卸载，并真发一个魔法包确认能起来 |
+| `scripts/install.sh` | **真机全量** | Linux 真机跑：无二进制时下载回退 / 有二进制时就地使用 / 重跑无变化 / 换二进制（升与降）/ 只改 `run.args` / 异源提醒 / 无台账 / 卸载，并真发一个魔法包确认能起来 |
 | `scripts/install.ps1`、macOS 路径 | **CI 证据**（否则只能标"仅语法级"） | 新增 `.github/workflows/install-smoke.yml`，matrix ubuntu/macos/windows 真跑脚本 + 校验 + `--version` + `ifaces` |
 | 包管理器清单 | **schema 级** | scoop/winget 的 JSON schema 校验；winget 在 CI 里装不了，只能标 |
 | README 里的安装命令 | **真跑** | 沿用现有 readme 断言脚本（抽 README 片段真执行） |
@@ -359,7 +341,7 @@ run:
 | 1 | 本文档 + TODO 挂条目（本次） |
 | 2 | `sol paths` + `sol config check` + `sol status`（含 `listen` 的配置来源启动日志行） |
 | 3 | 台账 / 报告契约落地（`install.json` schema + `install.log` 格式 + 校验脚本 + 单测） |
-| 4 | `scripts/install.sh`：探测 → 生成配置（按平台，不覆盖已有）→ 展示并确认 → 执行 / 卸载（预检 / 原子替换留 `sol.bak` / 回读运行版本）；**零命令行参数**，交互问答完成全部选择 + 真机冒烟 |
+| 4 | `scripts/install.sh`：探测 → 生成配置（内容只有 `run.args`，不覆盖已有）→ 展示并确认 → 执行 / 卸载（预检 / 原子替换留 `sol.bak` / 回读运行版本）；**零命令行参数**，交互问答完成全部选择 + 真机冒烟 |
 | 5 | `scripts/install.ps1`（同上一行：零参数、交互问答） |
 | 6 | `.github/workflows/install-smoke.yml`（三平台 matrix） |
 | 7 | scoop + winget 清单 |

@@ -1,0 +1,6 @@
+# install.sh 生成的安装配置：只回答"sol 怎么跑"。
+# 改这里，然后重新跑一遍脚本即可生效；不会覆盖你改过的内容（要重新生成就在问答里选 r）。
+# 二进制不用配：脚本就地用你放的那个（脚本旁边 / 当前目录 / $PATH），都没有才去下载。
+# Windows 上同样只有这一段，区别只在路径，例如：args: [listen, --config, C:\ProgramData\sol\sol.yaml]
+run:
+  args: [listen, --config, /etc/sol/sol.yaml]

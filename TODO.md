@@ -144,9 +144,10 @@
 - [ ] `sol status` 子命令（**默认入口**：版本 / 二进制 sha256 与台账比对 / 安装方式 / 服务线索（`INVOCATION_ID`、`XPC_SERVICE_NAME`）/ 配置有效性 / 监听端口与权限告警；未纳管时也输出；退出码 0/1；`--json`）
 - [ ] `sol listen` 启动日志补配置来源行（`msg="configuration" path=... source=...`）
 - [ ] 台账 / 报告契约：`install.json` schema + `install.log` 格式 + 防漂移校验（报告值必须来自现场：重算 sha256、真跑 `--version`；不打印配置内容与密钥）+ 默认只给**简短**报告（文件清单 + 校验 + 接下来），完整动作清单写进 `install.log`
-- [ ] 本机安装配置（§6.1，**由安装脚本生成、用户可改**）：平台相关位置（Linux/macOS `~/.config/sol/install.yaml`、Windows `%APPDATA%\sol\install.yaml`；sudo 时写 `$SUDO_USER` 的家目录而不是 `/root`）+ 内容按平台生成（二进制路径 / 服务类型与单元路径 / 防火墙工具 / `run.args`）+ **默认不覆盖已有**（问答里选 `r` 才重写）+ 未知键报错 + `run.args` 为列表并按真实 flag 集合校验 + 示例 `example/install-example-{linux,windows}.yaml`
-- [ ] `scripts/install.sh`：探测（决策矩阵：同源同版本 / 新版本升级 / 降级拒绝 / 异源拒绝 / 无台账要 `adopt` / PATH 多命中只报告）→ **生成配置 → 展示并确认**（答 n = 只生成不执行，文件保留）→ 执行（配置预检不通过不覆盖 + 原子替换留 `sol.bak` + 回读运行中版本）+ **零命令行参数**（未安装：`执行这份配置？[Y/n]`；已安装：`回车=按配置应用 / u=卸载 / r=重新生成 / n=退出`；卸载再问一句"配置文件也删吗？[y/N]"；非交互环境只生成不执行；CI 用管道喂答案 `printf 'y\n' | bash install.sh`）+ `flock`
-- [ ] `scripts/install.ps1`：`C:\ProgramData\sol` + 生成 `%APPDATA%\sol\install.yaml` 并确认——**零参数**，交互问答与 Linux 版一致（服务是否安装由配置的 `service.enabled` 决定）；替换前先 `schtasks /End`（运行中 exe 有文件锁）
+- [ ] 本机安装配置（§6.1，**由安装脚本生成、用户可改**）：固定位置（Linux/macOS `~/.config/sol/install.yaml`、Windows `%APPDATA%\sol\install.yaml`；sudo 时写 `$SUDO_USER` 的家目录而不是 `/root`）+ **内容只有 `run.args`**（服务类型 / 单元路径 / CAP / 防火墙工具按平台推导，不进文件）+ **默认不覆盖已有**（问答里选 `r` 才重写）+ 未知键报错 + `run.args` 为列表并按真实 flag 集合校验 + 示例 `example/install-example.yaml`
+- [ ] 二进制来源（§6.2）：**就地发现优先**（脚本旁 `./sol` / 当前目录 / `$PATH`），找不到才回退下载（OS/arch 自动 + 校验）；不因"网上有新版"去动用户放的二进制
+- [ ] `scripts/install.sh`：探测（二进制发现 → 版本/哈希与台账比对 → `run.args` 与服务定义比对 → 异源提醒 → PATH 多命中只报告 → 无台账就地接管）→ **生成配置 → 展示并确认**（答 n = 只生成不执行，文件保留）→ 执行（配置预检不通过不覆盖 + 原子替换留 `sol.bak` + 重新生成服务定义 + 回读运行中版本）+ **零命令行参数**（未安装：`执行吗？[Y/n]`；已安装：`回车=按配置应用 / u=卸载 / r=重新生成 / n=退出`；卸载再问一句"配置文件也删吗？[y/N]"；非交互环境只生成不执行；CI 用管道喂答案 `printf 'y\n' | bash install.sh`）+ `flock`
+- [ ] `scripts/install.ps1`：`C:\ProgramData\sol` + 生成 `%APPDATA%\sol\install.yaml`（只有 `run.args`）并确认——**零参数**，交互问答与 Linux 版一致（装不装服务现场问，默认沿用台账）；替换前先 `schtasks /End`（运行中 exe 有文件锁）
 - [ ] `.github/workflows/install-smoke.yml`：三平台 matrix 真跑安装脚本（把 macOS / Windows 从"未验证"提到"有 CI 证据"）
 - [ ] scoop + winget 清单（schema 校验；winget 在 CI 里装不了，只能标 schema 级证据）
 - [ ] Hermes skill `sol-install` + `references/{linux,macos,windows}.md`（决策树：先判断此前是怎么装的，再选路径；装完给摘要，证据取自 `sol status --json` 与台账）
