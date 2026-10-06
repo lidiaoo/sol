@@ -458,6 +458,43 @@ away* keeps matching until the next unmatched packet or the next poll, so at mos
 `SIGHUP` (or `--watch`) applies the current list immediately. Explicit `interfaces: [x]` names are
 still validated at start-up: a name that is not there is a typo, and it is refused.
 
+## Which files sol uses
+
+`sol paths` answers "which file is actually in effect" without guesswork: the running binary,
+the configuration file and which level of the discovery order picked it, every candidate
+location, where the audit log goes, and the installer's own ledger. It reads and changes
+nothing, and it still reports the locations when the configuration does not parse.
+
+```
+$ sol paths
+binary          /usr/local/bin/sol
+runtime config  /etc/sol/sol.yaml                   (source: system default)
+candidates
+  *             /etc/sol/sol.yaml                   (present)
+                /home/you/.config/sol/sol.yaml      (not present)
+log             stderr (default)
+ledger          /usr/local/share/sol/install.json    (not present)
+install config  /home/you/.config/sol/install.yaml
+history         /usr/local/share/sol/install.log
+next            sol config check
+```
+
+The `source` field is the point: `--config`, `$SOL_CONFIG`, `system default` or `user default`
+names the level that won, so a machine with a configuration file in both default locations is
+never a mystery. `sol listen` writes the same answer as the first line of its audit log:
+
+```
+time=... level=INFO msg="configuration file" path=/etc/sol/sol.yaml source=system
+```
+
+`sol paths` exits 0 even when the configuration cannot be parsed - the other locations are still
+worth reporting, and the parse error gets its own line. `--json` prints the same report for
+scripts (`runtime_config`, `runtime_config_source`, and candidates carrying `exists` / `in_use`).
+
+The **install config** is not the runtime configuration: `install.yaml` is what the install
+script generates for you to edit, while the file sol reads at start-up is the one on the
+`runtime config` line.
+
 ## Installation
 
 ### Quick Install

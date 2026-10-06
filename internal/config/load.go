@@ -181,22 +181,10 @@ func loadFile(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// resolvePath is Discover without the source. The discovery order lives in discover.go so the
+// start-up log line, `sol paths` and Load cannot disagree about which file is in effect.
 func resolvePath(path string) string {
-	if path != "" {
-		return path
-	}
-
-	if fromEnv := os.Getenv(EnvConfig); fromEnv != "" {
-		return fromEnv
-	}
-
-	for _, candidate := range DefaultPaths() {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-
-	return ""
+	return Discover(path).Path
 }
 
 // minWatch keeps the poll interval sane: watching a config file must stay cheaper than the

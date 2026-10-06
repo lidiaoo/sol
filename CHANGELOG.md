@@ -40,7 +40,14 @@ tagged release.
 
 ### Added
 
-- **Routing model**: rules match on `ports`, `mac` (`self`, `interface`, explicit set),
+- **`sol paths`**: names the running binary, the configuration file in effect and which
+  level of the discovery order chose it (`--config`, `$SOL_CONFIG`, the system default or the
+  user default), every candidate location, the audit-log destination, and the installer's
+  ledger, install config and history paths. It changes nothing and still reports the
+  locations when the configuration cannot be parsed; `--json` for scripts. `sol listen` now
+  logs the same answer as the first line of its audit log (`msg="configuration file"`), so
+  journald says which file is in effect.
+: rules match on `ports`, `mac` (`self`, `interface`, explicit set),
   `content` (kind any/none/suffix/prefix, with `value` or `value_hex`), `src_cidrs` and the interface;
   rules are scored so the most specific one wins and ambiguous overlaps are refused at
   start-up.

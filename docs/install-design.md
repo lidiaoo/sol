@@ -146,6 +146,14 @@ SoL 状态
 
 二进制真实路径（`os.Executable()`，解 symlink）、**实际生效**的配置文件路径 + 来源（`--config` / `$SOL_CONFIG` / 系统路径 / 用户路径 / 都没有）、按优先级排列的候选路径与命中项、日志目的地、台账路径。回答"东西在哪"，不依赖安装脚本还在不在。
 
+**已实现**（`cmd/paths.go` + `internal/config/discover.go` + `internal/install/paths.go`；冒烟 s32 真机 25/25）：
+
+- **来源判定只有一份实现**：`config.Discover` 同时服务 `Load`、这条命令和启动日志行，三者不可能给出不同答案。
+- 候选就是 `config.DefaultPaths()`，命中项打 `*`；日志目的地取自配置，**配置坏了也照常给路径**（只多一行 `configuration not usable: <err>`），退出码恒为 0。
+- 除设计里的五项，还打印 `install config`（用户改的那份 `install.yaml`）与 `history`——否则"装完文件在哪"要跨两条命令看；末行给一条 `next`（当前是 `sol config check`）。
+- 平台路径集中在 `internal/install`：macOS 与 Linux 同为 `/usr/local/share/sol` + `~/.config/sol/install.yaml`，Windows 为 `%ProgramData%\sol` + `%APPDATA%\sol\install.yaml`。将来 `sol status` 与安装脚本共用这一处。
+- 台账目前只报**路径与是否存在**；"是否纳管 / 版本比对"要等第 3 步的写入方（`install.json`）落地。
+
 ### 5.3 `sol config check`
 
 加载配置 + 跑**全部启动期校验**（保留端口、重复端口、歧义规则、secret 解析、日志目的地、allowlist 形式、动作参数、`sequence` 步数……），对每条问题给出**怎么修**。不建监听、不要特权。三处使用：用户改完配置自查、升级前的预检（§7）、覆盖安装失败后的诊断。
@@ -169,9 +177,15 @@ SoL 状态
 - **服务场景的坑**：服务有自己的家目录（systemd / launchd 是 root 的，Windows 是 `SYSTEM` 的），`~/.config/sol/sol.yaml` 会变成 `/root/.config/sol/sol.yaml`。所以服务单元必须用 `--config` 给**绝对路径**，或把文件放在 `/etc/sol/sol.yaml`——这是"装完服务配置莫名不生效"最常见的原因。
 - 安装脚本默认**不创建**配置，只在报告里打印"生效配置：(无) → 将按此顺序查找：…"，并附一段可复制的最小配置；`--write-config` 才落盘，且只在目标不存在时写，绝不覆盖已有配置。
 
-### 5.5 连带补一个真缺陷
+### 5.5 连带补一个真缺陷（已实现）
 
-`sol listen` 启动时**没有**打出它读的是哪份配置。补一行启动日志：`msg="configuration" path=/etc/sol/sol.yaml source=--config`。这样 journald 里能直接看出"它读的是哪份"，也让 status 与安装报告的结论可被独立核对。
+`sol listen` 启动时**没有**打出它读的是哪份配置。现在它是审计日志的第一行，字段名与 `sol paths` 一致：
+
+```
+time=... level=INFO msg="configuration file" path=/etc/sol/sol.yaml source=system
+```
+
+实测三种来源：无配置时 `path=` 为空且 `source=none`，`--config` 与 `$SOL_CONFIG` 分别报 `source=--config` / `source=$SOL_CONFIG`（冒烟 s32）。journald 里能直接看出"它读的是哪份"，`status` 与安装报告的结论因此可被独立核对。
 
 ## 6 安装流程与探测决策
 
@@ -411,7 +425,7 @@ schtasks /Query /TN sol /V /FO LIST
 | # | 内容 |
 | --- | --- |
 | 1 | 本文档 + TODO 挂条目（本次） |
-| 2 | `sol paths` + `sol config check` + `sol status`（含 `listen` 的配置来源启动日志行） |
+| 2 | `sol paths` ✅ + `sol config check`（含 `listen` 的配置来源启动日志行 ✅） + `sol status` |
 | 3 | 台账 / 报告契约落地（`install.json` schema + `install.log` 格式 + 校验脚本 + 单测） |
 | 4 | `scripts/install.sh`：探测 → 生成配置（内容只有 `run.args`，不覆盖已有）→ 展示并确认 → 执行 / 卸载（预检 / 原子替换留 `sol.bak` / 回读运行版本）；**零命令行参数**，交互问答完成全部选择 + 真机冒烟 |
 | 5 | `scripts/install.ps1`（同上一行：零参数、交互问答） |
