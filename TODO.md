@@ -87,7 +87,7 @@
 - [x] `exec` 动作（argv 非 shell、timeout、workdir/env、审计日志、变量插值白名单）
 - [x] `exec` 启动期静态校验（可执行存在 / 非目录 / 有执行位 / `security.exec_allowlist` 目录）
 - [x] `exec` 的 `user`/`group` 降权（仅 unix；启动期解析用户/组 + 要求 root，运行时 `SysProcAttr.Credential` + `initgroups` 语义，sol 自己的附加组不泄漏）——见设计 §19.4
-- [ ] 降权只支持 root（`CAP_SETUID`/`CAP_SETGID` 单权限）；非 unix 平台直接报 `ErrUserUnsupported`
+- [x] 降权边界如实：只支持 root（`requirePrivilege()` = `geteuid()==0`，**不**支持 `CAP_SETUID`/`CAP_SETGID` 单权限），`ErrNotRoot` 文案改成 `exec user/group requires root`（原来承诺的 `or CAP_SETUID/CAP_SETGID` 没接线，`TestRequirePrivilegeMessageOnlyPromisesRoot` 断言不再出现 `CAP_`）；非 unix 平台配了降权直接报 `ErrUserUnsupported`（`credential_other.go` + `//go:build !unix` 单测，证据 = `GOOS=windows/darwin/freebsd go build ./...` 与 `GOOS=windows go vet` 全过）
 - [x] HTTP 控制面（bearer/basic/mTLS、默认 127.0.0.1、`/v1/status`、`/v1/rules`、`/v1/interfaces`、`/v1/actions/{name}`、`/metrics`、`/healthz`、审计）——实现对照见设计 §19.5
 - [x] `/v1/reload` 热重载 + `SIGHUP`（原子换入 policy/registry/cooldown/remote；端口集合变化 -> 409 要求重启；配置非法 -> 400 且旧配置继续跑；`-race` 下 60 次 reload 无 data race）——见设计 §19.9
 - [x] 热重载重绑端口 / 网卡集合：`listenerSet`（`internal/app/listeners.go`）先 `rebind()` 绑新增端口、全部成功才换状态并 `commit()`（新增开读、离开的 `Close()`）；失败整体拒绝（`ErrReloadBind` -> 409），已跑的端口一个不动。网卡不需要重绑（socket 绑 `0.0.0.0`），但 `ReloadOptions.Ifaces` 会刷新状态视图/日志——见设计 §19.9

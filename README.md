@@ -387,9 +387,11 @@ reports the live `rate_limit` when one is configured.
   shows `AmbientCapabilities=CAP_NET_BIND_SERVICE` with a dedicated user.
 - If you only use high ports (≥1024), no privilege is needed. High ports are the recommended
   default: they keep the reserved WOL ports meaningful and need no capabilities.
-- `exec` actions with `user`/`group` require sol to run as root (`CAP_SETUID`/`CAP_SETGID`),
-  otherwise start-up fails with `ErrNotRoot` — the drop is never silently skipped. The command
-  then runs with the target account's groups, never with sol's inherited ones.
+- `exec` actions with `user`/`group` require sol to run as root, otherwise start-up fails with
+  `ErrNotRoot` — the drop is never silently skipped. Root is the only accepted setup: the check
+  is `geteuid() == 0`, so granting just `CAP_SETUID`/`CAP_SETGID` to a non-root process is
+  refused rather than half-applied. The command then runs with the target account's groups,
+  never with sol's inherited ones.
 - The control plane should stay on `127.0.0.1` unless TLS and mTLS are configured.
 
 ## Choosing interfaces

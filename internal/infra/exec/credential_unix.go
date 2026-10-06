@@ -20,7 +20,11 @@ var (
 	ErrUnknownGroup = errors.New("unknown exec group")
 	// ErrNotRoot reports a configured privilege drop without the rights to perform it:
 	// silently running as the current user would make the configuration a lie.
-	ErrNotRoot = errors.New("exec user/group requires root (or CAP_SETUID/CAP_SETGID)")
+	//
+	// Root is the only accepted setup: requirePrivilege is a plain geteuid check, so a process
+	// that holds CAP_SETUID/CAP_SETGID without root is refused too. The message must not promise
+	// that path - a runbook granting just those two capabilities would be following our text.
+	ErrNotRoot = errors.New("exec user/group requires root")
 )
 
 // credential is the uid/gid pair an exec command runs as, plus the supplementary
@@ -143,6 +147,9 @@ func parseID(value string, sentinel error, name string) (uint32, error) {
 }
 
 // requirePrivilege reports whether the process may drop privileges at all.
+// It is deliberately a geteuid check and nothing more: capability-only setups
+// (CAP_SETUID/CAP_SETGID without root) are unsupported, and saying so plainly is
+// better than half-working drops.
 func requirePrivilege() error {
 	if os.Geteuid() != 0 {
 		return ErrNotRoot

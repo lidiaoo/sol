@@ -103,6 +103,9 @@ tagged release.
   bump and not the prefix length. To cover a subnet and leave the rest alone, leave out the
   catch-all rule: an unmatched packet runs nothing. Configs that relied on the old silence are
   rejected at startup with `overlapping rule scopes with matching conditions`.
+- Fixed: the `ErrNotRoot` message promised `or CAP_SETUID/CAP_SETGID`, which sol never accepted -
+  the privilege-drop check is a plain `geteuid() == 0`, so a capability-only setup is refused.
+  The message now says `exec user/group requires root`.
 - Fixed: a missing packet key, remote command key or raw shell key was reported as "cannot
   resolve the http auth secret" - the resolver is shared by every secret, so the message now says
   "cannot resolve a configured secret" and keeps naming the field that failed

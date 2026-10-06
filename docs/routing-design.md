@@ -1375,7 +1375,8 @@ CLI 侧的 P1 配套：`sol listen --port 9` 现在把动作降级为 `noop` 并
   - 运行时走 `SysProcAttr.Credential`：只写 `user` 时补该账号的**主组**；写 `group` 时覆盖主组（可与 `user` 不同，如 `user: root, group: nobody`）。
   - **附加组也要处理**：实测发现若用 `NoSetGroups: true`，子进程会**继承 sol 自己的附加组**（root 的 `0(root)`、调用者的 `1001(docker)`），uid 掉了但组没掉 = 降权不彻底（在装了 docker 的机器上等价于没降权）。现在 `NoSetGroups: false` 且传目标账号的组列表（`user.GroupIds()`，即 `initgroups` 语义）：只配 `group` 不配 `user` 时传空列表，等于清空全部附加组。
   - 子进程拿到的组要么是目标账号自己的组，要么为空——sol 的组永远不会泄漏进命令。
-  - 未做：`user`/`group` 只支持 unix（其他平台写了直接报 `ErrUserUnsupported`）；不支持 `CAP_SETUID` 单权限（要求 root）。
+  - 未做：`user`/`group` 只支持 unix（其他平台写了直接报 `ErrUserUnsupported`，见 `credential_other.go`，其单测是 `//go:build !unix` 的 `credential_other_internal_test.go`——本机跑不了，证据是 `GOOS=windows/darwin/freebsd go build ./...` 与 `GOOS=windows go vet ./internal/infra/exec/` 全过）；**不支持 `CAP_SETUID`/`CAP_SETGID` 单权限**（要求 root）。
+  - 错误文案与这条边界一致：`ErrNotRoot` = `exec user/group requires root`。以前写的是 `... requires root (or CAP_SETUID/CAP_SETGID)`，等于承诺了一条没接线的路（`requirePrivilege()` 只看 `geteuid()`），所以文案改了；`TestRequirePrivilegeMessageOnlyPromisesRoot` 断言它只提 root、不再出现 `CAP_`。
 - 冒烟（真机 root，`sudo ./sol`，端口 10051–10055）：`user: nobody` -> `id -u` = 65534；`user: root, group: nobody` -> `id -g` = 65534；`user+group: nobody` -> `id` = `uid=65534(nobody) gid=65534(nobody) 组=65534(nobody)`（没有 `0(root)`/`1001(docker)` 泄漏，这是修掉 `NoSetGroups` 之后的结果）；不配降权的动作仍是 `0`；只配 `group: nobody` -> `id -G` 只有 `65534`（附加组被清空）。负向：非 root 进程配了降权 -> 启动 exit 1（`exec user/group requires root`）；`user: sol-no-such-user-xyz` -> 启动 exit 1（`unknown exec user`）；`group: nogroup`（本机无该组）-> 启动 exit 1（`unknown exec group`）。审计行带 `run_as=<user>[:<group>]`。
 - 未做（继续留 P4）：cooldown / 速率限制、HTTP 出站动作、远端命令通道（控制面见 §19.5）。
 

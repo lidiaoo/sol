@@ -353,8 +353,10 @@ token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文�
   `AmbientCapabilities=CAP_NET_BIND_SERVICE`。
 - 只用高位端口（≥1024）则不需要任何特权。**推荐用高位端口**：它让保留的 WOL 端口保持有意义，
   也不需要额外能力。
-- 带 `user`/`group` 的 `exec` 要求 sol 以 root 运行（`CAP_SETUID`/`CAP_SETGID`），否则启动即
-  `ErrNotRoot`——降权绝不会被静默跳过。命令随后以目标账号的组运行，绝不继承 sol 自己的附加组。
+- 带 `user`/`group` 的 `exec` 要求 sol 以 root 运行，否则启动即 `ErrNotRoot`——降权绝不会被静默
+  跳过。**只接受 root**：判定就是 `geteuid() == 0`，所以给非 root 进程只授
+  `CAP_SETUID`/`CAP_SETGID` 会被拒绝，而不是做一半。命令随后以目标账号的组运行，绝不继承 sol
+  自己的附加组。
 - 除非配了 TLS 与 mTLS，控制面应保持只听 `127.0.0.1`。
 
 ## Choosing interfaces

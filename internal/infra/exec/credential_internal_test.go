@@ -65,6 +65,17 @@ func TestValidateCredentialFailsFast(t *testing.T) {
 	}
 }
 
+// The refusal is a plain geteuid check: CAP_SETUID/CAP_SETGID on an otherwise unprivileged
+// process are not accepted, so the message must not offer them as an alternative - an operator
+// granting exactly those capabilities and reading "or CAP_SETUID/CAP_SETGID" would be following
+// our own text into a start-up failure.
+func TestRequirePrivilegeMessageOnlyPromisesRoot(t *testing.T) {
+	t.Parallel()
+
+	require.Contains(t, ErrNotRoot.Error(), "root")
+	require.NotContains(t, ErrNotRoot.Error(), "CAP_")
+}
+
 func TestApplyCredentialWiring(t *testing.T) {
 	cmd := &osexec.Cmd{}
 	applyCredential(cmd, credential{uid: 1234, gid: 5678, groups: []uint32{5678, 999}, set: true})
