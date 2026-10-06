@@ -40,6 +40,15 @@ tagged release.
 
 ### Added
 
+- **`sol status`**: reports the running binary and its checksum, whether the install script
+  placed it (reading the install ledger), what service setup was recorded, whether this
+  process was started by a service manager (`INVOCATION_ID`/`JOURNAL_STREAM`,
+  `XPC_SERVICE_NAME`), whether the configuration would start, which ports it listens on and
+  whether this process may bind them (root, or `CAP_NET_BIND_SERVICE` read out of
+  `/proc/self/status`). It never calls `systemctl`/`launchctl`/`schtasks`; it prints the
+  query to run. Problems make the exit code 1, notes do not, and `--json` carries both.
+  The install ledger's reader lands with it: schema 1, a missing file is "not managed"
+  rather than an error, and a newer schema is refused instead of half-read.
 - **`sol config check`**: runs every start-up check on a configuration without listening -
   the rule set, the secrets and environment variables, the logging destination, the
   allowlist, the action parameters and the control plane - and prints each refusal with the
