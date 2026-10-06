@@ -32,6 +32,8 @@ for arg in "$@"; do
 	--sol-action=*) ACTION_ARG=${arg#--sol-action=} ;;
 	--sol-service=*) SERVICE_ARG=${arg#--sol-service=} ;;
 	--sol-run-dir=*) RUN_DIR_ARG=${arg#--sol-run-dir=} ;;
+	--sol-unit-name=*) SOL_UNIT_NAME=${arg#--sol-unit-name=} ;;
+	--sol-root=*) SOL_INSTALL_ROOT=${arg#--sol-root=} ;;
 	*) die "这个脚本不接受参数（$arg）。所有选择都在生成的配置文件和问答里。" ;;
 	esac
 done
@@ -144,7 +146,9 @@ escalate() { # escalate <install|uninstall>
 	install)
 		writable_target "$BINDIR" || needs=yes
 		writable_target "$SHAREDIR" || needs=yes
-		[ "$SERVICE_CHOSEN" = true ] && needs=yes
+		# SERVICE_WANTED 才是"问题的答案"；SERVICE_CHOSEN 要到 do_install 里才同步，
+		# 在这个时点读它永远还是 false（会算出"不需要 root"，或者给子进程传错答案）。
+		[ "$SERVICE_WANTED" = true ] && needs=yes
 		;;
 	esac
 	[ "$needs" = yes ] || return 0
@@ -160,10 +164,11 @@ escalate() { # escalate <install|uninstall>
 	say ""
 	say "这一步要写 $BINDIR 并注册 $SERVICE_KIND 服务，需要 root。"
 	say "我用 sudo 重新执行一遍自己：同一个目录、你刚才的答案带过去，不会再问一遍。"
-	if [ "$SERVICE_CHOSEN" = true ]; then svc=yes; else svc=no; fi
+	if [ "$SERVICE_WANTED" = true ]; then svc=yes; else svc=no; fi
 	# exec 会顶掉当前进程：先放锁（子进程会自己重新拿），否则父进程的 trap 永远不会跑。
 	rm -rf "$LOCK_DIR"
-	exec "$SUDO" "$self" "--sol-action=$action" "--sol-service=$svc" "--sol-run-dir=$RUN_DIR"
+	exec "$SUDO" "$self" "--sol-action=$action" "--sol-service=$svc" "--sol-run-dir=$RUN_DIR" \
+		"--sol-unit-name=$UNIT_NAME" "--sol-root=$ROOT"
 }
 
 # ───────────────────────── 小工具 ─────────────────────────
@@ -604,9 +609,13 @@ append_history() { # append_history <动作>
 
 # ───────────────────────── 执行：装/升级 ─────────────────────────
 
+# 所有路径都要用到的变量一律先有值：升权分支（root）不走"未安装"那几个赋值语句，
+# 少一个就是 set -u 当场炸死（而且只在有 root 的那条路上炸，很难撞见）。
 SERVICE_CHOSEN=false
+SERVICE_WANTED=false
 DEST_BIN=""
 NOOP=no
+del_configs=no
 
 # 现在这份配置对应的服务定义。**只有这一个渲染器**：写盘和"比有没有变"都用它，
 # 否则两个渲染器一漂移，重跑时就永远认为"变了"，每次都白重启一遍服务。
