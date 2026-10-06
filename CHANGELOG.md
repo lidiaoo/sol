@@ -108,6 +108,10 @@ tagged release.
   bump and not the prefix length. To cover a subnet and leave the rest alone, leave out the
   catch-all rule: an unmatched packet runs nothing. Configs that relied on the old silence are
   rejected at startup with `overlapping rule scopes with matching conditions`.
+- Fixed: `ambiguous rules` said which port was involved but not how to resolve it. The message
+  now names the differences the validation accepts - disjoint `src_cidrs`, a different port, a
+  different `secure_on` password, or a stricter `auth` requirement - and a test loads all four, so
+  a hint that stopped working would fail the build instead of sending an operator in circles.
 - Fixed: the `ErrNotRoot` message promised `or CAP_SETUID/CAP_SETGID`, which sol never accepted -
   the privilege-drop check is a plain `geteuid() == 0`, so a capability-only setup is refused.
   The message now says `exec user/group requires root`.

@@ -374,7 +374,11 @@ Resolve（伪代码）：
 - 块内 `match.interfaces` 不为空且不等于块名 -> `ErrInterfaceScopeConflict`
 - 合并后两条规则作用域相交、且其余匹配条件（ports/content/mac/src_cidrs）相同 -> `ErrRuleConflict`（要求显式去重，不做静默覆盖）
   - 判"相同"时 **`src_cidrs` 只要相交就算**，不要求集合一模一样：`10.0.0.0/8` 与 `10.1.0.0/16` 都命中 `10.1.2.3`，而两条规则的分数一样（§8 的 `src_cidr` 只加一个固定 +10，**不看前缀长度**），没有任何东西能决定谁赢。想给"某网段一个动作、其余不动"时不要写兜底规则（未匹配即无动作，本来就不需要兜底）；确实要给两段不同动作，就让 `src_cidrs` 互不相交（显式列举）。
-  - 顺带的限制（开放项）：前缀长度不是特异性信号。想做"10.1/16 关机、10/8 其余只记日志"这种更细的划分，现在只能靠不相交的网段列举，或分开端口；"最长前缀优先"没有实现（见 TODO 开放问题）。
+  - 顺带的限制（**已决定不实现"最长前缀优先"**）：想做"10.1/16 关机、10/8 其余只记日志"这种更细的划分，现在只能靠不相交的网段列举，或分开端口。
+    - 现状（真机验证）：嵌套条件——`src_cidrs: ["10.1.0.0/16"]` + `["10.0.0.0/8"]` 同端口，或 `content: {kind: prefix, value: "off"}` + `"offnow"` 同端口——**一律启动期拒绝**（`ErrAmbiguousRule`）；换成不相交网段 / 不同端口 / 不同 `secure_on` / 更严的 `auth` 四种写法之一都能加载（单测 `TestAmbiguityHintIsActionable` 把四条都跑了一遍）。
+    - 决定：**不加长度打分**。理由是打分本身：条目特异性是**各维度加权和**（content 100 / auth 50 / src 10 / mac 10 / port 1），把"前缀长度"塞进这个和会**跨维度串味**——一条不需要认证、只是网段前缀稍长的规则，会反超一条要求 HMAC 的规则（安全排序被长度顶掉）；而长度只在同一维度内才是有序的（嵌套网段/嵌套取值），跨维度（更窄的网段 vs 更窄的 MAC）本来就不存在"更具体"的全序。
+    - 因此口径统一为"**重叠必须显式化**"（与 §8/§17.9 的跨作用域规则同一条原则）：要区分就写四条显式差异之一，全部可读、启动期可验证。
+    - 顺手改进：`ErrAmbiguousRule` 的文案不再只报端口，而是点名这四条出路（真机 s25 14/14）：`ambiguous rules: equal specificity can match the same packet: ports [10221]: tell them apart explicitly: disjoint src_cidrs, a different port, a different secure_on password, or a stricter auth requirement`。
 - 内容长度超出读缓冲（`BufferSize`）-> `ErrContentTooLarge`
 - 端口号非法（<1 或 >65535）-> 沿用现有解析错误
 

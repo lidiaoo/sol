@@ -488,6 +488,14 @@ func (r *compiledRule) matches(ev Event, parsed ParsedPacket) bool {
 	return srcMatches(r.srcNets, ev.SrcIP)
 }
 
+// ambiguousHint names the ways two rules can be told apart without changing what either of them
+// means. The list is the one the validation below actually accepts - disjoint source filters, a
+// different port, a different SecureOn password, or a stricter auth requirement - so an operator
+// who follows it lands on a configuration that starts (§8, §17.9: the overlap has to be explicit
+// instead of being resolved silently by preferring one rule over the other).
+const ambiguousHint = "tell them apart explicitly: disjoint src_cidrs, a different port, " +
+	"a different secure_on password, or a stricter auth requirement"
+
 func conflict(a compiledRule, b compiledRule) error {
 	if err := sameScopeConflict(a, b); err != nil {
 		return err
@@ -514,10 +522,10 @@ func sameScopeConflict(a compiledRule, b compiledRule) error {
 	}
 
 	if a.content.key() == b.content.key() && samePorts(a.ports, b.ports) && sameSRC(a.srcNets, b.srcNets) {
-		return fmt.Errorf("%w: ports %v", ErrDuplicatePort, a.ports)
+		return fmt.Errorf("%w: ports %v: the two rules are identical, remove one", ErrDuplicatePort, a.ports)
 	}
 
-	return fmt.Errorf("%w: ports %v", ErrAmbiguousRule, a.ports)
+	return fmt.Errorf("%w: ports %v: %s", ErrAmbiguousRule, a.ports, ambiguousHint)
 }
 
 // crossScopeConflict rejects rules whose scopes overlap without being identical while every

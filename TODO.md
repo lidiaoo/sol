@@ -121,12 +121,13 @@
 - [x] 交叉链接补全：README.zh-CN -> README/设计/TODO/CHANGELOG
 - [x] README 补 `sol --version` 与构建身份说明（`/v1/status` 的 `version`/`revision`、`/metrics` 的 `sol_build_info`），中英文同步（bash 块逐字节一致）
 
-## 待确认 / 开放问题
+## 待确认 / 开放问题（逐条落定，决定 + 理由 + 证据）
 
-- [ ] 是否需要"多个 server 块"（当前设计为单 server）
-- [ ] 块级可覆盖字段范围：`dry_run`/`secure_on` 之外是否还要 `reserved_ports`、块级 `actions`？
+- [x] **不需要"多个 server 块"**：决定 = 单实例单策略。理由 = 策略/动作注册表/护栏/控制面都是进程级不变量，两个 server 块会让"哪一份接口枚举、哪一份保留端口集合、哪个注册表生效"变成不可判定；想要两套配置的正解是跑两个进程（各自 `--config`），`server.interfaces` 块已经覆盖"按网卡分规则"这一真实需求。见设计 §8 / §17.9。
+- [x] **块级可覆盖字段 = `dry_run` + `secure_on`**（就是已实现的两个，见设计 §?；`ifaceConfig` 只有这两个字段）：决定 = 不扩到 `reserved_ports` / 块级 `actions`。理由 = 这两个是**作用域天然相关**的（"只让某张网卡试运行"、"每张网卡一个 WOL 口令"），而保留端口是安全边界、actions 是注册表，都是进程级不变量；块级副本会让"这条规则受哪份集合约束"不可判定，还要新定义"块级动作与全局重名"的冲突语义。要扩先定冲突语义，当前不做。
 - [x] 内容 token 的整包 HMAC 认证（`security.packet_auth` + `match.auth: hmac`，§19.14；此前为明文）
-- [ ] 远端原始命令的默认 allowlist 策略（落地时是\"空 = 放行一切\"，即运维显式要什么给什么；是否改成\"空 = 拒绝一切、必须显式放行\"待定，见 §21.6 / §19.15）
-- [ ] 内容前缀 `ContentPrefix` 的 offset 是否需要支持超出内容区的绝对偏移
-- [ ] 审计日志落地形式（stdout / 文件 / syslog）
-- [ ] 热重载的原子性（重载失败是否回滚到旧配置）
+- [x] **裸 shell 空 allowlist = 放行一切**（保持现状，见 §21.6 / §19.15）：决定 = 不改语义。理由 = 开启通道（`allow_raw_shell: true` + 独立密钥 + 专用端口 + `src_cidrs`）本身就是那个显式决定，再要求"必须显式放行"等于第二道开关，反而制造"以为开了其实没开"的错觉；但**必须可观测**：启动告警已带 `allowlist_entries=0`（真机日志可证），README 也写明"空 = 每条命令都放行"。
+- [x] **`ContentPrefix` 不支持绝对偏移**：决定 = 不做。理由 = 内容区被定义为"魔法包之后那段"（102/108 字节起算），`prefix` = 内容区开头、`suffix` = 内容区结尾；绝对偏移会引入第二套坐标系，而且对 `suffix` 无意义。要匹配更深处的内容用 `suffix`（尾部对齐）即可；真有用例再谈。
+- [x] **"最长前缀优先"（CIDR 前缀长度 / 嵌套内容取值）**：决定 = **不实现，保持"重叠必须显式化"**。现状 = 嵌套条件（`10.1/16` + `10/8` 同端口；`prefix: off` + `prefix: offnow` 同端口）启动期一律 `ErrAmbiguousRule`；不相交网段 / 不同端口 / 不同 `secure_on` / 更严 `auth` 四种写法都能加载（单测 `TestAmbiguityHintIsActionable` 逐一验证）。理由 = 特异性是**各维度加权和**（content 100 / auth 50 / src 10 / mac 10 / port 1），把长度加进和里会跨维度串味（一条不需认证但前缀稍长的规则能反超要求 HMAC 的规则），而长度只在同一维度内有序，跨维度（更窄网段 vs 更窄 MAC）本无全序。**顺手改进**：`ErrAmbiguousRule` 文案点名四条出路（真机 s25 14/14）。
+- [x] **审计日志落地形式**：决定 = `logging.output` = `stderr`（默认，保持现状）/ `stdout` / 文件（`logging.file`），**不做 syslog**（Go 标准库 `log/slog` 没有 syslog handler，引第三方库越过本项目"除 yaml/cobra/testify 外只用标准库"的边界；需要 syslog 就用系统层的 journald/rsyslog 转发文件或 stderr）。落地见下方"P4"条目。
+- [x] **热重载原子性：不需要回滚，因为失败即不应用**：`Reload` 先 `rebind()` 绑全部新端口、全部成功才换状态（否则 `ErrReloadBind`），配置加载失败时 reloader 根本不会被调用——旧配置一直在线。真机证据 s10：坏配置 -> 400 且旧规则继续命中；**新端口被外部占用 -> 409 且规则集一字未动**（10061/10062 两个端口照旧触发）；释放端口后同一次 reload -> 200，新端口开始服务、离开集合的 10062 关闭。

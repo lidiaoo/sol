@@ -142,6 +142,82 @@ func TestNewRoutingPolicyRejectsRules(t *testing.T) {
 	})
 }
 
+// TestAmbiguityHintIsActionable checks both halves of the ambiguity contract: the message says how
+// to tell the two rules apart, and every option it names actually loads. A hint that did not work
+// would send an operator from one start-up error straight into the next one.
+func TestAmbiguityHintIsActionable(t *testing.T) {
+	t.Parallel()
+
+	_, err := wol.NewRoutingPolicy([]wol.Rule{
+		srcRule("10.1.0.0/16", wol.ActionShutdown),
+		srcRule("10.0.0.0/8", wol.ActionNoop),
+	}, testIfaces(), wol.PolicyOptions{})
+	require.ErrorIs(t, err, wol.ErrAmbiguousRule)
+
+	for _, option := range []string{
+		"disjoint src_cidrs",
+		"a different port",
+		"a different secure_on password",
+		"a stricter auth requirement",
+	} {
+		require.Contains(t, err.Error(), option)
+	}
+
+	for _, tc := range ambiguityFixes() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := wol.NewRoutingPolicy(tc.rules, testIfaces(), tc.opts)
+			require.NoError(t, err)
+		})
+	}
+
+	t.Run("identical rules point at the duplicate instead", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := wol.NewRoutingPolicy([]wol.Rule{plainRule(8, wol.ActionShutdown), plainRule(8, wol.ActionReboot)},
+			testIfaces(), wol.PolicyOptions{})
+		require.ErrorIs(t, err, wol.ErrDuplicatePort)
+		require.Contains(t, err.Error(), "remove one")
+	})
+}
+
+// ambiguityFixes builds one configuration per option the hint names, so the four documented ways
+// out are exercised rather than described.
+func ambiguityFixes() []struct {
+	name  string
+	rules []wol.Rule
+	opts  wol.PolicyOptions
+} {
+	narrow := srcRule("10.1.0.0/16", wol.ActionShutdown)
+	otherPort := srcRule("10.1.0.0/16", wol.ActionNoop)
+	otherPort.Match.Ports = []int{10020}
+
+	passwordA := srcRule("10.1.0.0/16", wol.ActionShutdown)
+	passwordA.Match.SecureOn = []byte("aaaaaa")
+	passwordB := srcRule("10.0.0.0/8", wol.ActionNoop)
+	passwordB.Match.SecureOn = []byte("bbbbbb")
+
+	signed := srcRule("10.1.0.0/16", wol.ActionShutdown)
+	signed.Match.Auth = wol.AuthHMAC
+
+	broad := srcRule("10.0.0.0/8", wol.ActionNoop)
+	disjoint := []wol.Rule{srcRule("10.1.0.0/16", wol.ActionShutdown), srcRule("10.2.0.0/16", wol.ActionNoop)}
+
+	table := []struct {
+		name  string
+		rules []wol.Rule
+		opts  wol.PolicyOptions
+	}{
+		{"disjoint source filters", disjoint, wol.PolicyOptions{}},
+		{"a different port", []wol.Rule{narrow, otherPort}, wol.PolicyOptions{}},
+		{"a different secure_on password", []wol.Rule{passwordA, passwordB}, wol.PolicyOptions{}},
+		{"a stricter auth requirement", []wol.Rule{signed, broad}, wol.PolicyOptions{PacketKey: []byte("packet-key")}},
+	}
+
+	return table
+}
+
 func TestNewRoutingPolicyRejectsScope(t *testing.T) {
 	t.Parallel()
 
