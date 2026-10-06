@@ -426,12 +426,12 @@ AUTO 列说的是**身份，不是当下可用性**：现在 down 的网卡仍�
 
 **Linux / macOS：**
 ```console
-curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 **Windows**（PowerShell；也可以直接双击随附的 `install.cmd`）：
 ```console
-irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 | iex
+irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。它只写一个

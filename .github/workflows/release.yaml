@@ -1,13 +1,39 @@
-name: go release
+name: release
 
+# 自己建产物，不再 `uses: bavix/.github/...`：这是 lidiaoo/sol 的 fork，
+# 上游那套复用工作流不保证给 darwin/windows 出二进制，也不会上传安装脚本。
 on:
   release:
     types: [created]
 
+permissions:
+  contents: write
+
 jobs:
-  build:
-    permissions:
-      contents: write
-    uses: bavix/.github/.github/workflows/go-release-binary.yml@0.5.0
-    with:
-      executable_compression: upx -v -9
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: build and upload the binaries
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # README 的一行安装指向 releases/latest/download/install.sh（及 install.ps1），
+      # 所以脚本本身也必须是 release 资产——以前从来没有上传过，那个地址一直是 404。
+      - name: attach the installer scripts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            scripts/install.sh scripts/install.ps1 scripts/install.cmd --clobber

@@ -467,12 +467,12 @@ touches anything.
 
 **Linux / macOS:**
 ```console
-curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 **Windows** (PowerShell, or double-click the shipped `install.cmd`):
 ```console
-irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 | iex
+irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 It uses the `sol` you already have - next to the script, in the current directory, or on `PATH` - and

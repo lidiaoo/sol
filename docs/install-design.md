@@ -1,4 +1,4 @@
-# SoL 安装 · 覆盖升级 · 卸载 · 状态查看设计草案
+﻿# SoL 安装 · 覆盖升级 · 卸载 · 状态查看设计草案
 
 状态：设计讨论定稿（待实现）
 范围：安装脚本（Linux / macOS / Windows）、安装台账与安装报告、状态查看子命令、覆盖安装与升级、卸载、包管理器清单、Hermes skill
@@ -28,6 +28,7 @@
 
 | 层 | 交付物 | 面向谁 |
 | --- | --- | --- |
+| 发布产物 | `.goreleaser.yml` + `.github/workflows/release.yaml`（linux/darwin/windows × amd64/arm64，版本注入 `internal/buildinfo.version`；并把 `install.sh`/`install.ps1`/`install.cmd` 作为 release 资产上传——README 的一行安装指向 `releases/latest/download/install.sh`，此前从没上传过，一直是 404）。**未跑过**：fork 不再用上游 `bavix/.github` 的复用工作流 | 用户 |
 | 仓库真资产 | `scripts/install.sh`（Linux/macOS，POSIX）、`scripts/install.ps1` + `scripts/install.cmd`（Windows：双击入口，内部按对的执行策略调 ps1）、README 一行安装、包管理器清单 | 用户 |
 | 装完要能回答的问题（现状 / 文件清单 / 预检） | 由安装脚本给，零参数 | 用户与脚本/CI |
 | Hermes skill | `sol-install`（决策树 + `references/{linux,macos,windows}.md`） | Agent |
@@ -206,6 +207,11 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 - **想看上次做了什么**：报告里印出 `install.log` 的路径，完整动作清单都在里面（不需要 `--verbose` 这种开关）。
 - **CI / 无人值守**：不给参数，用管道喂答案即可（`printf 'y\n' | bash install.sh`）。**检测到没有终端时只生成配置、不执行任何操作**——绝不猜"用户大概是想装"。
 - **"已安装但服务不在"这条路上必须留个出口**：台账里 `created_unit: false` 可能是"当时选了不装服务"，也可能是"上次没跑完"。只按台账走，用户就再也没机会说"我要服务"——所以单元不在时把那个问题**再问一次**（有 `SOL_INSTALL_ROOT` 或平台没有服务管理器时除外）。
+- **三平台各自的编码陷阱（都表现为"跑不通"，且都不报错）**：`install.ps1` 必须带 UTF-8 BOM——`install.cmd` 用的是系统自带 `powershell.exe`(5.1)，读无 BOM 的 `.ps1` 会按 ANSI/GBK 解释，满篇中文变乱码甚至解析失败；`install.cmd` 要**纯 ASCII**（cmd.exe 按控制台代码页读文件）；`install.sh` **绝不能**有 BOM（会砸掉 `#!`）。生成的 YAML/JSON 一律用"UTF-8 且不带 BOM"写（5.1 的 `-Encoding UTF8` 带 BOM）。
+- **脚本必须能读懂自己写出来的配置**：`install.ps1` 曾把 `args: [...]` 一行写成五行（数组字面量里的字符串拼接被 PowerShell 当成多个元素），于是它自己 `Die`"没有 run.args"——这就是"Windows 跑不通"的直接原因。凡是"写出去再读回来"的路径都要有断言钉住。
+- **端口解析要认两种写法**：`- match: { ports: [10010] }`（行内，示例与 README 都用它）与块写法。只认行首 `ports:` 时行内写法静默失效——低端口警告和防火墙规则全没了，表现就是"装完了收不到魔法包"。
+- **防火墙是帮手，不是目的**：没有 NetSecurity 模块的 Windows（Server Core）上 `Get-NetFirewallRule` 是"命令不存在"，`-ErrorAction SilentlyContinue` 挡不住，会把整个安装带走。一律 try/catch + 提醒。
+- **launchd 的日志目录必须先存在**：plist 里 `StandardOutPath`/`StandardErrorPath` 指向的目录不存在时任务直接起不来，所以写 plist 之前 `mkdir -p $PREFIX/var/log`。
 - **要 root 就先升权，再动手**（不是半路一条条 sudo：密码问到一半、失败还被 `|| true` 吞掉）。规则：
   - Linux / macOS：动手之前用 `sudo` **重跑一遍自己**，把"你已经答过的答案"带过去（`--sol-action` / `--sol-service` / `--sol-run-dir`，内部参数，用户不需要知道），所以**不会再问一遍**；同一个执行目录，配置照旧落在那里。管道执行（`curl | sh`）没有可重跑的文件 → 退化为逐条 sudo 并说明。
   - Windows：不是管理员就 `Start-Process -Verb RunAs`（**触发 UAC**）以管理员身份重跑自己，`-WorkingDirectory` 保持同一个执行目录，答案同样带过去。
@@ -371,7 +377,8 @@ schtasks /Query /TN sol /V /FO LIST
 
 ### 9.2 三平台的首次进入方式（都零参数）
 
-- **Linux / macOS**：`curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh | sh`（或下载后 `sh install.sh`）。
+- **Windows**：`irm <...>/install.ps1 -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`（或双击 release 里的 `install.cmd`）。**为什么不用 `irm … | iex`**：那样 `$PSCommandPath` 是空的，没有文件可以"以管理员身份重跑自己"，需要 UAC 的步骤必然失败。
+- **Linux / macOS**：`curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh -o install.sh && sh install.sh`。**为什么不直接管进 `sh`**：管道执行时 stdin 是脚本自己，提问读不到答案（脚本会去 `/dev/tty` 问，问不到就什么都不做），而且没有可重跑的文件、无法自己升权。
 - **macOS 额外一步（脚本自己处理）**：下载来的二进制带 quarantine 标记，脚本执行 `xattr -d com.apple.quarantine`，否则首次运行会被 Gatekeeper 弹"无法验证开发者"。
 - **Windows**：`irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 | iex`；或双击随附的 `install.cmd`（它内部按正确的执行策略调用 ps1，用户不需要记 `-ExecutionPolicy`）。
 - 三平台一致的部分：**零参数**、生成的配置形态相同（只有 `run.args`）、同样两次问答、默认不需要特权（除非要装服务，或用 <1024 / 保留端口）。

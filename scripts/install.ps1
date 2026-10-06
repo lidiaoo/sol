@@ -1,4 +1,4 @@
-# sol 安装脚本（Windows）—— 零参数。
+﻿# sol 安装脚本（Windows）—— 零参数。
 #
 # 与 scripts/install.sh 是同一份契约（docs/install-design.md）：认出现状 → 生成/读取"怎么跑"的
 # 配置（执行目录下的 install.yaml，里面只有 run.args；同目录再生成一份最小 sol.yaml）→ 展示 → 问一句 → 才动手。
@@ -24,6 +24,17 @@ function Say($msg) { Write-Host $msg }
 function Head2($msg) { Write-Host ""; Write-Host $msg -ForegroundColor White }
 function Warn2($msg) { Write-Warning $msg }
 function Die($msg) { Write-Error $msg; exit 1 }
+# .NET 里明确"UTF-8 且不带 BOM"。PowerShell 5.1 的 -Encoding UTF8 是带 BOM 的：
+# 生成的 YAML/JSON 会被塞一个 BOM，而 .ps1 自身若没 BOM，5.1 又会按 ANSI/GBK 读它（中文变乱码、
+# 甚至解析失败）。读写两头都用这里。
+function Write-Utf8NoBom([string]$Path, $Lines) {
+	$enc = New-Object System.Text.UTF8Encoding($false)
+	[IO.File]::WriteAllLines($Path, [string[]]$Lines, $enc)
+}
+function Add-Utf8NoBom([string]$Path, [string]$Text) {
+	$enc = New-Object System.Text.UTF8Encoding($false)
+	[IO.File]::AppendAllText($Path, $Text, $enc)
+}
 
 # ───────────────────────── 平台与路径 ─────────────────────────
 
@@ -37,7 +48,25 @@ $History = Join-Path $InstallDir 'install.log'
 
 # 生成的文件就放在**你执行脚本的那个目录**：.\install.yaml 与 .\sol.yaml。
 # 服务定义里用绝对路径，所以不踩"服务有自己的家目录"那个坑。
-$RunDir = (Get-Location).Path
+# 内部参数（UAC 升权重跑时把答案带过来；用户不需要、也不应该记这些）。
+# 为什么不用环境变量：Start-Process -Verb RunAs 经过 shell 提权，环境不保证原样继承。
+# 脚本是文件还是喂进来的（`irm … | iex`）：后者没有 $PSCommandPath，
+# 也就没法用 UAC 重跑自己——那种情况下要明说，而不是装到一半失败。
+$Piped = [string]::IsNullOrEmpty($PSCommandPath)
+
+$ActionArg = ''
+$ServiceArg = ''
+$RunDirArg = ''
+foreach ($a in $args) {
+	if ($a -like '--sol-action=*') { $ActionArg = $a -replace '^--sol-action=', '' }
+	elseif ($a -like '--sol-service=*') { $ServiceArg = $a -replace '^--sol-service=', '' }
+	elseif ($a -like '--sol-run-dir=*') { $RunDirArg = $a -replace '^--sol-run-dir=', '' }
+	elseif ($a -like '--sol-unit-name=*') { $env:SOL_UNIT_NAME = $a -replace '^--sol-unit-name=', '' }
+	elseif ($a -like '--sol-root=*') { $env:SOL_INSTALL_ROOT = $a -replace '^--sol-root=', '' }
+	else { Die "这个脚本不接受参数（$a）。所有选择都在生成的配置文件和问答里。" }
+}
+
+if ($RunDirArg) { $RunDir = $RunDirArg } else { $RunDir = (Get-Location).Path }
 $UserConfig = Join-Path $RunDir 'install.yaml'
 $DesktopConfig = Join-Path $RunDir 'sol.yaml'
 
@@ -49,7 +78,13 @@ try {
 	Die "在这个目录里写不了文件：$UserConfig 与 $DesktopConfig 要生成在这儿。换一个你有写权限的目录再跑一次。"
 }
 
-$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$IsAdmin = $false
+try {
+	$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+} catch {
+	# 极少数环境里这个探测本身会抛（受限容器、非 Windows 的 pwsh）。别让它把整个脚本带走。
+	$IsAdmin = $false
+}
 
 function Has-Sha256($path) {
 	if (-not (Test-Path $path)) { return '' }
@@ -100,12 +135,15 @@ $DefaultArgs = @('listen', '--config', $DesktopConfig)
 function Write-UserConfig {
 	$dir = Split-Path -Parent $UserConfig
 	if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+	# 先在数组外拼好这一行：数组字面量里的字符串拼接会被 PowerShell 拆成多个元素，
+	# 结果 install.yaml 被写成好几行（`args: []` 一行、参数一行、`]` 一行），脚本自己都读不懂。
+	$argsLine = '  args: [' + ($DefaultArgs -join ', ') + ']'
 	$lines = @(
 		'# 由 install.ps1 生成：sol 怎么跑。改这里，然后重新运行一遍脚本。',
 		'run:',
-		'  args: [' + ($DefaultArgs -join ', ') + ']'
+		$argsLine
 	)
-	Set-Content -Path $UserConfig -Value $lines -Encoding UTF8
+	Write-Utf8NoBom $UserConfig $lines
 }
 
 function Read-Args {
@@ -136,7 +174,7 @@ function Ensure-RuntimeConfig {
 		'    action: noop'
 	)
 	if (-not (Test-Path $InstallDir)) { } # 配置跟执行目录走，不动 ProgramData
-	Set-Content -Path $RunConfig -Value $lines -Encoding UTF8
+	Write-Utf8NoBom $RunConfig $lines
 	$script:RuntimeConfigGenerated = $true
 }
 
@@ -167,10 +205,13 @@ for ($i = 0; $i -lt $ArgsList.Count - 1; $i++) {
 function Get-ThresholdPorts {
 	$ports = @()
 	if (-not (Test-Path $RunConfig)) { return $ports }
+	# 行内（`- match: { ports: [10010] }`）和块写法都要认：只认行首会让行内写法静默失效，
+	# 于是防火墙规则没加、包被挡在外面——"装完了但收不到魔法包"就是这个原因。
 	foreach ($line in (Get-Content $RunConfig)) {
-		if ($line -match '^\s*ports:\s*\[([0-9,\s]*)\]') {
-			foreach ($n in ($Matches[1] -split ',')) { if ($n.Trim()) { $ports += [int]$n.Trim() } }
+		foreach ($m in [regex]::Matches($line, 'ports:\s*\[([0-9,\s]*)\]')) {
+			foreach ($n in ($m.Groups[1].Value -split ',')) { if ($n.Trim()) { $ports += [int]$n.Trim() } }
 		}
+		if ($line -match '^\s*-\s*(\d+)\s*$') { $ports += [int]$Matches[1] }
 	}
 	@($ports)
 }
@@ -206,7 +247,8 @@ function Show-State {
 		if ($script:RuntimeConfigGenerated) { Say "运行配置    $RunConfig（刚生成的最小配置：一条 noop 规则，按需改）" }
 		else { Say "运行配置    $RunConfig（sol 会读它）" }
 	} else { Say "运行配置    还不存在：$RunConfig" }
-	if (-not $IsAdmin) { Say '权限        当前不是管理员：装服务 / 改机器 PATH 那几步会失败（脚本会告诉你）' }
+	if ($env:SOL_INSTALL_ROOT) { Say "权限        普通用户 + SOL_INSTALL_ROOT=$env:SOL_INSTALL_ROOT（自己的地盘，不会升权）" }
+	elseif (-not $IsAdmin) { Say '权限        当前不是管理员：轮到需要权限的步骤时，会用 UAC 以管理员身份重跑一遍自己（不会再问一遍）' }
 }
 
 function Show-Config {
@@ -276,13 +318,13 @@ function Write-Ledger($incomplete, $prevVersion, $prevSha) {
 		previous          = [ordered]@{ installed_version = $prevVersion; sha256 = $prevSha }
 		incomplete        = $incomplete
 	}
-	$obj | ConvertTo-Json -Depth 5 | Set-Content -Path $Ledger -Encoding UTF8
+	Write-Utf8NoBom $Ledger ($obj | ConvertTo-Json -Depth 5)
 }
 
 function Append-History($what) {
 	$block = @("== $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')) $what ==") + $script:Actions
 	if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
-	Add-Content -Path $History -Value $block -Encoding UTF8
+	Add-Utf8NoBom $History $block
 	$script:Actions = @()
 }
 
@@ -295,8 +337,17 @@ function Invoke-Precheck {
 		return $false
 	}
 	$errFile = [System.IO.Path]::GetTempFileName()
+	# -WindowStyle 只在 Windows 上支持（受限环境/非 Windows 的 pwsh 会直接抛），
+	# 而 Start-Process 本身也可能被拦（杀软、SmartScreen）。这步不该把整个安装带走。
+	$spArgs = @{
+		FilePath = $LocalBin
+		ArgumentList = ($ArgsList + '--dry-run')
+		PassThru = $true
+		RedirectStandardError = $errFile
+	}
+	if ($IsWindows) { $spArgs['WindowStyle'] = 'Hidden' }
 	try {
-		$p = Start-Process -FilePath $LocalBin -ArgumentList ($ArgsList + '--dry-run') -PassThru -RedirectStandardError $errFile -WindowStyle Hidden
+		$p = Start-Process @spArgs
 		Start-Sleep -Seconds 3
 		if ($p.HasExited) {
 			$err = (Get-Content -Path $errFile -ErrorAction SilentlyContinue | Select-Object -First 3) -join "`n"
@@ -307,12 +358,55 @@ function Invoke-Precheck {
 		Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 		Say '预检        通过（sol 用这份配置起来了 3 秒，匹配了也不会真做事：listen 是 dry-run）'
 		return $true
+	} catch {
+		Warn2 "预检没能起起来 sol（$_）。没预检通过就不动手，所以此次什么都没改。"
+		return $false
 	} finally {
 		Remove-Item $errFile -ErrorAction SilentlyContinue
 	}
 }
 
 $script:ServiceChosen = $false
+
+# ───────────────────────── 升权（UAC）─────────────────────────
+
+# 与 install.sh 同一套规矩：需要管理员的事，在动手之前一次性升权，答案用参数带过去，
+# 不再问第二遍；SOL_INSTALL_ROOT（自选的根）下永不升权；升权失败就明确报错，不装到一半。
+function Escalate-IfNeeded([string]$action) {
+	if ($IsAdmin) { return }
+	if ($env:SOL_INSTALL_ELEVATED -eq '1') { return }   # 已经升过一次还是不行：别再套娃
+	if ($env:SOL_INSTALL_ROOT) { return }               # 自选的根：自己的地盘
+	$needs = $false
+	if ($action -eq 'uninstall') { $needs = $true }
+	else {
+		if ($script:ServiceChosen) { $needs = $true }
+		if (-not (Test-Path $InstallDir)) { $needs = $true }
+	}
+	if (-not $needs) { return }
+
+	Say ''
+	Say '这一步要写 ProgramData、注册计划任务、改机器 PATH，需要管理员。'
+	Say '我用 UAC 以管理员身份重新执行一遍自己：同一个目录、你刚才的答案带过去，不会再问一遍。'
+
+	if ($Piped) {
+		Die "这一步需要管理员，但脚本是管道执行（irm … | iex）的：没有文件可以重新以管理员身份运行。请先存成文件再跑：`n  irm <install.ps1 的地址> -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`n  或者直接右键 install.cmd 选“以管理员身份运行”。"
+	}
+
+	$hostExe = (Get-Process -Id $PID).Path
+	if (-not $hostExe) { $hostExe = Join-Path $PSHOME 'powershell.exe' }
+	$svc = if ($script:ServiceChosen) { 'yes' } else { 'no' }
+	$argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
+		"--sol-action=$action", "--sol-service=$svc", "--sol-run-dir=$RunDir", "--sol-unit-name=$TaskName")
+	if ($env:SOL_INSTALL_ROOT) { $argList += "--sol-root=$env:SOL_INSTALL_ROOT" }
+
+	$env:SOL_INSTALL_ELEVATED = '1'
+	try {
+		$p = Start-Process -FilePath $hostExe -Verb RunAs -PassThru -Wait -WorkingDirectory $RunDir -ArgumentList $argList
+		exit $p.ExitCode
+	} catch {
+		Die "这一步需要管理员权限，但 UAC 提权没成功（被拒绝或不可用）。请右键 install.cmd 选“以管理员身份运行”，或在管理员 PowerShell 里再跑一次。原因：$_"
+	}
+}
 
 function Invoke-Install {
 	if (-not $LocalBin) { Die '没有可用的 sol.exe：把它放在脚本旁边或 PATH 里，再运行一次' }
@@ -375,13 +469,17 @@ function Invoke-Install {
 	if ($script:ServiceChosen -and (Test-Path $RunConfig)) {
 		$hasFileLog = (Get-Content $RunConfig) | Where-Object { $_ -match 'output:\s*file' }
 		if (-not $hasFileLog) {
-			Warn2 "计划任务不收集 stdout：$RunConfig 里建议写 logging: { output: file, file: C:\ProgramData\sol\sol.log }，否则审计记录无处可去。"
+			Warn2 "计划任务不收集 stdout：$RunConfig 里建议写 logging: { output: file, file: $($InstallDir)\sol.log }，否则审计记录无处可去。"
 		}
 	}
 
-	# 防火墙（按运行配置里的端口；读不到就不猜）
+	# 防火墙（按运行配置里的端口；读不到就不猜）。缺 NetSecurity 模块（Server Core 之类）或任何
+	# 失败都只提醒：防火墙是帮手，不是目的，绝不能把整个安装带走。
+	try {
 	$ports = Get-ThresholdPorts
-	if ($ports.Count -gt 0) {
+	if (-not (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue)) {
+		Warn2 '这台机器上没有 NetSecurity 模块，没加防火墙规则。要放行：New-NetFirewallRule -DisplayName "sol (WoL)" -Direction Inbound -Protocol UDP -LocalPort <端口> -Action Allow'
+	} elseif ($ports.Count -gt 0) {
 		$existing = Get-NetFirewallRule -DisplayName 'sol (WoL)' -ErrorAction SilentlyContinue
 		if (-not $existing) {
 			try {
@@ -392,6 +490,7 @@ function Invoke-Install {
 	} else {
 		Warn2 "读不到 $RunConfig 里的端口，没加防火墙规则。要放行：New-NetFirewallRule -DisplayName 'sol (WoL)' -Direction Inbound -Protocol UDP -LocalPort <端口> -Action Allow"
 	}
+	} catch { Warn2 "防火墙那一步失败（不致命，但魔法包可能进不来）：$_" }
 
 	Write-Ledger $false $LedgerJson.installed_version $LedgerJson.sha256
 	Act 'user' '更新安装台账（incomplete=false）' ''
@@ -414,7 +513,8 @@ function Invoke-Uninstall {
 	}
 	schtasks /Delete /TN $TaskName /F 2>$null | Out-Null
 	Act 'admin' '删除计划任务' "schtasks /Delete /TN $TaskName /F"
-	$rule = Get-NetFirewallRule -DisplayName 'sol (WoL)' -ErrorAction SilentlyContinue
+	$rule = $null
+	try { $rule = Get-NetFirewallRule -DisplayName 'sol (WoL)' -ErrorAction SilentlyContinue } catch { }
 	if ($rule) {
 		Remove-NetFirewallRule -DisplayName 'sol (WoL)' -ErrorAction SilentlyContinue
 		Act 'admin' '删防火墙规则' "Remove-NetFirewallRule -DisplayName 'sol (WoL)'"
@@ -486,6 +586,23 @@ function Show-Report($what) {
 
 # ───────────────────────── 主流程 ─────────────────────────
 
+# 已经被 UAC 升权重跑（带答案进来的）：不重复展示、也不再问，直接执行。
+$ElevatedAction = $ActionArg
+if (-not $ElevatedAction) { $ElevatedAction = $env:SOL_INSTALL_ACTION }
+if ($ElevatedAction) {
+	$env:SOL_INSTALL_ELEVATED = '1'
+	$svc = $ServiceArg
+	if (-not $svc) { $svc = $env:SOL_INSTALL_SERVICE }
+	$script:ServiceChosen = ($svc -eq 'yes')
+	Say "（已用管理员权限重跑：$ElevatedAction）"
+	switch ($ElevatedAction) {
+		'install' { Invoke-Install; if ($script:Noop) { Say '（什么都没改。）' } else { Show-Report 'install' } }
+		'uninstall' { Invoke-Uninstall; Show-Report 'uninstall' }
+		default { Die "未知的 SOL_INSTALL_ACTION：$ElevatedAction" }
+	}
+	exit 0
+}
+
 Ensure-RuntimeConfig
 
 Show-State
@@ -497,7 +614,7 @@ if ($LedgerExists) {
 	$choice = Ask-Choice "检测到已安装 $($LedgerJson.installed_version)（计划任务 $(Task-State)）。
 请选择：[回车 = 按配置应用 / u = 卸载 / r = 重新生成配置 / n = 退出]"
 	switch ($choice) {
-		'u' { Invoke-Uninstall; Show-Report 'uninstall' }
+		'u' { Escalate-IfNeeded 'uninstall'; Invoke-Uninstall; Show-Report 'uninstall' }
 		'r' {
 			Remove-Item -Path $UserConfig -Force -ErrorAction SilentlyContinue
 			Write-UserConfig
@@ -506,6 +623,12 @@ if ($LedgerExists) {
 		'n' { Show-Report 'none' }
 		default {
 			$script:ServiceChosen = ($LedgerJson.service.created_unit -eq $true)
+			# 台账说没建过任务，而任务也确实不在（可能上次没跑完）：再问一次，
+			# 否则"我想装服务"在这条路上永远没机会说出口。
+			if (-not $script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT -and (Task-State) -ne 'installed') {
+				$script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
+			}
+			Escalate-IfNeeded 'install'
 			Invoke-Install
 			if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 r 重新生成配置，或先卸载。）' }
 			else { Show-Report 'install' }
@@ -523,6 +646,7 @@ if ($script:NoAnswer) {
 $script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
 if (-not (Ask-Yes '执行吗？' 'y')) { Show-Report 'none'; exit 0 }
 
+Escalate-IfNeeded 'install'
 Invoke-Install
 if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 r 重新生成配置，或先卸载。）' }
 else { Show-Report 'install' }

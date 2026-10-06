@@ -1,0 +1,33 @@
+version: 2
+
+# 三平台六架构：这是 fork（github.com/lidiaoo/sol），不再依赖上游 org 的复用工作流，
+# 免得 releases 里没有 darwin/windows 产物——那是"装完跑不起来"最直接的原因。
+builds:
+  - id: sol
+    main: .
+    binary: sol
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/lidiaoo/sol/internal/buildinfo.version={{ .Version }}
+
+archives:
+  - id: sol
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github

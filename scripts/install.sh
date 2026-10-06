@@ -406,10 +406,19 @@ YAML
 	RUNTIME_CONFIG_GENERATED=yes
 }
 
+# 从运行配置里取出端口。两种写法都要认：
+#   - match: { ports: [10010] }     （行内，示例与 README 用的就是这种）
+#   ports:                          （块写法）
+#     - 10
+# 只认行首 `ports:` 会让行内写法静默失效——低端口警告和防火墙规则就都没了。
+all_ports() {
+	[ -f "$RUN_CONFIG" ] || return 0
+	sed -n 's/.*ports:[[:space:]]*\[\([0-9, ]*\)\].*/\1/p; s/^[[:space:]]*-[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$RUN_CONFIG" |
+		tr ',' '\n' | tr -s ' \n' '\n' | grep -v '^$' | sort -u
+}
+
 ports_below_1024() {
-	[ -f "$RUN_CONFIG" ] || return 1
-	nums=$(sed -n 's/^[[:space:]]*ports:[[:space:]]*\[\([0-9, ]*\)\].*/\1/p' "$RUN_CONFIG" | tr ',' ' ')
-	for n in $nums; do
+	for n in $(all_ports); do
 		[ "$n" -lt 1024 ] 2>/dev/null && return 0
 	done
 	return 1
@@ -484,10 +493,27 @@ show_config() {
 # 问答从 stdin 读：终端里跑就是键盘，`printf 'y\n' | sh install.sh` 就是那行答案，
 # `curl | sh` 时 stdin 是脚本本身、读到的不是 y，于是什么都不会执行——三个场景都安全。
 READ_EOF=no
+# 脚本是文件还是喂进来的（curl | sh）：$0 是 sh/dash 而不是路径，就说明没有文件可重跑。
+PIPED=yes
+[ -f "$0" ] && PIPED=no   # `sh install.sh` 时 $0 可能只是 "install.sh"，所以看"是不是文件"，不看斜杠
+PIPED_HINT=no
 
 read_answer() { # read_answer <提示>：提示一律写 stderr，答案才走 stdout。
 	printf '%s ' "$1" >&2
-	if ! read -r ans; then
+	if [ "$PIPED" = yes ] && [ ! -t 0 ]; then
+		# `curl … | sh`：stdin 里是脚本本身，读它只会读到源码，永远读不到你。
+		# 去 /dev/tty 问。问不到（真没有终端）就不猜——绝不替你按回车。
+		if [ -r /dev/tty ] && read -r ans </dev/tty 2>/dev/null; then
+			printf '\n' >&2
+		else
+			READ_EOF=yes
+			ans=""
+			if [ "$PIPED_HINT" = no ]; then
+				printf '  ⚠ 管道执行（curl | sh）时问不到你。先把脚本存成文件再跑：\n    curl -fsSL <install.sh 的地址> -o install.sh && sh install.sh\n' >&2
+				PIPED_HINT=yes
+			fi
+		fi
+	elif ! read -r ans; then
 		READ_EOF=yes
 		ans=""
 	fi
@@ -647,6 +673,8 @@ render_unit() {
 			printf '  </array>\n'
 			printf '  <key>RunAtLoad</key><true/>\n'
 			printf '  <key>KeepAlive</key><true/>\n'
+			# launchd 要日志文件的目录先存在，否则任务起不来（这是 macOS 上最容易踩的一脚）。
+			printf '  <key>StandardOutPath</key><string>%s/var/log/sol.log</string>\n' "$PREFIX"
 			printf '  <key>StandardErrorPath</key><string>%s/var/log/sol.log</string>\n' "$PREFIX"
 			printf '</dict>\n</plist>\n'
 		}
@@ -788,6 +816,11 @@ write_service() {
 	case "$SERVICE_KIND" in
 	systemd | launchd)
 		mkdir_root "$(dirname "$UNIT_PATH")"
+		if [ "$SERVICE_KIND" = launchd ]; then
+			# launchd 在启动任务之前要求日志文件所在目录已存在，否则任务直接起不来。
+			mkdir_root "$PREFIX/var/log"
+			act root "建日志目录（launchd 需要它存在）" "sudo mkdir -p $PREFIX/var/log"
+		fi
 		unit_tmp=$(mktemp)
 		render_unit >"$unit_tmp"
 		put_root "$unit_tmp" "$UNIT_PATH" 0644
@@ -901,7 +934,7 @@ report() { # report <install|uninstall|none>
 		say ""
 		say "接下来"
 		if [ -n "$ROOT" ]; then
-			say "  （SOL_INSTALL_ROOT 下没注册服务，本机 systemctl 里找不到它）"
+			say "  （SOL_INSTALL_ROOT 下不注册服务：单元文件是 $UNIT_PATH，本机服务管理器里找不到它）"
 		else
 			case "$SERVICE_KIND" in
 			systemd) say "  systemctl status $UNIT_NAME" ;;
