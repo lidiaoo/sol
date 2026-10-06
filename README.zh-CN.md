@@ -470,7 +470,7 @@ irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile
 上它用 `sudo` **重跑一遍自己**，Windows 上弹 **UAC** 以管理员身份重跑，并把你刚才的答案带过去——不会
 再问第二遍。你要是拒绝了，它就停下来说明原因，而不是装到一半。
 
-**重跑脚本**就是看现状、改 sol 的跑法（改文件再跑一遍）、或卸载（答 `u`，删配置前还会再问一次）。
+**重跑脚本**就是看现状、改 sol 的跑法（改文件再跑一遍）、或卸载（选 `2`；它会先把还在跑的 sol 停掉，删配置前还会再问一次）。
 它做的每一件事都追加写进 `install.log`（带等价命令），和台账 `install.json` 放在一起。
 
 东西落在哪：二进制 `/usr/local/bin/sol`（Windows `C:\ProgramData\sol\sol.exe`），台账与历史

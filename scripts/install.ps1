@@ -100,6 +100,21 @@ try {
 	$IsAdmin = $false
 }
 
+# Windows 上正在运行的 exe 覆盖不了、也删不掉；进程刚被杀掉时文件锁还要一小会儿才松
+# （报错是 "Text file busy" 或 access denied）。这类事就重试，而不是赌一次就成功。
+function Invoke-WithRetry($what, $scriptBlock, $tries = 10, $delayMs = 500) {
+	for ($i = 0; $i -lt $tries; $i++) {
+		try {
+			& $scriptBlock
+			return $true
+		} catch {
+			if ($i -eq ($tries - 1)) { Warn2 "$what 失败：$_"; return $false }
+			Start-Sleep -Milliseconds $delayMs
+		}
+	}
+	return $false
+}
+
 function Has-Sha256($path) {
 	if (-not (Test-Path $path)) { return '' }
 	(Get-FileHash -Algorithm SHA256 -Path $path).Hash.ToLower()
@@ -151,6 +166,56 @@ function Invoke-Native([string]$Exe, [string[]]$Argv) {
 	} finally {
 		$ErrorActionPreference = $old
 	}
+}
+
+# 我们自己那份 sol.exe 现在有几个进程在跑。只认可执行文件路径就是它的：名字叫 sol.exe 的
+# 别人的进程与它无关（卸载时乱杀同名进程是另一种事故）。
+function Get-RunningInstances($path) {
+	$out = @()
+	if (-not $path) { return $out }
+	foreach ($p in (Get-Process -ErrorAction SilentlyContinue)) {
+		$exe = ''
+		try { $exe = $p.Path } catch { continue }
+		if ($exe -and ($exe -ieq $path)) { $out += $p }
+	}
+	@($out)
+}
+
+# 为什么停：① 卸载要删这个 exe，进程活着删不掉（Windows 的文件锁）；② 更要紧的是它一直占着
+# UDP 端口，下一次安装的预检绑不上，看起来就是"端口占用"。
+function Stop-RunningInstances($path, $why) {
+	$procs = @(Get-RunningInstances $path)
+	if ($procs.Count -eq 0) { return }
+	$ids = @($procs | ForEach-Object { $_.Id })
+	Say "  先停掉还在跑的那份（$why）：pid $($ids -join ',')"
+	foreach ($p in $procs) { try { $p.Kill() } catch { } }
+	for ($i = 0; $i -lt 12; $i++) {
+		Start-Sleep -Milliseconds 250
+		if (@(Get-RunningInstances $path).Count -eq 0) { break }
+	}
+	$left = @(Get-RunningInstances $path)
+	if ($left.Count -gt 0) {
+		foreach ($p in $left) { try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { } }
+		Act 'admin' "强杀没退出的 sol.exe（pid $($left.Id -join ',')）" "Stop-Process -Id $($left.Id -join ',') -Force"
+	} else {
+		Act 'admin' "停掉还在跑的 sol.exe（pid $($ids -join ',')）" "Stop-Process -Id $($ids -join ',') -Force"
+	}
+	Start-Sleep -Milliseconds 500
+}
+
+# 预检失败时把刚才停掉的任务按原样起回来（任务定义/配置/二进制都还没动过）。
+# SOL_INSTALL_ROOT 下不碰本机计划任务（那是别人的地盘）。
+function Restore-SolTask {
+	if ($env:SOL_INSTALL_ROOT) { return }
+	if ((Task-State) -ne 'installed') { return }
+	$r = Invoke-Native 'schtasks' @('/Run', '/TN', $TaskName)
+	if ($r.Code -eq 0) { Act 'admin' '把刚才停掉的任务起回来' "schtasks /Run /TN $TaskName" }
+}
+
+# v0.0.0-…（去掉 "sol version" 前缀与后面的 sha 括注）：给用户看的版本，不夹带内部串。
+function Version-Tag($path) {
+	if (-not $path) { return '' }
+	((Binary-Version $path) -replace '^.*version ', '') -replace ' .*$', ''
 }
 
 function Task-State {
@@ -299,22 +364,27 @@ function Get-ThresholdPorts {
 # ───────────────────────── 现状展示 ─────────────────────────
 
 function Show-State {
-	Head2 '== 现状 =='
+	Head2 '[现状]'
 	if ($LocalBin) {
-		Say ("二进制      {0}（{1}，sha256 {2}…）" -f $LocalBin, (Binary-Version $LocalBin), (Has-Sha256 $LocalBin).Substring(0, [Math]::Min(12, (Has-Sha256 $LocalBin).Length)))
+		$shortSha = (Has-Sha256 $LocalBin).Substring(0, [Math]::Min(12, (Has-Sha256 $LocalBin).Length))
+		Say "  二进制      $LocalBin"
+		Say "  版本        $(Version-Tag $LocalBin)（sha256 $shortSha…）"
 	} else {
-		Say '二进制      没有找到可用的 sol.exe：脚本旁边、当前目录、PATH 里都没有'
+		Say '  二进制      没有找到可用的 sol.exe：脚本旁边、当前目录、PATH 里都没有'
 	}
 	if ($PathSols.Count -gt 0) {
-		Say 'PATH 上的 sol.exe：'
+		Say '  PATH 上的 sol.exe'
 		foreach ($p in $PathSols) {
-			if ($p -eq $LocalBin) { Say "  $p  ← 生效" } else { Say "  $p" }
+			if ($p -eq $LocalBin) { Say "    $p  ← 生效" } else { Say "    $p" }
 		}
 	}
 	if ($LedgerExists) {
-		Say "已安装      $($LedgerJson.installed_version)（由安装脚本安装，$Ledger）"
+		$instTag = if ($LedgerJson.installed_version) { $LedgerJson.installed_version } else { '版本未知' }
+		if ($LedgerJson.incomplete -eq $true) { Say "  已安装      $instTag（上次没装完——再跑一次会补上）" }
+		else { Say "  已安装      $instTag（由安装脚本安装）" }
+		Say "  台账        $Ledger"
 	} else {
-		Say '已安装      无台账（从没被这个脚本装过；下面按你已有的二进制处理）'
+		Say '  已安装      无台账（从没被这个脚本装过；下面按你已有的二进制处理）'
 		if ($env:SystemRoot -and (Test-Path (Join-Path $env:SystemRoot "System32\Tasks\$TaskName"))) {
 			Warn2 "有计划任务但没有台账（$TaskName）：不是我装的，我不动它。
       要手工清掉：
@@ -322,22 +392,25 @@ function Show-State {
 		}
 	}
 	$st = Task-State
-	if ($st -eq 'installed') { Say "服务        计划任务 $TaskName 已注册" } else { Say "服务        没有（计划任务 $TaskName 不存在）" }
+	if ($st -eq 'installed') { Say "  服务        计划任务 $TaskName 已注册" } else { Say "  服务        没有（计划任务 $TaskName 不存在）" }
+	$instBin = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
+	$instN = @(Get-RunningInstances $instBin).Count
+	if ($instN -gt 0) { Say "  进程        有 $instN 个在跑：$instBin（要用到端口时会先停掉它）" } else { Say '  进程        没有在跑' }
 	if (Test-Path $RunConfig) {
-		if ($script:RuntimeConfigGenerated) { Say "运行配置    $RunConfig$(if ($script:RuntimeConfigCopied) { '（从执行目录拷到安装目录的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' })" }
-		else { Say "运行配置    $RunConfig（sol 会读它）" }
-	} else { Say "运行配置    还不存在：$RunConfig" }
-	if ($env:SOL_INSTALL_ROOT) { Say "权限        普通用户 + SOL_INSTALL_ROOT=$env:SOL_INSTALL_ROOT（自己的地盘，不会升权）" }
-	elseif (-not $IsAdmin) { Say '权限        当前不是管理员：轮到需要权限的步骤时，会用 UAC 以管理员身份重跑一遍自己（不会再问一遍）' }
+		if ($script:RuntimeConfigGenerated) { Say "  运行配置    $RunConfig$(if ($script:RuntimeConfigCopied) { '（从执行目录拷到安装目录的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' })" }
+		else { Say "  运行配置    $RunConfig（sol 会读它）" }
+	} else { Say "  运行配置    还不存在：$RunConfig" }
+	if ($env:SOL_INSTALL_ROOT) { Say "  权限        普通用户 + SOL_INSTALL_ROOT=$env:SOL_INSTALL_ROOT（自己的地盘，不会升权）" }
+	elseif (-not $IsAdmin) { Say '  权限        当前不是管理员：轮到需要权限的步骤时，会用 UAC 以管理员身份重跑一遍自己（不会再问一遍）' }
 }
 
 function Show-Config {
-	Head2 '== 安装配置 =='
-	Say $UserConfig
+	Head2 '[安装配置]'
+	Say "  $UserConfig"
 	Say ''
-	foreach ($l in (Get-Content -Encoding UTF8 $UserConfig)) { Say "  $l" }
+	foreach ($l in (Get-Content -Encoding UTF8 $UserConfig)) { Say "    $l" }
 	Say ''
-	if ($ConfigGenerated) { Say '（刚生成的。改它，然后重新运行脚本；脚本不会覆盖已存在的这份文件。）' }
+	if ($ConfigGenerated) { Say '  （刚生成的。改它，然后重新运行脚本；脚本不会覆盖已存在的这份文件。）' }
 }
 
 # ───────────────────────── 问答 ─────────────────────────
@@ -354,13 +427,50 @@ function Ask-Yes($prompt, $default) {
 	return ($ans -eq 'y' -or $ans -eq 'yes')
 }
 
+function Banner {
+	$ver = ''
+	if ($LocalBin) { $ver = Version-Tag $LocalBin }
+	$where = if ($env:SOL_INSTALL_ROOT) { 'SOL_INSTALL_ROOT 沙箱' } else { 'Windows / 计划任务' }
+	Head2 "sol 安装脚本  |  $(if ($ver) { $ver } else { '没有找到 sol.exe' })  |  $where"
+	Say '改配置、重跑这个脚本，就是改 sol 的跑法。先报现状，再问你要做什么。'
+}
+
+# 选项写成编号列表，而不是一行用斜杠串起来的 回车/u/r/n——那行既难读也难记。
+function Show-Menu {
+	Head2 '[选项]'
+	Say '  1  按配置应用（按 install.yaml 里的 run.args 装或升级）'
+	Say '  2  卸载（摘掉计划任务，按台账删掉自己建的东西）'
+	Say '  3  重新生成 install.yaml'
+	Say '  4  退出，什么都不改'
+	Say ''
+}
+
 function Ask-Choice($prompt) {
-	$ans = ''
-	try { $ans = (Read-Host $prompt) } catch { $script:NoAnswer = $true; return 'n' }
-	if ($null -eq $ans) { $script:NoAnswer = $true; return 'n' }
-	$ans = $ans.Trim().ToLower()
-	if (-not $ans) { return 'apply' }
-	$ans
+	# 只认序号（回车＝1），同时容忍单字母的旧习惯；看不懂就重问，绝不猜。
+	for ($i = 0; $i -lt 5; $i++) {
+		$ans = ''
+		try { $ans = (Read-Host "$prompt [1]") } catch { $script:NoAnswer = $true; return 'quit' }
+		if ($null -eq $ans) { $script:NoAnswer = $true; return 'quit' }
+		$ans = $ans.Trim().ToLower()
+		if (-not $ans) { return 'apply' }
+		switch ($ans) {
+			'1' { return 'apply' }
+			'apply' { return 'apply' }
+			'2' { return 'uninstall' }
+			'u' { return 'uninstall' }
+			'uninstall' { return 'uninstall' }
+			'3' { return 'regenerate' }
+			'r' { return 'regenerate' }
+			'regenerate' { return 'regenerate' }
+			'4' { return 'quit' }
+			'n' { return 'quit' }
+			'no' { return 'quit' }
+			'q' { return 'quit' }
+			'quit' { return 'quit' }
+			default { Write-Host '  请输入 1-4 之间的序号（回车＝1）。' }
+		}
+	}
+	return 'quit'
 }
 
 # ───────────────────────── 动作清单 ─────────────────────────
@@ -379,7 +489,7 @@ function Write-Ledger($incomplete, $prevVersion, $prevSha) {
 	$obj = [ordered]@{
 		schema            = 1
 		method            = 'script'
-		installed_version = (Binary-Version $DestBin)
+		installed_version = (Version-Tag $DestBin)
 		installed_at      = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 		prefix            = $InstallDir
 		binary            = $DestBin
@@ -536,7 +646,22 @@ function Invoke-Install {
 要么换个名字装：`$env:SOL_UNIT_NAME='sol-mine'; .\install.ps1"
 	}
 
-	if (-not (Invoke-Precheck)) { Die '预检没通过，什么都没动。改完配置再运行一次。' }
+	# 例外：升级时几乎必然"绑不上端口"——因为正在跑的那份是我们自己的 sol.exe，占着同一个端口。
+	# 那就先停它再试一次；还不过就把它按原样起回去，不让你白白少一个正在跑的服务。
+	if (-not (Invoke-Precheck)) {
+		$binNow = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
+		if (@(Get-RunningInstances $binNow).Count -gt 0) {
+			Say ''
+			Say '预检绑不上端口，而我们有份 sol.exe 正在跑——多半就是它占着。先停掉它再试一次：'
+			Stop-RunningInstances $binNow '它占着端口，而预检要绑同一个端口'
+			if (-not (Invoke-Precheck)) {
+				Restore-SolTask
+				Die '预检没通过（停掉旧的再试也一样）。刚才停掉的那份我已经按原样起回去了；改完配置再运行一次。'
+			}
+		} else {
+			Die '预检没通过，什么都没动。改完配置再运行一次。'
+		}
+	}
 
 	# Windows 陷阱：正在运行的 exe 覆盖不了 → 先结束任务
 	if ((Task-State) -eq 'installed') {
@@ -544,6 +669,8 @@ function Invoke-Install {
 		Act 'admin' '结束计划任务（运行中的 exe 有文件锁）' "schtasks /End /TN $TaskName"
 		Start-Sleep -Seconds 1
 	}
+	# 任务停了不代表进程没了（手动起的那份、或没赶上的实例）；覆盖前必须把它清掉。
+	Stop-RunningInstances $DestBin '正在运行的 exe 覆盖不了（Windows 文件锁）'
 
 	if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
 	$same = (Test-Path $DestBin) -and ((Has-Sha256 $DestBin) -eq $newSha)
@@ -551,11 +678,11 @@ function Invoke-Install {
 		Say '二进制      已经就是这份（sha256 相同），不动'
 	} else {
 		if (Test-Path $DestBin) {
-			Copy-Item -Path $DestBin -Destination "$DestBin.bak" -Force
+			Invoke-WithRetry '保留旧二进制' { Copy-Item -Path $DestBin -Destination "$DestBin.bak" -Force -ErrorAction Stop } | Out-Null
 			Act 'admin' '保留旧二进制（回滚用）' "Copy-Item $DestBin $DestBin.bak"
 			Say ("二进制      换版本：{0} → {1}" -f (Binary-Version $DestBin), (Binary-Version $LocalBin))
 		}
-		Copy-Item -Path $LocalBin -Destination $DestBin -Force
+		Invoke-WithRetry '放置二进制' { Copy-Item -Path $LocalBin -Destination $DestBin -Force -ErrorAction Stop } | Out-Null
 		Act 'admin' '放置二进制' "Copy-Item $LocalBin $DestBin"
 	}
 
@@ -625,6 +752,12 @@ function Invoke-Uninstall {
 能看到的是：$(if ($LocalBin) { "二进制 $LocalBin；" })$(if ((Task-State) -eq 'installed') { "计划任务 $TaskName；" })
 手工删除：schtasks /Delete /TN $TaskName /F"
 	}
+	# 先停进程再删：正在跑的 exe 删不掉（Windows 文件锁），而且它会一直占着端口——
+	# 下次安装的预检就会以"端口占用"失败，看起来像是装不上。
+	$binNow = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
+	schtasks /End /TN $TaskName 2>$null | Out-Null
+	Act 'admin' '结束计划任务实例（在跑的话）' "schtasks /End /TN $TaskName"
+	Stop-RunningInstances $binNow '卸载要删掉它，也不能让它继续占着端口'
 	schtasks /Delete /TN $TaskName /F 2>$null | Out-Null
 	Act 'admin' '删除计划任务' "schtasks /Delete /TN $TaskName /F"
 	$rule = $null
@@ -640,7 +773,7 @@ function Invoke-Uninstall {
 		Act 'admin' '从机器 PATH 撤下落点目录' "[Environment]::SetEnvironmentVariable('PATH', '...', 'Machine')"
 	}
 	$bin = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
-	Remove-Item -Path $bin, "$bin.bak" -Force -ErrorAction SilentlyContinue
+	Invoke-WithRetry '删二进制与 sol.bak' { Remove-Item -Path $bin, "$bin.bak" -Force -ErrorAction Stop } | Out-Null
 	Act 'admin' '删二进制与 sol.bak' "Remove-Item $bin, $bin.bak"
 
 	$script:DelConfigs = $false
@@ -663,37 +796,38 @@ function Invoke-Uninstall {
 function Show-Report($what) {
 	switch ($what) {
 		'install' {
-			Head2 '== 完成 =='
-			Say "$(Binary-Version $DestBin) -> $DestBin"
-			if (Test-Path "$DestBin.bak") { Say "（旧版本留在 $DestBin.bak，回滚就是把它换回去）" }
+			Head2 '[完成]'
+			Say "  版本        $(Version-Tag $DestBin)"
+			Say "  二进制      $DestBin"
+			if (Test-Path "$DestBin.bak") { Say "  （旧版本留在 $DestBin.bak，回滚就是把它换回去）" }
 			Say ''
-			Say "安装配置   $UserConfig        改这里，然后重跑脚本"
-			Say "运行配置   $RunConfig$(if ($script:RuntimeConfigGenerated) { '（刚生成的示例配置：三条规则，按需改）' })"
-			Say "台账       $Ledger"
-			Say "历史       $History（完整动作清单，带等价命令）"
+			Say "  安装配置    $UserConfig        改这里，然后重跑脚本"
+			Say "  运行配置    $RunConfig$(if ($script:RuntimeConfigGenerated) { $(if ($script:RuntimeConfigCopied) { '（从执行目录拷到安装目录的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' }) })"
+			Say "  台账        $Ledger"
+			Say "  历史        $History（完整动作清单，带等价命令）"
 			Say ''
-			Say '校验'
-			Say "  $DestBin --version   -> $(Binary-Version $DestBin)"
-			if ($script:ServiceChosen) { Say "  schtasks /Query /TN $TaskName   -> $(Task-State)" }
+			Say '  校验'
+			Say "    $DestBin --version   -> $(Version-Tag $DestBin)"
+			if ($script:ServiceChosen) { Say "    schtasks /Query /TN $TaskName   -> $(Task-State)" }
 			Say ''
-			Say '接下来'
-			Say "  schtasks /Query /TN $TaskName /V /FO LIST"
-			Say '  重跑安装脚本可以随时看现状（它会先报再问；答 n 退出，什么都不改）'
+			Say '  接下来'
+			Say "    schtasks /Query /TN $TaskName /V /FO LIST"
+			Say '    重跑安装脚本可以随时看现状（它会先报再问；选 4 退出，什么都不改）'
 		}
 		'uninstall' {
-			Head2 '== 已卸载 =='
-			Say "服务       $(Task-State)（计划任务 $TaskName）"
-			Say "二进制     $(if (Test-Path $DestBin) { "还在：$DestBin" } else { "已删除：$DestBin" })"
-			if ($script:DelConfigs) { Say '配置       已按你的选择删除' } else {
-				Say "配置       保留：$UserConfig、$RunConfig"
-				Say "           要删：Remove-Item $UserConfig, $RunConfig"
+			Head2 '[已卸载]'
+			Say "  服务        $(if ((Task-State) -eq 'installed') { '计划任务已注册' } else { '没有计划任务' })（$TaskName）"
+			Say "  二进制      $(if (Test-Path $DestBin) { "还在：$DestBin" } else { "已删除：$DestBin" })"
+			if ($script:DelConfigs) { Say '  配置        已按你的选择删除' } else {
+				Say "  配置        保留：$UserConfig、$RunConfig"
+				Say "              要删：Remove-Item $UserConfig, $RunConfig"
 			}
-			Say "历史       $History"
+			Say "  历史        $History"
 		}
 		'none' {
-			Head2 '== 什么都没做 =='
-			Say "配置在那里：$UserConfig"
-			Say '改完重跑脚本即可；这次的没执行，也就没写历史。'
+			Head2 '[退出]'
+			Say "  什么都没做，也没写历史。配置在那里：$UserConfig"
+			Say '  改完重跑脚本即可。'
 		}
 	}
 }
@@ -733,22 +867,26 @@ if ($ElevatedAction) {
 
 Ensure-RuntimeConfig
 
+Banner
 Show-State
 Show-Config
 
 $script:Noop = $false
 
 if ($LedgerExists) {
-	$choice = Ask-Choice "检测到已安装 $($LedgerJson.installed_version)（计划任务 $(Task-State)）。
-请选择：[回车 = 按配置应用 / u = 卸载 / r = 重新生成配置 / n = 退出]"
+	$stText = if ((Task-State) -eq 'installed') { '计划任务已注册' } else { '没有计划任务' }
+	$instTag0 = if ($LedgerJson.installed_version) { $LedgerJson.installed_version } else { '版本未知' }
+	Say "检测到已安装 $instTag0（服务：$stText）。"
+	Show-Menu
+	$choice = Ask-Choice '请选择'
 	switch ($choice) {
-		'u' { Escalate-IfNeeded 'uninstall'; Invoke-Uninstall; Show-Report 'uninstall' }
-		'r' {
+		'uninstall' { Escalate-IfNeeded 'uninstall'; Invoke-Uninstall; Show-Report 'uninstall' }
+		'regenerate' {
 			Remove-Item -Path $UserConfig -Force -ErrorAction SilentlyContinue
 			Write-UserConfig
 			Say "已重新生成：$UserConfig（重新运行脚本就会按它执行）"
 		}
-		'n' { Show-Report 'none' }
+		'quit' { Show-Report 'none' }
 		default {
 			$script:ServiceChosen = ($LedgerJson.service.created_unit -eq $true)
 			# 台账说没建过任务，而任务也确实不在（可能上次没跑完）：再问一次，
@@ -758,7 +896,7 @@ if ($LedgerExists) {
 			}
 			Escalate-IfNeeded 'install'
 			Invoke-Install
-			if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 r 重新生成配置，或先卸载。）' }
+			if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 3 重新生成配置，或先卸载。）' }
 			else { Show-Report 'install' }
 		}
 	}
@@ -776,5 +914,5 @@ if (-not (Ask-Yes '执行吗？' 'y')) { Show-Report 'none'; exit 0 }
 
 Escalate-IfNeeded 'install'
 Invoke-Install
-if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 r 重新生成配置，或先卸载。）' }
+if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 3 重新生成配置，或先卸载。）' }
 else { Show-Report 'install' }

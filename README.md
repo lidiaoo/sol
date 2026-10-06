@@ -520,7 +520,8 @@ relaunches under UAC on Windows, carrying your answers across so you are not ask
 it stops with an explanation rather than half-installing.
 
 Re-running the script is how you see the current state, change how sol runs (edit the file, run it
-again), or uninstall (answer `u`; it asks before deleting your configuration). Every action it takes
+again), or uninstall (choose `2`; it stops the running sol first, and asks before deleting your
+configuration). Every action it takes
 is appended to `install.log`, with the equivalent command, next to the ledger `install.json`.
 
 Where things go: the binary in `/usr/local/bin/sol` (`C:\ProgramData\sol\sol.exe`), the ledger and

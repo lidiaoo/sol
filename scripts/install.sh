@@ -103,6 +103,69 @@ as_root() {
 	if [ -n "$SUDO" ]; then "$SUDO" "$@"; else "$@"; fi
 }
 
+# ───────────────────────── 正在跑的那份 ─────────────────────────
+
+# 我们自己那份二进制现在有几个进程在跑。只认"可执行文件就是它"：名字叫 sol 的别人的进程、
+# 以及我自己的脚本，都与它无关（卸载时乱杀名字叫 sol 的进程是另一种事故）。
+running_instances() { # running_instances <二进制完整路径>
+	bin=$1
+	[ -n "$bin" ] && [ -e "$bin" ] || return 0
+	case "$(uname -s 2>/dev/null)" in
+	Darwin) pgrep -f "^$bin( |\$)" 2>/dev/null || true ;;
+	*)
+		for d in /proc/[0-9]*; do
+			p=${d#/proc/}
+			[ "$p" = "$$" ] && continue
+			[ "$(readlink "$d/exe" 2>/dev/null || true)" = "$bin" ] && printf '%s\n' "$p"
+		done
+		;;
+	esac
+}
+
+# 先 TERM 再 KILL。为什么要停：① 卸载时要删这个 exe，进程活着文件删不掉；
+# ② 更要紧的是它一直占着 UDP 端口，下一次安装的预检绑不上，看起来就是"端口占用"。
+stop_instances() { # stop_instances <二进制完整路径> <为什么>
+	bin=$1
+	why=$2
+	pids=$(running_instances "$bin" | tr '\n' ' ')
+	pids=${pids% }
+	[ -n "$pids" ] || return 0
+	say "  先停掉还在跑的那份（$why）：pid $pids"
+	for p in $pids; do as_root kill -TERM "$p" 2>/dev/null || true; done
+	i=0
+	while [ "$i" -lt 10 ]; do
+		[ -z "$(running_instances "$bin")" ] && break
+		sleep 1
+		i=$((i + 1))
+	done
+	left=$(running_instances "$bin" | tr '\n' ' ')
+	left=${left% }
+	if [ -n "$left" ]; then
+		for p in $left; do as_root kill -KILL "$p" 2>/dev/null || true; done
+		act root "强杀没退出的 sol 进程（pid $left）" "sudo kill -9 $left"
+	else
+		act root "停掉还在跑的 sol 进程（pid $pids）" "sudo kill $pids"
+	fi
+	sleep 1
+}
+
+# 预检失败时把刚才我们停掉的服务按原样起回去：单元/配置/二进制都还没动过，所以起回来就是原样。
+# SOL_INSTALL_ROOT 下不碰本机服务管理器（那是别人的地盘）。
+restore_service() {
+	[ -n "$ROOT" ] && return 0
+	[ -f "$UNIT_PATH" ] || return 0
+	case "$SERVICE_KIND" in
+	systemd)
+		as_root systemctl start "$UNIT_NAME" >/dev/null 2>&1 || true
+		act root "把刚才停掉的服务起回来" "sudo systemctl start $UNIT_NAME"
+		;;
+	launchd)
+		as_root launchctl bootstrap system "$UNIT_PATH" >/dev/null 2>&1 || true
+		act root "把刚才停掉的任务起回来" "sudo launchctl bootstrap system $UNIT_PATH"
+		;;
+	esac
+}
+
 # 写系统路径时先试直接写，不行才 sudo（用户自己就是 root 或目录本来就可写时不会白要密码）。
 put_root() { # put_root <本地文件> <目标路径> <权限>
 	if writable_target "$(dirname "$2")"; then
@@ -432,23 +495,63 @@ ports_below_1024() {
 
 # ───────────────────────── 现状／配置展示 ─────────────────────────
 
+version_tag() { # version_tag <二进制路径> -> v0.0.0-…（去掉 "sol version" 前缀与后面的 sha 括注）
+	[ -n "$1" ] || return 0
+	binary_version "$1" 2>/dev/null | sed 's/.*version //; s/ .*//'
+}
+
+state_cn() { # state_cn <service_state 的值>：内部词不给用户看
+	case "$1" in
+	running) printf '在运行' ;;
+	installed) printf '已安装、未运行' ;;
+	absent) printf '没有安装' ;;
+	unregistered) printf '沙箱里没注册' ;;
+	*) printf '状态未知' ;;
+	esac
+}
+
+banner() {
+	ver=$(version_tag "$LOCAL_BIN")
+	where=$( [ -n "$ROOT" ] && printf 'SOL_INSTALL_ROOT 沙箱' || printf '%s / %s' "$(uname -s 2>/dev/null)" "$SERVICE_KIND" )
+	head2 "sol 安装脚本  |  ${ver:-没有找到 sol}  |  $where"
+	say "改配置、重跑这个脚本，就是改 sol 的跑法。先报现状，再问你要做什么。"
+}
+
+# 选项写成编号列表，而不是一行用斜杠串起来的 回车/u/r/n——那行既难读也难记。
+show_menu() {
+	head2 "[选项]"
+	say "  1  按配置应用（按 install.yaml 里的 run.args 装或升级）"
+	say "  2  卸载（摘掉服务，按台账删掉自己建的东西）"
+	say "  3  重新生成 install.yaml"
+	say "  4  退出，什么都不改"
+	say ""
+}
+
 show_state() {
-	head2 "== 现状 =="
+	head2 "[现状]"
 	if [ -n "$LOCAL_BIN" ]; then
-		say "二进制      $LOCAL_BIN（$(binary_version "$LOCAL_BIN")，sha256 $(sha256 "$LOCAL_BIN" | cut -c1-12)…）"
+		say "  二进制      $LOCAL_BIN"
+		say "  版本        $(version_tag "$LOCAL_BIN")（sha256 $(sha256 "$LOCAL_BIN" | cut -c1-12)…）"
 	else
-		say "二进制      没有找到可用的 sol：脚本旁边、当前目录、\$PATH 里都没有"
+		say "  二进制      没有找到可用的 sol：脚本旁边、当前目录、\$PATH 里都没有"
 	fi
 	if [ -n "$PATH_SOLS" ]; then
-		say "PATH 上的 sol"
+		say "  PATH 上的 sol"
 		printf '%s\n' "$PATH_SOLS" | while IFS= read -r p; do
-			if [ "$p" = "$LOCAL_BIN" ]; then say "  $p  ← 生效"; else say "  $p"; fi
+			if [ "$p" = "$LOCAL_BIN" ]; then say "    $p  ← 生效"; else say "    $p"; fi
 		done
 	fi
 	if [ "$LEDGER_EXISTS" = yes ]; then
-		say "已安装      $LEDGER_VERSION（由安装脚本安装，$LEDGER）"
+		inc=$(ledger_field incomplete)
+		[ -n "$LEDGER_VERSION" ] || LEDGER_VERSION=版本未知
+		if [ "$inc" = true ]; then
+			say "  已安装      $LEDGER_VERSION（上次没装完——再跑一次会补上）"
+		else
+			say "  已安装      $LEDGER_VERSION（由安装脚本安装）"
+		fi
+		say "  台账        $LEDGER"
 	else
-		say "已安装      无台账（从没被这个脚本装过；下面按你已有的二进制处理）"
+		say "  已安装      无台账（从没被这个脚本装过；下面按你已有的二进制处理）"
 		if [ -f "$UNIT_PATH" ]; then
 			warn "有单元文件但没有台账（$UNIT_PATH）：不是我装的，我不动它。
       要手工清掉：
@@ -458,39 +561,47 @@ show_state() {
 		fi
 	fi
 	case "$(service_state)" in
-	running) say "服务        $SERVICE_KIND，在运行（$UNIT_NAME）" ;;
-	installed) say "服务        $SERVICE_KIND，已安装但没在运行（$UNIT_NAME）" ;;
-	absent) say "服务        没有（$UNIT_NAME 不存在）" ;;
-	unregistered) say "服务        SOL_INSTALL_ROOT 下只写单元文件，本机 systemd 里没有它" ;;
-	*) say "服务        状态未知（没有 systemctl / launchctl？）" ;;
+	running) say "  服务        $SERVICE_KIND，在运行（$UNIT_NAME）" ;;
+	installed) say "  服务        $SERVICE_KIND，已安装但没在运行（$UNIT_NAME）" ;;
+	absent) say "  服务        没有（$UNIT_NAME 不存在）" ;;
+	unregistered) say "  服务        SOL_INSTALL_ROOT 下只写单元文件，本机 systemd 里没有它" ;;
+	*) say "  服务        状态未知（没有 systemctl / launchctl？）" ;;
 	esac
-	[ -n "$MANAGED_BY" ] && say "包管理器    这个 sol 是 $MANAGED_BY 装的（升级会覆盖它）"
-	if [ "$UID_NOW" = "0" ]; then
-		say "权限        root（写系统路径与注册服务不需要再升权）"
-	elif [ -n "$ROOT" ]; then
-		say "权限        普通用户 + SOL_INSTALL_ROOT=$ROOT（自己的地盘，不会 sudo）"
+	inst_bin=$(ledger_field binary)
+	[ -n "$inst_bin" ] || inst_bin="$BINDIR/sol"
+	inst_n=$(running_instances "$inst_bin" | wc -l | tr -d ' ')
+	if [ "$inst_n" != "0" ]; then
+		say "  进程        有 $inst_n 个在跑：$inst_bin（要用到端口时会先停掉它）"
 	else
-		say "权限        普通用户（要写系统路径/注册服务时，动手前会用 sudo 重跑一遍自己）"
+		say "  进程        没有在跑"
+	fi
+	[ -n "$MANAGED_BY" ] && say "  包管理器    这个 sol 是 $MANAGED_BY 装的（升级会覆盖它）"
+	if [ "$UID_NOW" = "0" ]; then
+		say "  权限        root（写系统路径与注册服务不需要再升权）"
+	elif [ -n "$ROOT" ]; then
+		say "  权限        普通用户 + SOL_INSTALL_ROOT=$ROOT（自己的地盘，不会 sudo）"
+	else
+		say "  权限        普通用户（要写系统路径/注册服务时，动手前会用 sudo 重跑一遍自己）"
 	fi
 	if [ -f "$RUN_CONFIG" ]; then
 		if [ "$RUNTIME_CONFIG_GENERATED" = yes ]; then
-			say "运行配置    $RUN_CONFIG（刚生成的示例配置：三条规则，按需改）"
+			say "  运行配置    $RUN_CONFIG（刚生成的示例配置：三条规则，按需改）"
 		else
-			say "运行配置    $RUN_CONFIG（sol 会读它）"
+			say "  运行配置    $RUN_CONFIG（sol 会读它）"
 		fi
 	else
-		say "运行配置    还不存在：$RUN_CONFIG"
+		say "  运行配置    还不存在：$RUN_CONFIG"
 	fi
 }
 
 show_config() {
-	head2 "== 安装配置 =="
-	say "$USER_CONFIG"
+	head2 "[安装配置]"
+	say "  $USER_CONFIG"
 	say ""
-	sed 's/^/  /' "$USER_CONFIG"
+	sed 's/^/    /' "$USER_CONFIG"
 	say ""
 	if [ "$CONFIG_GENERATED" = yes ]; then
-		say "（刚生成的。改它，然后重新跑脚本；脚本不会覆盖已存在的这份文件。）"
+		say "  （刚生成的。改它，然后重新跑脚本；脚本不会覆盖已存在的这份文件。）"
 	fi
 }
 
@@ -541,16 +652,25 @@ ask() { # ask <提示> <默认(y|n)>
 	esac
 }
 
-ask_choice() { # ask_choice <提示> -> 打印用户选的一个词
-	READ_EOF=no
-	read_answer "$1"
-	# 同样：没人的话就什么也别做，当作"退出"
-	if [ "$READ_EOF" = yes ]; then
-		printf 'n'
-		return 0
-	fi
-	[ -n "$ans" ] || ans="apply"
-	printf '%s' "$ans"
+ask_choice() { # ask_choice <提示> -> 打印一个词：apply | uninstall | regenerate | quit
+	# 只认序号（回车＝1），同时容忍单字母的旧习惯；看不懂就重问，绝不猜。
+	i=0
+	while [ "$i" -lt 5 ]; do
+		READ_EOF=no
+		read_answer "$1 [1]"
+		# 没人的话（EOF、管道）就什么也别做，当作"退出"
+		if [ "$READ_EOF" = yes ]; then printf 'quit'; return 0; fi
+		[ -n "$ans" ] || ans=1
+		case "$ans" in
+		1 | apply) printf 'apply'; return 0 ;;
+		2 | u | uninstall) printf 'uninstall'; return 0 ;;
+		3 | r | regenerate) printf 'regenerate'; return 0 ;;
+		4 | n | no | q | quit) printf 'quit'; return 0 ;;
+		*) printf '  请输入 1-4 之间的序号（回车＝1）。\n' >&2 ;;
+		esac
+		i=$((i + 1))
+	done
+	printf 'quit'
 }
 
 # ───────────────────────── 执行：动作清单 ─────────────────────────
@@ -736,8 +856,24 @@ do_install() {
 	write_ledger true "$LEDGER_VERSION" "$LEDGER_SHA"
 	act user "写安装台账（先写 incomplete，中途失败也留痕）" ""
 
-	# 1) 预检：不通过就不动服务、不换二进制（旧版本原样继续跑）
-	precheck || die "预检没通过，什么都没动。改完配置再跑一次。"
+	# 1) 预检：不通过就不动服务、不换二进制（旧版本原样继续跑）。
+	#    例外：升级时几乎必然"绑不上端口"——因为正在跑的那份是我们自己的二进制，占着同一个端口。
+	#    那就先停它再试一次；还不过就把它按原样起回去，不让你白白少一个正在跑的服务。
+	if ! precheck; then
+		bin_now=$(ledger_field binary)
+		[ -n "$bin_now" ] || bin_now="$DEST_BIN"
+		if [ -n "$(running_instances "$bin_now")" ]; then
+			say ""
+			say "预检绑不上端口，而我们有份 sol 正在跑——多半就是它占着。先停掉它再试一次："
+			stop_instances "$bin_now" "它占着端口，而预检要绑同一个端口"
+			if ! precheck; then
+				restore_service
+				die "预检没通过（停掉旧的再试也一样）。刚才停掉的那份我已经按原样起回去了；改完配置再跑一次。"
+			fi
+		else
+			die "预检没通过，什么都没动。改完配置再跑一次。"
+		fi
+	fi
 
 	# 2) 停服务（Linux：Restart=always 没停就替换，会在替换瞬间被拉起来一次）
 	state=$(service_state)
@@ -885,8 +1021,11 @@ do_uninstall() {
 		act root "删 plist" "sudo rm $UNIT_PATH"
 		;;
 	esac
+	# 先停进程，再删东西：正在跑的 exe 删不掉（文件锁），而且它会一直占着端口——
+	# 下次安装的预检就会以"端口占用"失败，看起来像是装不上。
 	bin=$(ledger_field binary)
 	[ -n "$bin" ] || bin="$BINDIR/sol"
+	stop_instances "$bin" "卸载要删掉它，也不能让它继续占着端口"
 	if [ -f "$bin" ]; then
 		rm_root "$bin" "$bin.bak"
 		act root "删二进制与 sol.bak" "sudo rm $bin $bin.bak"
@@ -920,57 +1059,58 @@ do_uninstall() {
 report() { # report <install|uninstall|none>
 	case "$1" in
 	install)
-		head2 "== 完成 =="
-		say "$(binary_version "$DEST_BIN" 2>/dev/null || echo '（读不到版本）') -> $DEST_BIN"
-		if [ -f "$DEST_BIN.bak" ]; then say "（旧版本留在 $DEST_BIN.bak，回滚就是把它换回去）"; fi
+		head2 "[完成]"
+		say "  版本        $(version_tag "$DEST_BIN" || echo '（读不到版本）')"
+		say "  二进制      $DEST_BIN"
+		if [ -f "$DEST_BIN.bak" ]; then say "  （旧版本留在 $DEST_BIN.bak，回滚就是把它换回去）"; fi
 		say ""
-		say "安装配置   $USER_CONFIG        改这里，然后重跑脚本"
-		say "运行配置   $RUN_CONFIG$( [ "$RUNTIME_CONFIG_GENERATED" = yes ] && printf '（刚生成的示例配置：三条规则，按需改）' )"
-		say "台账       $LEDGER"
-		say "历史       $HISTORY（完整动作清单，带等价命令）"
+		say "  安装配置    $USER_CONFIG        改这里，然后重跑脚本"
+		say "  运行配置    $RUN_CONFIG$( [ "$RUNTIME_CONFIG_GENERATED" = yes ] && printf '（刚生成的示例配置：三条规则，按需改）' )"
+		say "  台账        $LEDGER"
+		say "  历史        $HISTORY（完整动作清单，带等价命令）"
 		say ""
-		say "校验"
-		say "  $DEST_BIN --version   -> $(binary_version "$DEST_BIN" 2>/dev/null)"
+		say "  校验"
+		say "    $DEST_BIN --version   -> $(version_tag "$DEST_BIN")"
 		if [ -n "$ROOT" ]; then
-			say "  （SOL_INSTALL_ROOT 下不注册服务；单元文件在 $UNIT_PATH）"
+			say "    （SOL_INSTALL_ROOT 下不注册服务；单元文件在 $UNIT_PATH）"
 		elif [ "$SERVICE_CHOSEN" = true ]; then
 			case "$SERVICE_KIND" in
-			systemd) say "  systemctl is-active $UNIT_NAME   -> $( (as_root systemctl is-active "$UNIT_NAME" 2>/dev/null) || echo '未知')" ;;
-			launchd) say "  launchctl print system/$UNIT_NAME   -> $(launchctl print "system/$UNIT_NAME" >/dev/null 2>&1 && echo 'running' || echo '未知')" ;;
+			systemd) say "    systemctl is-active $UNIT_NAME   -> $( (as_root systemctl is-active "$UNIT_NAME" 2>/dev/null) || echo '未知')" ;;
+			launchd) say "    launchctl print system/$UNIT_NAME   -> $(launchctl print "system/$UNIT_NAME" >/dev/null 2>&1 && echo 'running' || echo '未知')" ;;
 			esac
 		fi
 		say ""
-		say "接下来"
+		say "  接下来"
 		if [ -n "$ROOT" ]; then
-			say "  （SOL_INSTALL_ROOT 下不注册服务：单元文件是 $UNIT_PATH，本机服务管理器里找不到它）"
+			say "    （SOL_INSTALL_ROOT 下不注册服务：单元文件是 $UNIT_PATH，本机服务管理器里找不到它）"
 		else
 			case "$SERVICE_KIND" in
-			systemd) say "  systemctl status $UNIT_NAME" ;;
-			launchd) say "  launchctl print system/$UNIT_NAME" ;;
+			systemd) say "    systemctl status $UNIT_NAME" ;;
+			launchd) say "    launchctl print system/$UNIT_NAME" ;;
 			esac
 		fi
-		say "  重跑安装脚本可以随时看现状（它会先报再问；答 n 退出，什么都不改）"
+		say "    重跑安装脚本可以随时看现状（它会先报再问；选 4 退出，什么都不改）"
 		;;
 	uninstall)
-		head2 "== 已卸载 =="
+		head2 "[已卸载]"
 		if [ -n "$ROOT" ]; then
-			say "服务       SOL_INSTALL_ROOT 下没注册过（单元文件：$UNIT_PATH）"
+			say "  服务        SOL_INSTALL_ROOT 下没注册过（单元文件：$UNIT_PATH）"
 		else
-			say "服务       $(service_state)（$UNIT_NAME）"
+			say "  服务        $(state_cn "$(service_state)")（$UNIT_NAME）"
 		fi
-		say "二进制     $([ -f "$BINDIR/sol" ] && echo "还在：$BINDIR/sol" || echo "已删除：$BINDIR/sol")"
+		say "  二进制      $([ -f "$BINDIR/sol" ] && echo "还在：$BINDIR/sol" || echo "已删除：$BINDIR/sol")"
 		if [ "$del_configs" = yes ]; then
-			say "配置       已按你的选择删除"
+			say "  配置        已按你的选择删除"
 		else
-			say "配置       保留：$USER_CONFIG、$RUN_CONFIG"
-			say "           要删：rm $USER_CONFIG $RUN_CONFIG"
+			say "  配置        保留：$USER_CONFIG、$RUN_CONFIG"
+			say "              要删：rm $USER_CONFIG $RUN_CONFIG"
 		fi
-		say "历史       $HISTORY"
+		say "  历史        $HISTORY"
 		;;
 	none)
-		head2 "== 什么都没做 =="
-		say "配置在那里：$USER_CONFIG"
-		say "改完重跑脚本即可；想看那么做的动作清单说一声——这次的没执行，也就没写历史。"
+		head2 "[退出]"
+		say "  什么都没做，也没写历史。配置在那里：$USER_CONFIG"
+		say "  改完重跑脚本即可。"
 		;;
 	esac
 }
@@ -1003,27 +1143,29 @@ if [ -n "$ELEVATED_ACTION" ]; then
 	exit 0
 fi
 
+banner
 show_state
 show_config
 
 
 if [ "$LEDGER_EXISTS" = yes ]; then
-	choice=$(ask_choice "检测到已安装 ${LEDGER_VERSION:-?}（$(service_state)）。
-请选择：[回车 = 按配置应用 / u = 卸载 / r = 重新生成配置 / n = 退出]")
+	say "检测到已安装 ${LEDGER_VERSION:-?}（服务：$(state_cn "$(service_state)")）。"
+	show_menu
+	choice=$(ask_choice "请选择")
 	case "$choice" in
-	u | uninstall)
+	uninstall)
 		escalate uninstall
 		do_uninstall
 		report uninstall
 		;;
-	r)
+	regenerate)
 		rm -f "$USER_CONFIG"
 		write_user_config
 		CONFIG_GENERATED=yes
 		say "已重新生成：$USER_CONFIG（重新跑一次脚本就会按它执行）"
 		exit 0
 		;;
-	n | no | q)
+	quit)
 		report none
 		;;
 	*)
@@ -1040,7 +1182,7 @@ if [ "$LEDGER_EXISTS" = yes ]; then
 		escalate install
 		do_install
 		if [ "$NOOP" = yes ]; then
-			say "（什么都没改。想强制重写服务定义就选 r 重新生成配置，或先卸载。）"
+			say "（什么都没改。想强制重写服务定义就选 3 重新生成配置，或先卸载。）"
 			exit 0
 		fi
 		report install
@@ -1060,7 +1202,7 @@ fi
 escalate install
 do_install
 if [ "$NOOP" = yes ]; then
-	say "（什么都没改。想强制重写服务定义就选 r 重新生成配置，或先卸载。）"
+	say "（什么都没改。想强制重写服务定义就选 3 重新生成配置，或先卸载。）"
 	exit 0
 fi
 report install
