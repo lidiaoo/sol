@@ -645,7 +645,7 @@ function Invoke-Install {
 	if ($LedgerExists -and $newSha -eq $LedgerJson.sha256) {
 		$taskOk = ((Task-State) -eq 'installed') -or (-not $script:ServiceChosen)
 		# 还要确认任务跑的是我们的包装脚本：老安装的任务直接跑 exe、没有日志，得走完整路径升一次。
-		if ($taskOk -and $script:ServiceChosen -and (-not (Test-Path $TaskCmd))) { $taskOk = $false }
+		if ($taskOk -and $script:ServiceChosen -and (-not $env:SOL_INSTALL_ROOT) -and (-not (Test-Path $TaskCmd))) { $taskOk = $false }
 		if ($taskOk) {
 			Say ''
 			Say "已是最新，无需操作：二进制没变（sha256 $newSha 与台账一致），计划任务与配置没变。"
@@ -708,7 +708,9 @@ function Invoke-Install {
 		Act 'admin' '把落点目录加进机器 PATH' "[Environment]::SetEnvironmentVariable('PATH', '...;$InstallDir', 'Machine')"
 	}
 
-	if ($script:ServiceChosen) { Register-SolService }
+	# SOL_INSTALL_ROOT 下不碰本机计划任务：那是别人的地盘（跟停进程、卸载那几处一样的规矩）。
+	if ($script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT) { Register-SolService }
+	elseif ($script:ServiceChosen) { Say '  （沙箱：跳过计划任务注册——本机任务管理器是别人的地盘）' }
 
 	# 计划任务不收集 stdout：审计日志只能靠 sol 自己写文件，配置里没写就提醒一句。
 	if ($script:ServiceChosen -and (Test-Path $RunConfig)) {
@@ -757,6 +759,7 @@ function Write-RunWrapper {
 }
 
 function Register-SolService {
+	if ($env:SOL_INSTALL_ROOT) { return }   # 沙箱里永不碰本机任务管理器
 	Write-RunWrapper
 	# 任务跑的是包装脚本；--config 由包装脚本带着（所以"任务读哪份配置"看的是那个文件）。
 	$tr = $TaskCmd

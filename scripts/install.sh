@@ -116,7 +116,16 @@ running_instances() { # running_instances <二进制完整路径>
 		for d in /proc/[0-9]*; do
 			p=${d#/proc/}
 			[ "$p" = "$$" ] && continue
-			[ "$(readlink "$d/exe" 2>/dev/null || true)" = "$bin" ] && printf '%s\n' "$p"
+			# 比 argv[0]，而不是 readlink exe：cmdline 谁都能读，而 exe 链接在**非 root 读 root
+			# 进程**时会被内核拒掉（读出来是空）——"现状"是在未升权时打印的，于是 Linux 上
+			# 也看不见正在跑的那份（跟 Windows 上读不到 SYSTEM 进程的 .Path 是同一类错）。
+			argv0=$(tr '\0' '\n' <"$d/cmdline" 2>/dev/null | head -n1)
+			if [ -n "$argv0" ]; then
+				[ "$argv0" = "$bin" ] && printf '%s\n' "$p"
+			else
+				# hidepid 之类读不到 cmdline 时退回 exe 链接（升权后还能用）
+				[ "$(readlink "$d/exe" 2>/dev/null || true)" = "$bin" ] && printf '%s\n' "$p"
+			fi
 		done
 		;;
 	esac
@@ -154,6 +163,28 @@ stop_instances() { # stop_instances <二进制完整路径> <为什么>
 	else
 		act root "停掉还在跑的 sol 进程（pid ${pids}）" "sudo kill $pids"
 	fi
+	sleep 1
+}
+
+# 升级/预检前把**我们装的那个服务**先停下来。
+# 为什么光 kill 进程不够：systemd 的 Restart=、launchd 的 KeepAlive 会在毫秒级把它拉回来，端口
+# 立刻又被占上——预检第二次照样绑不上，升级就卡在"端口占用"上（真机上就是这么死的）。
+# 用 stop 而不是 disable：万一预检还是不过，restore_service 一 start 就回到原样，开机自启也没丢。
+suspend_service() {
+	[ -n "$ROOT" ] && return 0
+	[ "$LEDGER_CREATED_UNIT" = true ] || return 0
+	case "$SERVICE_KIND" in
+	systemd)
+		command -v systemctl >/dev/null 2>&1 || return 0
+		as_root systemctl stop "$UNIT_NAME" >/dev/null 2>&1 || true
+		act root "停掉我们装的服务（升级前；不停它会被自动拉起，端口一直占着）" "sudo systemctl stop $UNIT_NAME"
+		;;
+	launchd)
+		command -v launchctl >/dev/null 2>&1 || return 0
+		as_root launchctl bootout "system/$UNIT_NAME" >/dev/null 2>&1 || true
+		act root "摘掉我们装的 launchd 任务（升级前）" "sudo launchctl bootout system/$UNIT_NAME"
+		;;
+	esac
 	sleep 1
 }
 
@@ -888,6 +919,7 @@ do_install() {
 		if [ -n "$(running_instances "$bin_now")" ]; then
 			say ""
 			say "预检绑不上端口，而我们有份 sol 正在跑——多半就是它占着。先停掉它再试一次："
+			suspend_service
 			stop_instances "$bin_now" "它占着端口，而预检要绑同一个端口"
 			if ! precheck; then
 				restore_service

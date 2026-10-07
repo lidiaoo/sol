@@ -86,6 +86,18 @@ jobs:
         run: printf '1\n' | sudo -E sh install.sh
       # 下面这条是那个 bug 的回归测试：升级时端口必然被自己的上一个实例占着，
       # 脚本必须先停掉它、再预检、然后才覆盖二进制。
+      # 这个 bug 的回归测试：探针必须认得出"正在跑的那一份"。Linux 上它原先读 /proc/<pid>/exe，
+      # 而**非 root 读 root 进程**的 exe 链接会被内核拒掉 → 现状里永远显示"没有在跑"；
+      # 现状是未升权时打印的，所以这个 bug 只在未升权时现形。顺带断言日志去处那行也在。
+      - name: The state block must see the running process, and say where the log is
+        working-directory: scripts
+        run: |
+          set -e
+          out=$(printf '4\n' | ./install.sh 2>&1)
+          printf '%s\n' "$out"
+          printf '%s' "$out" | grep -q '有 1 个在跑' || { echo '现状没认出正在跑的那份：探针又看不到了'; exit 1; }
+          printf '%s' "$out" | grep -q 'journalctl -u sol.service' || { echo '现状没告诉用户日志在哪'; exit 1; }
+
       - name: Upgrade must stop our own running instance first
         working-directory: scripts
         run: |
@@ -155,6 +167,18 @@ jobs:
           echo 'sol 没在监听 10132：' >&2
           sudo tail -n 60 /usr/local/var/log/sol.log >&2
           exit 1
+      # 这个 bug 的回归测试：探针必须认得出"正在跑的那一份"。Linux 上它原先读 /proc/<pid>/exe，
+      # 而**非 root 读 root 进程**的 exe 链接会被内核拒掉 → 现状里永远显示"没有在跑"；
+      # 现状是未升权时打印的，所以这个 bug 只在未升权时现形。顺带断言日志去处那行也在。
+      - name: The state block must see the running process, and say where the log is
+        working-directory: scripts
+        run: |
+          set -e
+          out=$(printf '4\n' | ./install.sh 2>&1)
+          printf '%s\n' "$out"
+          printf '%s' "$out" | grep -q '有 1 个在跑' || { echo '现状没认出正在跑的那份：探针又看不到了'; exit 1; }
+          printf '%s' "$out" | grep -q '/usr/local/var/log/sol.log' || { echo '现状没告诉用户日志在哪'; exit 1; }
+
       - name: Upgrade must stop our own running instance first
         working-directory: scripts
         run: |
@@ -246,6 +270,18 @@ jobs:
           "1`n" | & pwsh -NoProfile -File .\install.ps1
       # 那个 bug 的回归测试：升级前必须先停掉自己那份，否则覆盖不了二进制、
       # 而且下次安装的预检会以"端口占用"失败。
+      # Windows 侧同一个 bug 的回归测试：计划任务以 SYSTEM 跑，而现状是未升权时打印的，
+      # 那时读更高权限进程的 .Path 会静默失败 → 永远"没有在跑"（现在改走 CIM 的 Win32_Process）。
+      - name: The state block must see the running process, and say where the log is
+        working-directory: scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = ("4`n" | & pwsh -NoProfile -File .\install.ps1 | Out-String)
+          Write-Host $out
+          if ($out -notmatch '有 1 个在跑') { throw '现状没认出正在跑的那份：CIM 探针又看不到了' }
+          if ($out -notmatch 'sol\.log') { throw '现状没告诉用户日志在哪' }
+
       - name: Upgrade must stop our own running instance first
         working-directory: scripts
         shell: pwsh

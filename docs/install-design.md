@@ -412,12 +412,28 @@ schtasks /Query /TN sol /V /FO LIST
 | 交付物 | 证据强度 | 方式 |
 | --- | --- | --- |
 | 安装脚本的现状报告 / 文件清单 / `--dry-run` 预检 | **真机全量** | 真机冒烟（沿用现有 `sNN` 机制）：真跑脚本 + 真起服务 + 真卸载 |
-| `scripts/install.sh` | **真机全量（已完成）** | `scratch/s35` 63 条 + `scratch/s55` 25 条断言：无二进制时下载回退 / 有二进制时就地使用 / 重跑无变化 / 换二进制（升与降）/ 只改 `run.args` / 异源提醒 / 无台账 / 卸载，并真发一个魔法包确认能起来；s55 另覆盖"预检绑不上就先停掉正在跑的我们自己的那份"、"卸载先停进程再删"与编号菜单的新界面 |
-| `scripts/install.ps1`、macOS 路径、三平台产物模板（unit / plist / 计划任务） | **CI 证据**（否则只能标"仅语法级"） | `.github/workflows/install-smoke.yml` **已落地**：matrix ubuntu/macos/windows，在一次性 runner 上按用户的用法真装（真 root / 真管理员）→ 断言服务真的 active、真的在监听配置端口、台账 `"incomplete": false` → 再跑一遍验幂等 → 用重新构建的二进制做升级（"先停掉自己那份"的回归断言）→ 卸载并断言没留下我们建的东西。`scratch/s54` 26→44 条断言是它在 Linux 上用便携 pwsh + schtasks 桩做的前置核对；工作流本身的证据要等它在 runner 上跑一轮 |
+| `scripts/install.sh` | **真机全量（已完成）** | `scratch/s35` 63 条 + `scratch/s55` 25 条断言 + **今天在一台真 Ubuntu（qemu 纯软件模拟的 VM，真 systemd 251、免密 sudo）上跑通的完整生命周期**：非 root 起 → 自己 sudo 升权 → 单元 active+enabled → 真在听 10/11/12（`ss -lunp` 指到 sol 的 pid）→ journalctl 里能看到启动日志（含 `settle window window=5s` 与三个 5s 冷却）→ 现状/编号菜单 → 换一个字节不同的二进制做升级（预检失败 → 停掉我们装的服务 → 预检通过 → sha256 与本地一致）→ 卸载（单元/二进制/台账清掉、服务 inactive、配置保留）：无二进制时下载回退 / 有二进制时就地使用 / 重跑无变化 / 换二进制（升与降）/ 只改 `run.args` / 异源提醒 / 无台账 / 卸载，并真发一个魔法包确认能起来；s55 另覆盖"预检绑不上就先停掉正在跑的我们自己的那份"、"卸载先停进程再删"与编号菜单的新界面 |
+| `scripts/install.ps1`、macOS 路径、三平台产物模板（unit / plist / 计划任务） | **CI 证据**（否则只能标"仅语法级"） | `.github/workflows/install-smoke.yml` **已落地**：matrix ubuntu/macos/windows，在一次性 runner 上按用户的用法真装（真 root / 真管理员）→ 断言服务真的 active、真的在监听配置端口、台账 `"incomplete": false` → 再跑一遍验幂等 → 用重新构建的二进制做升级（"先停掉自己那份"的回归断言）→ 卸载并断言没留下我们建的东西。`scratch/s54` 26→44 条断言是它在 Linux 上用便携 pwsh + schtasks 桩做的前置核对；`scratch/s57` 20 条断言是它在本机（macOS）用便携 pwsh + 真 sol 二进制 + 函数桩（`Get-CimInstance`/`schtasks`）跑的**逻辑级**冒烟：真解析器查语法、装/重跑/卸载全走一遍，并断言"沙箱里没有 `schtasks /Create|/Delete`"；工作流本身的证据要等它在 runner 上跑一轮 |
 | 包管理器清单 | **schema 级** | scoop/winget 的 JSON schema 校验；winget 在 CI 里装不了，只能标 |
 | README 里的安装命令 | **真跑** | 沿用现有 readme 断言脚本（抽 README 片段真执行） |
 
 报告与台账字段由单测断言，防止实现漂移（与 `schema/sol.schema.json` 的防漂移测试同一思路）。
+
+### 10.1 三平台真机咬出来的三个坑（同一轮修掉，各配了回归断言）
+
+1. **探针不能读"更高权限进程的元数据"**：现状是在**未升权**时打印的，而服务通常以 root / SYSTEM 跑。
+   - Windows：`Get-Process` 的 `.Path` 读 SYSTEM 进程会失败（异常被吞）→ 看起来永远"没有在跑"。
+     改走 CIM 的 `Win32_Process`（`ExecutablePath` / `CommandLine` 任何人都能读）。
+   - Linux：`readlink /proc/<pid>/exe` 读 **root 进程**会被内核拒（读到空）→ 同样永远"没有在跑"。
+     改读 `/proc/<pid>/cmdline` 的 argv[0]（谁都能读），`hidepid` 下再退回 exe 链接。
+   - 断言：CI 三个平台各加一条"现状必须认出正在跑的那份"。
+2. **升级前要停的是"服务单元"，不是进程**：systemd 的 `Restart=` / launchd 的 `KeepAlive` 会在毫秒级
+   把进程拉回来，端口立刻又被占上 → 预检第二次照样绑不上，升级就卡死在"端口占用"上（真 Linux 上
+   就是这么死的）。改成先软停单元（`systemctl stop` / `launchctl bootout`），预检仍不过就用
+   `restore_service` 按原样起回去（开机自启不丢）。
+3. **沙箱里不许碰服务管理器**：`SOL_INSTALL_ROOT` 的语义是"只用我给的根"，但 `install.ps1` 在沙箱里
+   照样调了 `schtasks /Create /TN sol` —— 它会在**本机**任务管理器里建一个指向沙箱路径的任务。
+   （`install.sh` 本来就有 `[ -n "$ROOT" ]` 护栏，ps1 漏了。）断言：s57 的"沙箱里没有 `/Create` `/Delete`"。
 
 ## 11 包管理器清单
 
