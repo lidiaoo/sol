@@ -36,6 +36,8 @@ archives:
       - scripts/install.cmd
       - example/sol-example.yaml
       - schema/sol.schema.json
+      # 技能目录（Hermes 的 sol-install）：README 指向它，包里也带上，跟本地脚本保持一致
+      - skills/**
     format_overrides:
       - goos: windows
         formats: [zip]

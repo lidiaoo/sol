@@ -100,6 +100,11 @@ for p in $PLATFORMS; do
 	[ -f CHANGELOG.md ] && cp CHANGELOG.md "$dir/"
 	[ -f example/sol-example.yaml ] && cp example/sol-example.yaml "$dir/"
 	[ -f schema/sol.schema.json ] && cp schema/sol.schema.json "$dir/"
+	# 技能目录：Hermes 的 sol-install（README 里也指向它）。整棵拷进去，别挑文件。
+	if [ -d skills ]; then
+		mkdir -p "$dir/skills"
+		cp -R skills/. "$dir/skills/"
+	fi
 
 	size=$(wc -c <"$dir/$bin" | tr -d ' ')
 	say "ok（二进制 $size 字节）"
@@ -178,6 +183,14 @@ for name in install.sh install.ps1 install.cmd; do
 	cmp -s "scripts/$name" "${first}$name" || die "包里的 $name 与仓库里的不一致（打包环节动过它？）"
 done
 say "  包里脚本与仓库逐字节一致：install.sh / install.ps1 / install.cmd"
+if [ -d skills ]; then
+	for sk in skills/*/; do
+		[ -d "$sk" ] || continue
+		skn=${sk%/}; skn=${skn#skills/}
+		[ -f "$first/skills/$skn/SKILL.md" ] || die "包里有 skills 目录但缺 $skn/SKILL.md（打包环节漏了？）"
+	done
+	say "  技能目录已带上：$(ls skills | tr '\n' ' ')"
+fi
 
 # README 里的一行安装指向 releases/latest/download/install.sh（install.ps1 / install.cmd 同理），
 # 所以这些脚本在 dist/ 根上也要有一份单独的资产——不然那个地址就是 404。
