@@ -436,7 +436,7 @@ function Show-State {
 		# Test-Path 直接抛"拒绝访问"，在 $ErrorActionPreference='Stop' 下整只脚本当场死掉（真机实测）。
 		# 问"任务在不在"走列表那条路（Get-ScheduledTask / schtasks /Query），未升权也能读。
 		if ((Task-State) -eq 'installed') {
-			Warn2 "有计划任务但没有台账（$TaskName）：不是我装的，我不动它。
+			Warn2 "有计划任务但没有台账（$TaskName）：不是我装的，默认不动它——想接管就选 1（会问你要不要覆盖）。
       要手工清掉：
         schtasks /Delete /TN $TaskName /F"
 		}
@@ -745,11 +745,16 @@ function Invoke-Install {
 		}
 	}
 
-	# 别人的计划任务不覆盖：卸载那条"只删自己建的"规矩，安装这边同样成立。
+	# 别人的任务默认不覆盖——但**要问一句**：用户明确说要接管，就该能接管。死路是最糟的：
+	# 人说"我要装"，脚本却只回一句"不是你建的我不管"。
 	if ($script:ServiceChosen -and ((Task-State) -eq 'installed') -and ($LedgerJson.service.created_unit -ne $true)) {
-		Die "已经有一份计划任务 $TaskName，但它不是这个脚本建的：我不覆盖别人的任务定义。
-要么手工清掉：schtasks /Delete /TN $TaskName /F
-要么换个名字装：`$env:SOL_UNIT_NAME='sol-mine'; .\install.ps1"
+		Say ''
+		Warn2 "已经有一份计划任务 $TaskName，但它不是这个脚本建的（没有台账记着它，或台账说不是我们建的）。"
+		Say '      默认不许碰别人建的东西。'
+		if (-not (Ask-Yes '要我接管它吗？接管后按这份 install.yaml 覆盖它的定义，卸载时也会一起摘掉' 'n')) {
+			Die "没有接管，什么都没动。想手工来：schtasks /Delete /TN $TaskName /F；或换个名字装：`$env:SOL_UNIT_NAME='sol-mine'; .\install.ps1"
+		}
+		Say '      好，接管它（历史里会写明是接管来的，不是脚本新建的）。'
 	}
 
 	# 例外：升级时几乎必然"绑不上端口"——因为正在跑的那份是我们自己的 sol.exe，占着同一个端口。
@@ -871,9 +876,18 @@ function Register-SolService {
 
 function Invoke-Uninstall {
 	if (-not $LedgerExists) {
-		Die "没有台账（$Ledger），拒绝瞎删。
-能看到的是：$(if ($LocalBin) { "二进制 $LocalBin；" })$(if ((Task-State) -eq 'installed') { "计划任务 $TaskName；" })
-手工删除：schtasks /Delete /TN $TaskName /F"
+		# 没有台账不等于"不能清"：默认不瞎删，但把"会动什么"摆出来问一句——用户说要，就清。
+		Say ''
+		Warn2 "没有台账（$Ledger）：这个脚本没在这台机器上装过 sol。默认我不瞎删。"
+		Say '      按默认落点，会动的是：'
+		if ((Task-State) -eq 'installed') { Say "        · 计划任务 $TaskName" }
+		if (Test-Path $DestBin) { Say "        · 二进制 $DestBin" }
+		if ($LocalBin) { Say "        · 执行目录里那份 $LocalBin" }
+		if (-not $env:SOL_INSTALL_ROOT) { Say '        · 防火墙规则 sol (WoL) 与机器 PATH 里那一行' }
+		if (-not (Ask-Yes '要我按上面的默认落点强制清理吗' 'n')) {
+			Die "没有清理，什么都没动。手工来就是删上面那几样，再 schtasks /Delete /TN $TaskName /F。"
+		}
+		Say '      好，强制清理（历史里会记成"无台账的强制清理"）。'
 	}
 	# 先停进程再删：正在跑的 exe 删不掉（Windows 文件锁），而且它会一直占着端口——
 	# 下次安装的预检就会以"端口占用"失败，看起来像是装不上。

@@ -611,7 +611,7 @@ show_state() {
 	else
 		say "  已安装      无台账（从没被这个脚本装过；下面按你已有的二进制处理）"
 		if [ -f "$UNIT_PATH" ]; then
-			warn "有单元文件但没有台账（${UNIT_PATH}）：不是我装的，我不动它。
+			warn "有单元文件但没有台账（${UNIT_PATH}）：不是我装的，默认不动它——想接管就选 1（会问你要不要覆盖）。
       要手工清掉：
         sudo systemctl disable --now $UNIT_NAME
         sudo rm $UNIT_PATH
@@ -876,11 +876,15 @@ do_install() {
 	new_sha=$(sha256 "$LOCAL_BIN")
 	DEST_BIN="$BINDIR/sol"
 
-	# 别人的服务定义不覆盖：卸载那条"只删自己建的"规矩，安装这边同样成立。
+	# 别人的服务定义默认不覆盖——但**要问一句**：用户明确说要接管，就该能接管（死路最糟）。
 	if [ "$SERVICE_WANTED" = true ] && [ -f "$UNIT_PATH" ] && [ "$LEDGER_CREATED_UNIT" != true ]; then
-		die "已经有一份 ${UNIT_NAME}（${UNIT_PATH}），但它不是这个脚本建的：我不覆盖别人的服务定义。
-要么手工清掉：sudo systemctl disable --now $UNIT_NAME && sudo rm $UNIT_PATH && sudo systemctl daemon-reload
-要么换个名字装：SOL_UNIT_NAME=sol-mine.service sh $0"
+		say ""
+		warn "已经有一份 ${UNIT_NAME}（${UNIT_PATH}），但它不是这个脚本建的（没有台账，或台账说不是我们建的）。默认不碰别人建的东西。"
+		if ask "要我接管它吗？接管后按这份 install.yaml 覆盖它的定义，卸载时也会一起摘掉" n; then
+			say "      好，接管它（历史里会写明是接管来的，不是脚本新建的）。"
+		else
+			die "没有接管，什么都没动。手工清掉：sudo systemctl disable --now $UNIT_NAME && sudo rm $UNIT_PATH && sudo systemctl daemon-reload；或换个名字装：SOL_UNIT_NAME=sol-mine.service sh $0"
+		fi
 	fi
 
 	# 你说"应用"，但确实没有任何变化 → 不折腾服务，也不写历史。
@@ -1060,9 +1064,20 @@ write_service() {
 
 do_uninstall() {
 	del_configs=no
-	[ "$LEDGER_EXISTS" = yes ] || die "没有台账（${LEDGER}），拒绝瞎删。
-能看到的是：$( [ -n "$LOCAL_BIN" ] && printf '二进制 %s；' "$LOCAL_BIN" )$( [ -f "$UNIT_PATH" ] && printf '单元 %s；' "$UNIT_PATH" )
-手工删除就是删这两样，再 systemctl disable --now ${UNIT_NAME}。"
+	if [ "$LEDGER_EXISTS" != yes ]; then
+		# 没有台账不等于"不能清"：默认不瞎删，但把"会动什么"摆出来问一句——用户说要，就清。
+		say ""
+		warn "没有台账（${LEDGER}）：这个脚本没在这台机器上装过 sol。默认我不瞎删。"
+		say "      按默认落点，会动的是："
+		[ -f "$UNIT_PATH" ] && say "        · 单元 ${UNIT_PATH}"
+		[ -n "$LOCAL_BIN" ] && say "        · 执行目录里那份 ${LOCAL_BIN}"
+		say "        · ${BINDIR}/sol、防火墙规则（如果加过）、以及 PATH 里那一行"
+		if ask "要我按上面的默认落点强制清理吗" n; then
+			say "      好，强制清理（历史里会记成无台账的强制清理）。"
+		else
+			die "没有清理，什么都没动。手工删上面那几样，再 sudo systemctl disable --now ${UNIT_NAME}。"
+		fi
+	fi
 
 	case "$SERVICE_KIND" in
 	systemd)
