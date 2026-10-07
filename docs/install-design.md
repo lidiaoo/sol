@@ -219,6 +219,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 - **CI / 无人值守**：不给参数，用管道喂答案即可（`printf 'y\n' | bash install.sh`）。**检测到没有终端时只生成配置、不执行任何操作**——绝不猜"用户大概是想装"。
 - **"已安装但服务不在"这条路上必须留个出口**：台账里 `created_unit: false` 可能是"当时选了不装服务"，也可能是"上次没跑完"。只按台账走，用户就再也没机会说"我要服务"——所以单元不在时把那个问题**再问一次**（有 `SOL_INSTALL_ROOT` 或平台没有服务管理器时除外）。
 - **三平台各自的编码陷阱（都表现为"跑不通"，且都不报错）**：`install.ps1` 必须带 UTF-8 BOM——`install.cmd` 用的是系统自带 `powershell.exe`(5.1)，读无 BOM 的 `.ps1` 会按 ANSI/GBK 解释，满篇中文变乱码甚至解析失败；`install.cmd` 要**纯 ASCII**（cmd.exe 按控制台代码页读文件）；`install.sh` **绝不能**有 BOM（会砸掉 `#!`）。生成的 YAML/JSON 一律用"UTF-8 且不带 BOM"写（5.1 的 `-Encoding UTF8` 带 BOM）。
+- **shell 变量紧挨中文必须写 `${VAR}`**：macOS 的 `/bin/sh` 是 bash 3.2，`"$VAR（中文）"` 会把变量名解析成 `VAR` 加 `（` 的首字节，`set -u` 下直接 `unbound variable`，整只脚本死掉；Linux 的 bash 5 不会。这类写法在装脚本里一律加花括号，并由 install-smoke 的静态步骤 + macos job 兜住。
 - **脚本必须能读懂自己写出来的配置**：`install.ps1` 曾把 `args: [...]` 一行写成五行（数组字面量里的字符串拼接被 PowerShell 当成多个元素），于是它自己 `Die`"没有 run.args"——这就是"Windows 跑不通"的直接原因。凡是"写出去再读回来"的路径都要有断言钉住。
 - **端口解析要认两种写法**：`- match: { ports: [10010] }`（行内，示例与 README 都用它）与块写法。只认行首 `ports:` 时行内写法静默失效——低端口警告和防火墙规则全没了，表现就是"装完了收不到魔法包"。
 - **防火墙是帮手，不是目的**：没有 NetSecurity 模块的 Windows（Server Core）上 `Get-NetFirewallRule` 是"命令不存在"，`-ErrorAction SilentlyContinue` 挡不住，会把整个安装带走。一律 try/catch + 提醒。

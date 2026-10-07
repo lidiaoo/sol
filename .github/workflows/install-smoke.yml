@@ -24,6 +24,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # macOS 的 /bin/sh 是 bash 3.2：那边 "$VAR（中文）" 会把变量名解析成 "VAR" + "（" 的首字节，
+      # set -u 下直接 unbound variable、整只脚本死掉，而 Linux 的 bash 5 不会——所以这规则要在所有平台上查。
+      - name: The script must survive bash 3.2 (no $VAR next to a non-ASCII char)
+        run: |
+          set -euo pipefail
+          python3 - scripts/install.sh <<'PY'
+          import io, re, sys
+          src = io.open(sys.argv[1], encoding="utf-8").read()
+          pat = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)(?=[^\x00-\x7f])")
+          left = pat.findall(src)
+          if left:
+              print("这些变量紧跟非 ASCII，bash 3.2 上会炸，请写成 ${VAR}：", left[:5])
+              sys.exit(1)
+          print("shell 可移植性检查通过")
+          PY
       - name: Setup Go
         uses: actions/setup-go@v7
         with:

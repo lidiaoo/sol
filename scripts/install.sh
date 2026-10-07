@@ -34,7 +34,7 @@ for arg in "$@"; do
 	--sol-run-dir=*) RUN_DIR_ARG=${arg#--sol-run-dir=} ;;
 	--sol-unit-name=*) SOL_UNIT_NAME=${arg#--sol-unit-name=} ;;
 	--sol-root=*) SOL_INSTALL_ROOT=${arg#--sol-root=} ;;
-	*) die "这个脚本不接受参数（$arg）。所有选择都在生成的配置文件和问答里。" ;;
+	*) die "这个脚本不接受参数（${arg}）。所有选择都在生成的配置文件和问答里。" ;;
 	esac
 done
 
@@ -130,7 +130,7 @@ stop_instances() { # stop_instances <二进制完整路径> <为什么>
 	pids=$(running_instances "$bin" | tr '\n' ' ')
 	pids=${pids% }
 	[ -n "$pids" ] || return 0
-	say "  先停掉还在跑的那份（$why）：pid $pids"
+	say "  先停掉还在跑的那份（${why}）：pid $pids"
 	for p in $pids; do as_root kill -TERM "$p" 2>/dev/null || true; done
 	i=0
 	while [ "$i" -lt 10 ]; do
@@ -142,9 +142,9 @@ stop_instances() { # stop_instances <二进制完整路径> <为什么>
 	left=${left% }
 	if [ -n "$left" ]; then
 		for p in $left; do as_root kill -KILL "$p" 2>/dev/null || true; done
-		act root "强杀没退出的 sol 进程（pid $left）" "sudo kill -9 $left"
+		act root "强杀没退出的 sol 进程（pid ${left}）" "sudo kill -9 $left"
 	else
-		act root "停掉还在跑的 sol 进程（pid $pids）" "sudo kill $pids"
+		act root "停掉还在跑的 sol 进程（pid ${pids}）" "sudo kill $pids"
 	fi
 	sleep 1
 }
@@ -222,7 +222,7 @@ escalate() { # escalate <install|uninstall>
 		warn "这一步要 root，但脚本是管道执行的、没法自己升权：下面需要权限的步骤会逐条 sudo。"
 		return 0
 	fi
-	[ -n "$SUDO" ] || die "这一步需要 root（落点 $BINDIR、服务 $UNIT_NAME）。请用 root 角色重跑，或把落点换到你自己有写权限的目录。"
+	[ -n "$SUDO" ] || die "这一步需要 root（落点 ${BINDIR}、服务 ${UNIT_NAME}）。请用 root 角色重跑，或把落点换到你自己有写权限的目录。"
 
 	say ""
 	say "这一步要写 $BINDIR 并注册 $SERVICE_KIND 服务，需要 root。"
@@ -247,7 +247,7 @@ sha256() {
 }
 
 # run_limited <秒> <命令...>：跑一会儿就杀掉。用来判断 sol 是"起来了"还是"被拒了"。
-# 输出（stdout+stderr）留到 $TMPDIR_OUT，返回值：0 = 还在跑（起来了），1 = 自己退出了。
+# 输出（stdout+stderr）留到 ${TMPDIR_OUT}，返回值：0 = 还在跑（起来了），1 = 自己退出了。
 TMPDIR_OUT=""
 run_limited() {
 	secs=$1
@@ -276,7 +276,7 @@ LOCK_DIR="${TMPDIR:-/tmp}/sol-install.lock"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 	owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
 	if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
-		die "另一个安装/卸载正在进行（pid $owner，$LOCK_DIR）。确定没有的话：rm -rf $LOCK_DIR"
+		die "另一个安装/卸载正在进行（pid ${owner}，${LOCK_DIR}）。确定没有的话：rm -rf $LOCK_DIR"
 	fi
 	warn "发现上次留下的锁（pid ${owner:-未知} 已经不在了），接管它。"
 	rm -rf "$LOCK_DIR"
@@ -431,11 +431,11 @@ IFS=$OLD_IFS_SAVE
 validate_args() {
 	[ -n "$LOCAL_BIN" ] || return 0
 	first=$(printf '%s\n' "$ARGS" | head -n1)
-	[ "$first" = "listen" ] || die "run.args 第一个词必须是 listen（当前是 $first）"
+	[ "$first" = "listen" ] || die "run.args 第一个词必须是 listen（当前是 ${first}）"
 	known=$("$LOCAL_BIN" listen --help 2>/dev/null | grep -oE -- '--[a-zA-Z][a-zA-Z-]*' | sort -u)
 	for tok in $ARGS; do
 		case "$tok" in
-		-*) printf '%s\n' "$known" | grep -qx -- "$tok" || die "run.args 里有 sol listen 不认识的参数：$tok（见 $LOCAL_BIN listen --help）" ;;
+		-*) printf '%s\n' "$known" | grep -qx -- "$tok" || die "run.args 里有 sol listen 不认识的参数：${tok}（见 $LOCAL_BIN listen --help）" ;;
 		esac
 	done
 }
@@ -550,15 +550,15 @@ show_state() {
 		inc=$(ledger_field incomplete)
 		[ -n "$LEDGER_VERSION" ] || LEDGER_VERSION=版本未知
 		if [ "$inc" = true ]; then
-			say "  已安装      $LEDGER_VERSION（上次没装完——再跑一次会补上）"
+			say "  已安装      ${LEDGER_VERSION}（上次没装完——再跑一次会补上）"
 		else
-			say "  已安装      $LEDGER_VERSION（由安装脚本安装）"
+			say "  已安装      ${LEDGER_VERSION}（由安装脚本安装）"
 		fi
 		say "  台账        $LEDGER"
 	else
 		say "  已安装      无台账（从没被这个脚本装过；下面按你已有的二进制处理）"
 		if [ -f "$UNIT_PATH" ]; then
-			warn "有单元文件但没有台账（$UNIT_PATH）：不是我装的，我不动它。
+			warn "有单元文件但没有台账（${UNIT_PATH}）：不是我装的，我不动它。
       要手工清掉：
         sudo systemctl disable --now $UNIT_NAME
         sudo rm $UNIT_PATH
@@ -566,8 +566,8 @@ show_state() {
 		fi
 	fi
 	case "$(service_state)" in
-	running) say "  服务        $SERVICE_KIND，在运行（$UNIT_NAME）" ;;
-	installed) say "  服务        $SERVICE_KIND，已安装但没在运行（$UNIT_NAME）" ;;
+	running) say "  服务        ${SERVICE_KIND}，在运行（${UNIT_NAME}）" ;;
+	installed) say "  服务        ${SERVICE_KIND}，已安装但没在运行（${UNIT_NAME}）" ;;
 	absent) say "  服务        没有（$UNIT_NAME 不存在）" ;;
 	unregistered) say "  服务        SOL_INSTALL_ROOT 下只写单元文件，本机 systemd 里没有它" ;;
 	*) say "  服务        状态未知（没有 systemctl / launchctl？）" ;;
@@ -576,7 +576,7 @@ show_state() {
 	[ -n "$inst_bin" ] || inst_bin="$BINDIR/sol"
 	inst_n=$(running_instances "$inst_bin" | wc -l | tr -d ' ')
 	if [ "$inst_n" != "0" ]; then
-		say "  进程        有 $inst_n 个在跑：$inst_bin（要用到端口时会先停掉它）"
+		say "  进程        有 $inst_n 个在跑：${inst_bin}（要用到端口时会先停掉它）"
 	else
 		say "  进程        没有在跑"
 	fi
@@ -584,15 +584,15 @@ show_state() {
 	if [ "$UID_NOW" = "0" ]; then
 		say "  权限        root（写系统路径与注册服务不需要再升权）"
 	elif [ -n "$ROOT" ]; then
-		say "  权限        普通用户 + SOL_INSTALL_ROOT=$ROOT（自己的地盘，不会 sudo）"
+		say "  权限        普通用户 + SOL_INSTALL_ROOT=${ROOT}（自己的地盘，不会 sudo）"
 	else
 		say "  权限        普通用户（要写系统路径/注册服务时，动手前会用 sudo 重跑一遍自己）"
 	fi
 	if [ -f "$RUN_CONFIG" ]; then
 		if [ "$RUNTIME_CONFIG_GENERATED" = yes ]; then
-			say "  运行配置    $RUN_CONFIG（刚生成的示例配置：三条规则，按需改）"
+			say "  运行配置    ${RUN_CONFIG}（刚生成的示例配置：三条规则，按需改）"
 		else
-			say "  运行配置    $RUN_CONFIG（sol 会读它）"
+			say "  运行配置    ${RUN_CONFIG}（sol 会读它）"
 		fi
 	else
 		say "  运行配置    还不存在：$RUN_CONFIG"
@@ -824,7 +824,7 @@ do_install() {
 
 	# 别人的服务定义不覆盖：卸载那条"只删自己建的"规矩，安装这边同样成立。
 	if [ "$SERVICE_WANTED" = true ] && [ -f "$UNIT_PATH" ] && [ "$LEDGER_CREATED_UNIT" != true ]; then
-		die "已经有一份 $UNIT_NAME（$UNIT_PATH），但它不是这个脚本建的：我不覆盖别人的服务定义。
+		die "已经有一份 ${UNIT_NAME}（${UNIT_PATH}），但它不是这个脚本建的：我不覆盖别人的服务定义。
 要么手工清掉：sudo systemctl disable --now $UNIT_NAME && sudo rm $UNIT_PATH && sudo systemctl daemon-reload
 要么换个名字装：SOL_UNIT_NAME=sol-mine.service sh $0"
 	fi
@@ -980,7 +980,7 @@ write_service() {
 	case "$SERVICE_KIND" in
 	systemd)
 		if [ -n "$ROOT" ]; then
-			warn "SOL_INSTALL_ROOT=$ROOT：单元文件写好了，但不注册服务（systemd 看不见它）。"
+			warn "SOL_INSTALL_ROOT=${ROOT}：单元文件写好了，但不注册服务（systemd 看不见它）。"
 		elif command -v systemctl >/dev/null 2>&1; then
 			as_root systemctl daemon-reload >/dev/null 2>&1 || true
 			as_root systemctl enable --now "$UNIT_NAME" >/dev/null 2>&1 ||
@@ -1005,9 +1005,9 @@ write_service() {
 
 do_uninstall() {
 	del_configs=no
-	[ "$LEDGER_EXISTS" = yes ] || die "没有台账（$LEDGER），拒绝瞎删。
+	[ "$LEDGER_EXISTS" = yes ] || die "没有台账（${LEDGER}），拒绝瞎删。
 能看到的是：$( [ -n "$LOCAL_BIN" ] && printf '二进制 %s；' "$LOCAL_BIN" )$( [ -f "$UNIT_PATH" ] && printf '单元 %s；' "$UNIT_PATH" )
-手工删除就是删这两样，再 systemctl disable --now $UNIT_NAME。"
+手工删除就是删这两样，再 systemctl disable --now ${UNIT_NAME}。"
 
 	case "$SERVICE_KIND" in
 	systemd)
@@ -1049,8 +1049,8 @@ do_uninstall() {
 			act root "删运行配置" "sudo rm $RUN_CONFIG"
 		fi
 	else
-		say "配置留着：$USER_CONFIG、$RUN_CONFIG"
-		say "（要删：rm $USER_CONFIG $RUN_CONFIG）"
+		say "配置留着：${USER_CONFIG}、$RUN_CONFIG"
+		say "（要删：rm $USER_CONFIG ${RUN_CONFIG}）"
 		act user "保留配置（未删）" "# 配置与日志保留"
 	fi
 
@@ -1072,12 +1072,12 @@ report() { # report <install|uninstall|none>
 		say "  安装配置    $USER_CONFIG        改这里，然后重跑脚本"
 		say "  运行配置    $RUN_CONFIG$( [ "$RUNTIME_CONFIG_GENERATED" = yes ] && printf '（刚生成的示例配置：三条规则，按需改）' )"
 		say "  台账        $LEDGER"
-		say "  历史        $HISTORY（完整动作清单，带等价命令）"
+		say "  历史        ${HISTORY}（完整动作清单，带等价命令）"
 		say ""
 		say "  校验"
 		say "    $DEST_BIN --version   -> $(version_tag "$DEST_BIN")"
 		if [ -n "$ROOT" ]; then
-			say "    （SOL_INSTALL_ROOT 下不注册服务；单元文件在 $UNIT_PATH）"
+			say "    （SOL_INSTALL_ROOT 下不注册服务；单元文件在 ${UNIT_PATH}）"
 		elif [ "$SERVICE_CHOSEN" = true ]; then
 			case "$SERVICE_KIND" in
 			systemd) say "    systemctl is-active $UNIT_NAME   -> $( (as_root systemctl is-active "$UNIT_NAME" 2>/dev/null) || echo '未知')" ;;
@@ -1087,7 +1087,7 @@ report() { # report <install|uninstall|none>
 		say ""
 		say "  接下来"
 		if [ -n "$ROOT" ]; then
-			say "    （SOL_INSTALL_ROOT 下不注册服务：单元文件是 $UNIT_PATH，本机服务管理器里找不到它）"
+			say "    （SOL_INSTALL_ROOT 下不注册服务：单元文件是 ${UNIT_PATH}，本机服务管理器里找不到它）"
 		else
 			case "$SERVICE_KIND" in
 			systemd) say "    systemctl status $UNIT_NAME" ;;
@@ -1099,15 +1099,15 @@ report() { # report <install|uninstall|none>
 	uninstall)
 		head2 "[已卸载]"
 		if [ -n "$ROOT" ]; then
-			say "  服务        SOL_INSTALL_ROOT 下没注册过（单元文件：$UNIT_PATH）"
+			say "  服务        SOL_INSTALL_ROOT 下没注册过（单元文件：${UNIT_PATH}）"
 		else
-			say "  服务        $(state_cn "$(service_state)")（$UNIT_NAME）"
+			say "  服务        $(state_cn "$(service_state)")（${UNIT_NAME}）"
 		fi
 		say "  二进制      $([ -f "$BINDIR/sol" ] && echo "还在：$BINDIR/sol" || echo "已删除：$BINDIR/sol")"
 		if [ "$del_configs" = yes ]; then
 			say "  配置        已按你的选择删除"
 		else
-			say "  配置        保留：$USER_CONFIG、$RUN_CONFIG"
+			say "  配置        保留：${USER_CONFIG}、$RUN_CONFIG"
 			say "              要删：rm $USER_CONFIG $RUN_CONFIG"
 		fi
 		say "  历史        $HISTORY"
@@ -1167,7 +1167,7 @@ if [ "$LEDGER_EXISTS" = yes ]; then
 		rm -f "$USER_CONFIG"
 		write_user_config
 		CONFIG_GENERATED=yes
-		say "已重新生成：$USER_CONFIG（重新跑一次脚本就会按它执行）"
+		say "已重新生成：${USER_CONFIG}（重新跑一次脚本就会按它执行）"
 		exit 0
 		;;
 	quit)
