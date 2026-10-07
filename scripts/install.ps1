@@ -804,15 +804,8 @@ function Invoke-Uninstall {
 		Act 'admin' '从机器 PATH 撤下落点目录' "[Environment]::SetEnvironmentVariable('PATH', '...', 'Machine')"
 	}
 	$bin = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
-	# sol.bak 只在"覆盖过旧版本"时才存在，包装脚本在老安装里也没有：不存在的路径不该
-	# 让重试器白转 10 圈、更不该报假警。删掉"存在的那几个"，再确认 exe 真的没了。
-	Invoke-WithRetry '删二进制与 sol.bak' {
-		foreach ($p in @($bin, "$bin.bak")) { if (Test-Path $p) { Remove-Item -Path $p -Force -ErrorAction Stop } }
-	} | Out-Null
-	if (Test-Path $bin) { Warn2 "$bin 还在（可能有别的进程占着，或没权限）" }
-	# 包装脚本是我们写的；删不掉/不存在都不算卸载失败。
-	Remove-Item -Path $TaskCmd -Force -ErrorAction SilentlyContinue
-	Act 'admin' '删二进制、sol.bak 与运行包装脚本' "Remove-Item $bin, $bin.bak; Remove-Item $TaskCmd"
+	Invoke-WithRetry '删二进制、sol.bak 与包装脚本' { Remove-Item -Path $bin, "$bin.bak", $TaskCmd -Force -ErrorAction Stop } | Out-Null
+	Act 'admin' '删二进制、sol.bak 与运行包装脚本' "Remove-Item $bin, $bin.bak, $TaskCmd"
 
 	$script:DelConfigs = $false
 	if (Ask-Yes '配置文件也一起删掉吗？' 'n') { $script:DelConfigs = $true }
