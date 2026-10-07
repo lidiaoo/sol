@@ -254,6 +254,11 @@ function Get-OurTask {
 # 三态：'installed' / 'absent' / 'unknown'。连任务列表都读不到时宁可说"看不清"，
 # 也别把"没权限看"说成"没有"——那会让人得出"任务被删了"的错误结论。
 function Task-State {
+	# 不是管理员就一律"看不清"：任务是以 SYSTEM 身份注册的，任务文件（C:\Windows\System32\Tasks\<名字>）
+	# 的 ACL 只给 SYSTEM 和管理员读；非管理员的枚举会**悄悄跳过**它，于是"读不到"被当成"不存在"——
+	# 用户上次就是这么被骗的（真机实测：同一个名字，非管理员查它回"拒绝访问"，查一个真不存在的名字回
+	# "系统找不到指定的文件"；而 Get-ScheduledTask 对两者报一模一样的错）。看不清就直说看不清。
+	if (-not $IsAdmin) { return 'unknown' }
 	if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
 		if (Get-OurTask) { return 'installed' }
 		return 'absent'
@@ -452,11 +457,12 @@ function Show-State {
 			Say "  启动        $("$($ourTask.Actions[0].Execute) $($ourTask.Actions[0].Arguments)".Trim())"
 		}
 	} elseif ($st -eq 'unknown') {
-		Say "  服务        计划任务 $TaskName 看不清（列任务也被拒了）：以管理员身份重跑一次就能看清"
+		Say "  服务        读不到内容（计划任务 $TaskName）：当前不是管理员，要管理员才看得到；以管理员身份跑一次就能看全"
 	} else {
 		Say "  服务        没有（计划任务 $TaskName 不存在）"
 		if ($LedgerExists -and ($LedgerJson.service.created_unit -eq $true)) {
-			Say "              台账说这个任务是脚本建的，可现在查不到：被删过、或被清理工具动过。重跑一次（选 1）会再建。"
+			# 只陈述事实，不猜凶手：这台机器上它很可能是**我们自己卸载时**删的。
+			Say "              台账说这个任务是脚本建的，现在确实不在；重跑一次（选 1）会再建。"
 		}
 	}
 	Say "  日志        $LogFile"
@@ -469,7 +475,7 @@ function Show-State {
 		# 不至于说"没有在跑"而其实有（用户上次就是这么发现不对的）。
 		$byName = @(Get-Process -Name 'sol' -ErrorAction SilentlyContinue)
 		if ($byName.Count -gt 0) {
-			Say "  进程        有 $($byName.Count) 个 sol.exe 在跑（pid $($byName.Id -join ',')）；没升权时认不出是不是安装目录那份"
+			Say "  进程        有 $($byName.Count) 个 sol.exe 在跑（pid $($byName.Id -join ',')）；路径要管理员才看得到，所以认不出是不是安装目录那份"
 		} elseif ($st -eq 'installed') {
 			Say '  进程        没有在跑（计划任务在，但它眼下没跑起来；重跑脚本选 1 会重新起一次）'
 		} else {
@@ -1024,7 +1030,7 @@ function Show-Report($what) {
 		}
 		'uninstall' {
 			Head2 '[已卸载]'
-			Say "  服务        $(if ((Task-State) -eq 'installed') { '计划任务已注册' } else { '没有计划任务' })（$TaskName）"
+			Say "  服务        $(switch (Task-State) { 'installed' { '计划任务已注册' } 'absent' { '没有计划任务' } default { '读不到计划任务（要管理员）' } })（$TaskName）"
 			Say "  二进制      $(if (Test-Path $DestBin) { "还在：$DestBin" } else { "已删除：$DestBin" })"
 			if ($script:DelConfigs) { Say '  配置        已按你的选择删除' } else {
 				Say "  配置        保留：$UserConfig、$RunConfig"
@@ -1087,7 +1093,7 @@ Show-Config
 $script:Noop = $false
 
 if ($LedgerExists) {
-	$stText = if ((Task-State) -eq 'installed') { '计划任务已注册' } else { '没有计划任务' }
+	$stText = switch (Task-State) { 'installed' { '计划任务已注册' } 'absent' { '没有计划任务' } default { '读不到计划任务（要管理员）' } }
 	$instTag0 = if ($LedgerJson.installed_version) { $LedgerJson.installed_version } else { '版本未知' }
 	Say "检测到已安装 $instTag0（服务：$stText）。"
 	Show-Menu
