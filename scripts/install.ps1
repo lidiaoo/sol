@@ -60,6 +60,7 @@ $History = Join-Path $InstallDir 'install.log'
 # sol 的输出。计划任务以 SYSTEM 跑，stdout/stderr 本来没人接——所以任务跑的是我们写的包装脚本
 # run-sol.cmd，由它把输出重定向到这里（Windows 的计划任务本身没有重定向能力）。
 $LogFile = Join-Path $InstallDir 'sol.log'
+# 早先的安装让计划任务跑一个 run-sol.cmd 包装脚本；现在任务直接跑 sol.exe，这个路径只用于清理旧残留。
 $TaskCmd = Join-Path $InstallDir 'run-sol.cmd'
 
 # install.yaml 放在**你执行脚本的那个目录**；运行配置 sol.yaml 放在**安装目录**里，跟 sol.exe 做伴。
@@ -225,9 +226,38 @@ function Version-Tag($path) {
 	((Binary-Version $path) -replace '^.*version ', '') -replace ' .*$', ''
 }
 
+# 我们那个计划任务对象（找到就返回它，顺便能读"操作"那一栏）。找不到返回 $null。
+#
+# 为什么不用 `schtasks /Query /TN sol` 判存在：真机上任务不在时它回的是"拒绝访问"（退出码 1），
+# 于是"看不清"被错报成"不存在"（用户当场就说"明明有，提示无"）。列全部任务这一路未升权也能读：
+# cmdlet 优先，退路是 `schtasks /Query`（不带 /TN）再按名字精确匹配。
+function Get-OurTask {
+	if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+		$t = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -eq $TaskName -and $_.TaskPath -eq '\' })
+		if ($t.Count -gt 0) { return $t[0] }
+		return $null
+	}
+	$r = Invoke-Native 'schtasks' @('/Query')
+	if ($r.Code -ne 0) { return $null }
+	foreach ($line in ($r.Out -split "`r?`n")) {
+		$first = ($line -split '\s{2,}')[0]
+		if ($first -and ($first.Trim() -eq $TaskName)) {
+			return [pscustomobject]@{ TaskName = $TaskName; State = 'unknown'; Actions = @() }
+		}
+	}
+	return $null
+}
+
+# 三态：'installed' / 'absent' / 'unknown'。连任务列表都读不到时宁可说"看不清"，
+# 也别把"没权限看"说成"没有"——那会让人得出"任务被删了"的错误结论。
 function Task-State {
-	$r = Invoke-Native 'schtasks' @('/Query', '/TN', $TaskName, '/XML')
-	if ($r.Code -eq 0) { return 'installed' }
+	if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+		if (Get-OurTask) { return 'installed' }
+		return 'absent'
+	}
+	$r = Invoke-Native 'schtasks' @('/Query')
+	if ($r.Code -ne 0) { return 'unknown' }
+	if (Get-OurTask) { return 'installed' }
 	return 'absent'
 }
 
@@ -281,6 +311,8 @@ function Read-Args {
 # 没有才写，绝不覆盖；执行目录里那份（你改过的）会**原样拷过来**，不丢改动。
 $RuntimeConfigGenerated = $false
 $RuntimeConfigCopied = $false
+# 任务注册后复核失败（台账要据此记 incomplete，不能像上次那样报成功）
+$script:ServiceVerifyFailed = $false
 function Ensure-RuntimeConfig {
 	if (Test-Path $RunConfig) { return }
 	# 目标在安装目录里（ProgramData 要管理员）：没升权的这次别抢着建目录、也别谎报已生成，
@@ -397,18 +429,48 @@ function Show-State {
 		Say "  台账        $Ledger"
 	} else {
 		Say '  已安装      无台账（从没被这个脚本装过；下面按你已有的二进制处理）'
-		if ($env:SystemRoot -and (Test-Path (Join-Path $env:SystemRoot "System32\Tasks\$TaskName"))) {
+		# 别用 Test-Path 去捅 C:\Windows\System32\Tasks\<名字>：那个目录的 ACL 会让**未升权**的
+		# Test-Path 直接抛"拒绝访问"，在 $ErrorActionPreference='Stop' 下整只脚本当场死掉（真机实测）。
+		# 问"任务在不在"走列表那条路（Get-ScheduledTask / schtasks /Query），未升权也能读。
+		if ((Task-State) -eq 'installed') {
 			Warn2 "有计划任务但没有台账（$TaskName）：不是我装的，我不动它。
       要手工清掉：
         schtasks /Delete /TN $TaskName /F"
 		}
 	}
 	$st = Task-State
-	if ($st -eq 'installed') { Say "  服务        计划任务 $TaskName 已注册" } else { Say "  服务        没有（计划任务 $TaskName 不存在）" }
+	if ($st -eq 'installed') {
+		Say "  服务        计划任务 $TaskName 已注册"
+		# 用户要的：在任务计划里"一眼看到启动的是什么"。脚本这边也照抄一行出来。
+		$ourTask = Get-OurTask
+		if ($ourTask -and $ourTask.Actions -and ($ourTask.Actions.Count -gt 0) -and $ourTask.Actions[0].Execute) {
+			Say "  启动        $("$($ourTask.Actions[0].Execute) $($ourTask.Actions[0].Arguments)".Trim())"
+		}
+	} elseif ($st -eq 'unknown') {
+		Say "  服务        计划任务 $TaskName 看不清（列任务也被拒了）：以管理员身份重跑一次就能看清"
+	} else {
+		Say "  服务        没有（计划任务 $TaskName 不存在）"
+		if ($LedgerExists -and ($LedgerJson.service.created_unit -eq $true)) {
+			Say "              台账说这个任务是脚本建的，可现在查不到：被删过、或被清理工具动过。重跑一次（选 1）会再建。"
+		}
+	}
 	Say "  日志        $LogFile"
 	$instBin = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
-	$instN = @(Get-RunningSolIds $instBin).Count
-	if ($instN -gt 0) { Say "  进程        有 $instN 个在跑：$instBin（要用到端口时会先停掉它）" } else { Say '  进程        没有在跑' }
+	$instIds = @(Get-RunningSolIds $instBin)
+	if ($instIds.Count -gt 0) {
+		Say "  进程        有 $($instIds.Count) 个在跑：$instBin（要用到端口时会先停掉它）"
+	} else {
+		# 名字级回退：没升权时认不出"是不是安装目录那份"，但至少能看见"有没有在跑"，
+		# 不至于说"没有在跑"而其实有（用户上次就是这么发现不对的）。
+		$byName = @(Get-Process -Name 'sol' -ErrorAction SilentlyContinue)
+		if ($byName.Count -gt 0) {
+			Say "  进程        有 $($byName.Count) 个 sol.exe 在跑（pid $($byName.Id -join ',')）；没升权时认不出是不是安装目录那份"
+		} elseif ($st -eq 'installed') {
+			Say '  进程        没有在跑（计划任务在，但它眼下没跑起来；重跑脚本选 1 会重新起一次）'
+		} else {
+			Say '  进程        没有在跑'
+		}
+	}
 	if (Test-Path $RunConfig) {
 		if ($script:RuntimeConfigGenerated) { Say "  运行配置    $RunConfig$(if ($script:RuntimeConfigCopied) { '（从执行目录拷到安装目录的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' })" }
 		else { Say "  运行配置    $RunConfig（sol 会读它）" }
@@ -632,6 +694,24 @@ function Escalate-IfNeeded([string]$action) {
 	}
 }
 
+# 让 sol 自己把日志写进文件——Windows 的计划任务收集不到 stdout，这是 Windows 侧唯一能落盘的方式。
+# 只在运行配置里没有 logging: 这一节时追加；用户自己写过的 logging 一律不动（改它等于改人家的配置）。
+function Add-FileLoggingToConfig {
+	$text = Get-Content -Path $RunConfig -Raw -ErrorAction SilentlyContinue
+	if ($null -eq $text) { return }
+	if ($text -match '(?m)^\s*logging\s*:') {
+		Say "（运行配置里已经有 logging，照它来，脚本不动它）"
+		return
+	}
+	if (-not $text.EndsWith("`n")) { $text += "`n" }
+	$text += "`n# 计划任务的输出没人接，所以让 sol 自己写文件（这一节由安装脚本补上；想改就改）。`nlogging: { output: file, file: '$LogFile' }`n"
+	# 用不带 BOM 的 UTF-8 写回：PS 5.1 的 -Encoding utf8 会插 BOM，而这里是往文件**中间**追加，
+	# 中间冒出一个 BOM 会让 YAML 读不动。
+	$enc = New-Object System.Text.UTF8Encoding($false)
+	Invoke-WithRetry '在运行配置里补 logging（让 sol 写日志文件）' { [System.IO.File]::WriteAllText($RunConfig, $text, $enc) } | Out-Null
+	Act 'user' "运行配置补上 logging（sol 的日志落到 $LogFile）" "（往 $RunConfig 追加 logging: { output: file, file: '$LogFile' }）"
+}
+
 function Invoke-Install {
 	if (-not $LocalBin) { Die '没有可用的 sol.exe：把它放在脚本旁边或 PATH 里，再运行一次' }
 	# 升权后的那一次才写得进安装目录，所以配置的生成/拷贝放这儿，紧挨着预检。
@@ -645,7 +725,11 @@ function Invoke-Install {
 	if ($LedgerExists -and $newSha -eq $LedgerJson.sha256) {
 		$taskOk = ((Task-State) -eq 'installed') -or (-not $script:ServiceChosen)
 		# 还要确认任务跑的是我们的包装脚本：老安装的任务直接跑 exe、没有日志，得走完整路径升一次。
-		if ($taskOk -and $script:ServiceChosen -and (-not $env:SOL_INSTALL_ROOT) -and (-not (Test-Path $TaskCmd))) { $taskOk = $false }
+		# 任务跑的不是我们的 exe（早先的安装跑的是 run-sol.cmd）也要走完整路径，好把它升过来。
+		if ($taskOk -and $script:ServiceChosen -and (-not $env:SOL_INSTALL_ROOT)) {
+			$t = Get-OurTask
+			if (-not $t -or -not $t.Actions -or ($t.Actions.Count -eq 0) -or ($t.Actions[0].Execute -notlike "*$DestBin*")) { $taskOk = $false }
+		}
 		if ($taskOk) {
 			Say ''
 			Say "已是最新，无需操作：二进制没变（sha256 $newSha 与台账一致），计划任务与配置没变。"
@@ -680,7 +764,10 @@ function Invoke-Install {
 
 	# Windows 陷阱：正在运行的 exe 覆盖不了 → 先结束任务
 	if ((Task-State) -eq 'installed') {
-		schtasks /End /TN $TaskName 2>$null | Out-Null
+		# 走 Invoke-Native 而不是裸调：原生命令往 stderr 写东西（这里可能是"拒绝访问"）
+		# 在 $ErrorActionPreference='Stop' 下会被当成终止错误，把整个动作带走（真机就这么死的）；
+		# 沙箱里更不该碰本机任务管理器。
+		if (-not $env:SOL_INSTALL_ROOT) { Invoke-Native 'schtasks' @('/End', '/TN', $TaskName) | Out-Null }
 		Act 'admin' '结束计划任务（运行中的 exe 有文件锁）' "schtasks /End /TN $TaskName"
 		Start-Sleep -Seconds 1
 	}
@@ -701,23 +788,26 @@ function Invoke-Install {
 		Act 'admin' '放置二进制' "Copy-Item $LocalBin $DestBin"
 	}
 
-	# 机器 PATH（只加一次）
-	$machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-	if ($machinePath -notlike "*$InstallDir*") {
-		[Environment]::SetEnvironmentVariable('PATH', "$machinePath;$InstallDir", 'Machine')
-		Act 'admin' '把落点目录加进机器 PATH' "[Environment]::SetEnvironmentVariable('PATH', '...;$InstallDir', 'Machine')"
+	# 机器 PATH（只加一次）。沙箱里绝不碰（那是本机的地盘），真安装时也只提醒不致命：
+	# 写 Machine 级环境变量需要管理员，非管理员会抛"不允许所请求的注册表访问权"——这类 .NET 异常
+	# 在 $ErrorActionPreference='Stop' 下是**终止错误**，会把整个安装带走（真机实测就死在这儿）。
+	if (-not $env:SOL_INSTALL_ROOT) {
+		try {
+			$machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+			if ($machinePath -notlike "*$InstallDir*") {
+				[Environment]::SetEnvironmentVariable('PATH', "$machinePath;$InstallDir", 'Machine')
+				Act 'admin' '把落点目录加进机器 PATH' "[Environment]::SetEnvironmentVariable('PATH', '...;$InstallDir', 'Machine')"
+			}
+		} catch { Warn2 "没能把 $InstallDir 加进机器 PATH（不致命，命令行里用绝对路径即可）：$_" }
 	}
 
 	# SOL_INSTALL_ROOT 下不碰本机计划任务：那是别人的地盘（跟停进程、卸载那几处一样的规矩）。
 	if ($script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT) { Register-SolService }
 	elseif ($script:ServiceChosen) { Say '  （沙箱：跳过计划任务注册——本机任务管理器是别人的地盘）' }
 
-	# 计划任务不收集 stdout：审计日志只能靠 sol 自己写文件，配置里没写就提醒一句。
+	# 计划任务是无窗口跑的，stdout 没人接：让 sol 自己写日志文件（配置里没有 logging: 就补一节）。
 	if ($script:ServiceChosen -and (Test-Path $RunConfig)) {
-		$hasFileLog = (Get-Content -Encoding UTF8 $RunConfig) | Where-Object { $_ -match 'output:\s*file' }
-		if (-not $hasFileLog) {
-			Warn2 "计划任务不收集 stdout：$RunConfig 里建议写 logging: { output: file, file: $($InstallDir)\sol.log }，否则审计记录无处可去。"
-		}
+		Add-FileLoggingToConfig
 	}
 
 	# 防火墙（按运行配置里的端口；读不到就不猜）。缺 NetSecurity 模块（Server Core 之类）或任何
@@ -739,30 +829,17 @@ function Invoke-Install {
 	}
 	} catch { Warn2 "防火墙那一步失败（不致命，但魔法包可能进不来）：$_" }
 
-	Write-Ledger $false $LedgerJson.installed_version $LedgerJson.sha256
-	Act 'user' '更新安装台账（incomplete=false）' ''
+	Write-Ledger ([bool]$script:ServiceVerifyFailed) $LedgerJson.installed_version $LedgerJson.sha256
+	Act 'user' "更新安装台账（incomplete=$([bool]$script:ServiceVerifyFailed)）" ''
 	Append-History 'install'
-}
-
-# sol 在计划任务里跑，stdout/stderr 本来没人接——所以"sol 的日志"在 Windows 上一直是空的。
-# 计划任务的 XML 没有重定向，而把 cmd /c "… >> …" 塞进 /TR 是一串嵌套引号的地狱；所以让任务跑
-# 这个我们自己维护的包装脚本（路径没有空格、没有嵌套引号），重定向由它完成。
-function Write-RunWrapper {
-	$inner = (($ArgsList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
-	$lines = @(
-		'@echo off',
-		'rem 由 install.ps1 生成：计划任务跑的就是它；下面这行把 sol 的输出留到 sol.log。',
-		'"' + $DestBin + '" ' + $inner + ' >> "' + $LogFile + '" 2>&1'
-	)
-	Invoke-WithRetry '写运行包装脚本' { Set-Content -Path $TaskCmd -Value $lines -Encoding ascii -ErrorAction Stop } | Out-Null
-	Act 'admin' '写运行包装脚本（任务跑它，sol 的输出落到 sol.log）' "Set-Content $TaskCmd -Value @('<exe 与参数> >> sol.log 2>&1')"
 }
 
 function Register-SolService {
 	if ($env:SOL_INSTALL_ROOT) { return }   # 沙箱里永不碰本机任务管理器
-	Write-RunWrapper
-	# 任务跑的是包装脚本；--config 由包装脚本带着（所以"任务读哪份配置"看的是那个文件）。
-	$tr = $TaskCmd
+	# 任务直接跑 sol.exe：任务计划里"操作"那一栏就是可执行文件和它的参数，一眼看得懂。
+	# （早先为了让 stdout 有地方去，包了一层 run-sol.cmd，结果任务里只看到一个 .cmd，用户不认。
+	# 现在改成让 sol 自己写日志文件——见 Add-FileLoggingToConfig。）
+	$tr = '"' + $DestBin + '" ' + (($ArgsList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
 	# schtasks 自己的报错是"为什么没注册上"的唯一线索：绝不能吞掉它。
 	$r = Invoke-Native 'schtasks' @('/Create', '/TN', $TaskName, '/TR', $tr, '/SC', 'ONSTART', '/RU', 'SYSTEM', '/RL', 'HIGHEST', '/F')
 	if ($r.Code -ne 0) {
@@ -774,6 +851,11 @@ function Register-SolService {
 			return
 		}
 		Say '（去掉 /RL HIGHEST 后注册成功：/RU SYSTEM 的任务本身就是最高权限）'
+	}
+	# 建完必须复核：上次就是台账写了 created_unit=true、任务却查不到——不能只看 /Create 的退出码。
+	if ((Task-State) -ne 'installed') {
+		$script:ServiceVerifyFailed = $true
+		Warn2 "任务注册后复核没看到它（$TaskName）：台账会记成没装完，重跑一次可以再建"
 	}
 	$run = Invoke-Native 'schtasks' @('/Run', '/TN', $TaskName)
 	if ($run.Code -ne 0) { Warn2 "schtasks /Run 失败，退出码 $($run.Code)：$($run.Out)（任务已注册，只是这次没立刻起来；重启后会自动跑）" }
@@ -789,10 +871,16 @@ function Invoke-Uninstall {
 	# 先停进程再删：正在跑的 exe 删不掉（Windows 文件锁），而且它会一直占着端口——
 	# 下次安装的预检就会以"端口占用"失败，看起来像是装不上。
 	$binNow = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
-	schtasks /End /TN $TaskName 2>$null | Out-Null
+	# 走 Invoke-Native 而不是裸调：原生命令往 stderr 写东西（这里可能是"拒绝访问"）
+	# 在 $ErrorActionPreference='Stop' 下会被当成终止错误，把整个动作带走（真机就这么死的）；
+	# 沙箱里更不该碰本机任务管理器。
+	if (-not $env:SOL_INSTALL_ROOT) { Invoke-Native 'schtasks' @('/End', '/TN', $TaskName) | Out-Null }
 	Act 'admin' '结束计划任务实例（在跑的话）' "schtasks /End /TN $TaskName"
 	Stop-RunningInstances $binNow '卸载要删掉它，也不能让它继续占着端口'
-	schtasks /Delete /TN $TaskName /F 2>$null | Out-Null
+	# 走 Invoke-Native 而不是裸调：原生命令往 stderr 写东西（这里可能是"拒绝访问"）
+	# 在 $ErrorActionPreference='Stop' 下会被当成终止错误，把整个动作带走（真机就这么死的）；
+	# 沙箱里更不该碰本机任务管理器。
+	if (-not $env:SOL_INSTALL_ROOT) { Invoke-Native 'schtasks' @('/Delete', '/TN', $TaskName) | Out-Null }
 	Act 'admin' '删除计划任务' "schtasks /Delete /TN $TaskName /F"
 	$rule = $null
 	try { $rule = Get-NetFirewallRule -DisplayName 'sol (WoL)' -ErrorAction SilentlyContinue } catch { }
@@ -800,14 +888,23 @@ function Invoke-Uninstall {
 		Remove-NetFirewallRule -DisplayName 'sol (WoL)' -ErrorAction SilentlyContinue
 		Act 'admin' '删防火墙规则' "Remove-NetFirewallRule -DisplayName 'sol (WoL)'"
 	}
-	$machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-	if ($machinePath -like "*$InstallDir*") {
-		$newPath = (($machinePath -split ';') | Where-Object { $_ -and $_ -ne $InstallDir }) -join ';'
-		[Environment]::SetEnvironmentVariable('PATH', $newPath, 'Machine')
-		Act 'admin' '从机器 PATH 撤下落点目录' "[Environment]::SetEnvironmentVariable('PATH', '...', 'Machine')"
+	# 撤机器 PATH 同样：沙箱里不碰本机，真卸载时被拒（要管理员）也只提醒——别让异常带走整个卸载。
+	if (-not $env:SOL_INSTALL_ROOT) {
+		try {
+			$machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+			if ($machinePath -like "*$InstallDir*") {
+				$newPath = (($machinePath -split ';') | Where-Object { $_ -and $_ -ne $InstallDir }) -join ';'
+				[Environment]::SetEnvironmentVariable('PATH', $newPath, 'Machine')
+				Act 'admin' '从机器 PATH 撤下落点目录' "[Environment]::SetEnvironmentVariable('PATH', '...', 'Machine')"
+			}
+		} catch { Warn2 "没能从机器 PATH 撤下 $InstallDir（不致命）：$_" }
 	}
 	$bin = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
-	Invoke-WithRetry '删二进制、sol.bak 与包装脚本' { Remove-Item -Path $bin, "$bin.bak", $TaskCmd -Force -ErrorAction Stop } | Out-Null
+	# sol.bak 只有升级过才有、包装脚本只有老安装才有：不存在的路径不该让重试器空转、更不该报假警。
+	Invoke-WithRetry '删二进制、sol.bak 与包装脚本' {
+		foreach ($p in @($bin, "$bin.bak", $TaskCmd)) { if (Test-Path $p) { Remove-Item -Path $p -Force -ErrorAction Stop } }
+	} | Out-Null
+	if (Test-Path $bin) { Warn2 "$bin 还在（可能有别的进程占着，或没权限）" }
 	Act 'admin' '删二进制、sol.bak 与运行包装脚本' "Remove-Item $bin, $bin.bak, $TaskCmd"
 
 	$script:DelConfigs = $false
@@ -843,7 +940,7 @@ function Show-Report($what) {
 			Say ''
 			Say '  校验'
 			Say "    $DestBin --version   -> $(Version-Tag $DestBin)"
-			if ($script:ServiceChosen) { Say "    schtasks /Query /TN $TaskName   -> $(Task-State)" }
+			if ($script:ServiceChosen) { Say "    Get-ScheduledTask -TaskName $TaskName   -> $(Task-State)" }
 			Say ''
 			Say '  接下来'
 			Say "    schtasks /Query /TN $TaskName /V /FO LIST"
