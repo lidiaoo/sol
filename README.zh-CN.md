@@ -513,9 +513,56 @@ Expand-Archive -Path "sol.zip" -DestinationPath "." -Force
 > 上游最后一个 tag 是 v0.0.2，配置文件、额外动作与端口 9 的变更都在它之后；升级既有安装前请先读
 > [CHANGELOG](CHANGELOG.md)。
 
-**出发布包（本地）**：`scripts/release.sh v0.1.0` → `dist/` 里有 `sol-v0.1.0-<os>-<arch>.tar.gz`（Windows 是 `.zip`）、
-`install.sh` / `install.ps1` / `install.cmd` 单文件资产，以及 `checksums.txt`。包里的布局就是一个执行目录：
-二进制 + 安装脚本 + README + `skills/`（Hermes 的 `sol-install` 技能），解包进去直接跑安装脚本即可。CI 用 goreleaser 出同一套（名字、内容一致）。
+**自己出发布包**：一条命令，Linux / macOS / Windows（Git Bash）上完全一样，见下面的
+[自己生成 dist 发布包](#自己生成-dist-发布包)。Go 交叉编译，一台机器就能出全六份；CI 用 goreleaser 出同一套（名字、内容一致）。
+
+### 自己生成 dist 发布包
+
+`scripts/release.sh` 把 CI 发的那套包写进 `dist/`。三个平台**任选一台**都能跑——Go 交叉编译，
+不需要为每个目标平台各准备一台机器：
+
+```bash
+sh scripts/release.sh v0.1.0
+```
+
+```text
+dist/sol-v0.1.0-linux-amd64.tar.gz      dist/sol-v0.1.0-windows-amd64.zip
+dist/sol-v0.1.0-linux-arm64.tar.gz      dist/sol-v0.1.0-windows-arm64.zip
+dist/sol-v0.1.0-darwin-amd64.tar.gz     dist/checksums.txt
+dist/sol-v0.1.0-darwin-arm64.tar.gz     dist/install.sh  dist/install.ps1  dist/install.cmd
+```
+
+各平台怎么跑——命令完全一样，只是**在哪个 shell 里敲**不同：
+
+| 平台 | 这样跑 | 说明 |
+| --- | --- | --- |
+| Linux | `sh scripts/release.sh v0.1.0` | 需要 `git` 和 `go`；只有要出 Windows 包时才需要 `zip` |
+| macOS | `sh scripts/release.sh v0.1.0` | 同上；有 `file` 的话会多做一遍格式/架构核对（可选） |
+| Windows | 开 **Git Bash**：`cd /e/Common/Project/GolandProjects/sol && sh scripts/release.sh v0.1.0` | 原装的 Git for Windows 就够，不用装 WSL |
+
+Windows 上没有 `zip` 时，`.zip` 会走 PowerShell 的 `Compress-Archive` 生成；没有 `file` 时，格式/架构
+核对会跳过并说明。两样都不影响出包。`make` 里**故意没有**这个目标——打包和构建是两件事。
+
+每个包解出来就是一个目录，也就是"执行目录"：二进制、三个安装脚本、中英 README、CHANGELOG、
+LICENSE、`sol-example.yaml`、`sol.schema.json`，以及 `skills/`（Hermes 的 `sol-install` 技能）。
+解包进去跑安装脚本即可，没有别的要配。
+
+选项：
+
+- `sh scripts/release.sh` 不带版本号时取 `git describe --tags --always`，并且**拒绝脏树**——只算已跟踪
+  文件的改动，未跟踪的 `dist/`、`.idea/` 不算；`--allow-dirty` 可以明确接受。
+- `--platforms "windows/amd64 linux/arm64"` 只出其中几个平台。
+- `-h` 看用法。
+
+它拒绝发出坏东西：每条二进制都核对格式与架构，包里的安装脚本必须与仓库里**逐字节一致**，技能目录
+必须完整，最后还会在宿主平台上真跑一遍刚编出来的二进制（`--version`）。
+
+CI 那边：在 GitHub 上**创建 release** 时，`.github/workflows/release.yaml` 用 goreleaser 出同一套包：
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+gh release create v0.1.0 dist/* --title v0.1.0      # 没有 gh 就网页上传 dist/ 里的文件
+```
 
 ### Build from source
 

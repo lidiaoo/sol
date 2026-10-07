@@ -567,10 +567,60 @@ Expand-Archive -Path "sol.zip" -DestinationPath "." -Force
 > Upstream's last tagged release, v0.0.2, predates the configuration file, the extra actions and the port-9 change; read the
 > [CHANGELOG](CHANGELOG.md) before upgrading an existing installation.
 
-**Building a release locally**: `scripts/release.sh v0.1.0` produces `dist/sol-v0.1.0-<os>-<arch>.tar.gz` (`.zip` on
-Windows) plus loose `install.sh` / `install.ps1` / `install.cmd` assets and `checksums.txt`. The archive layout is a
-single executable directory — binary, installer scripts, README and `skills/` (the Hermes `sol-install` skill) — so
-unpacking it and running the installer is all it takes. CI produces the same set through goreleaser (same names, same contents).
+**Building the release packages yourself**: one command, the same on Linux, macOS and Windows (Git Bash) — see
+[Building the release packages yourself](#building-the-release-packages-yourself) below. Go cross-compiles, so a
+single machine produces all six; CI publishes the same set through goreleaser (same names, same contents).
+
+### Building the release packages yourself
+
+`scripts/release.sh` writes the packages CI publishes into `dist/`. It runs on any one of the three
+platforms — Go cross-compiles, so you do not need one machine per target:
+
+```bash
+sh scripts/release.sh v0.1.0
+```
+
+```text
+dist/sol-v0.1.0-linux-amd64.tar.gz      dist/sol-v0.1.0-windows-amd64.zip
+dist/sol-v0.1.0-linux-arm64.tar.gz      dist/sol-v0.1.0-windows-arm64.zip
+dist/sol-v0.1.0-darwin-amd64.tar.gz     dist/checksums.txt
+dist/sol-v0.1.0-darwin-arm64.tar.gz     dist/install.sh  dist/install.ps1  dist/install.cmd
+```
+
+Per platform — the command is identical; only the shell you type it in differs:
+
+| Host | Run it | Notes |
+| --- | --- | --- |
+| Linux | `sh scripts/release.sh v0.1.0` | needs `git` and `go`; `zip` only when you build the Windows targets |
+| macOS | `sh scripts/release.sh v0.1.0` | same; `file` gives the extra format/architecture check (optional) |
+| Windows | Git Bash: `cd /e/Common/Project/GolandProjects/sol && sh scripts/release.sh v0.1.0` | stock Git for Windows is enough |
+
+On Windows without `zip`, the `.zip` archives are written through PowerShell's `Compress-Archive`; without
+`file`, the format/architecture check is skipped with a note. Neither blocks the build. `make` has no target
+for this on purpose — packaging and building are separate jobs.
+
+Every archive unpacks to a single directory — the run directory: the binary, the three installer scripts,
+both READMEs, CHANGELOG, LICENSE, `sol-example.yaml`, `sol.schema.json` and `skills/` (the Hermes
+`sol-install` skill). Unpack it, run the installer, done. Nothing else to configure.
+
+Options:
+
+- `sh scripts/release.sh` with no version takes `git describe --tags --always` and refuses a dirty tree —
+  tracked changes only, so untracked `dist/` and `.idea/` do not count; `--allow-dirty` overrides.
+- `--platforms "windows/amd64 linux/arm64"` builds a subset instead of all six.
+- `-h` prints the usage.
+
+It refuses to ship something wrong: each binary's format and architecture is verified, the packaged
+installers must be byte-identical to the ones in the repo, the skills directory must be complete, and on
+the host's own platform it runs the freshly built binary with `--version`.
+
+CI produces the same set through goreleaser whenever a GitHub **release** is created
+(`.github/workflows/release.yaml`):
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+gh release create v0.1.0 dist/* --title v0.1.0      # or upload the files from dist/ by hand
+```
 
 ### Build from source
 
