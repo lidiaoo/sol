@@ -564,7 +564,9 @@ sol ifaces
 5. **装成服务**，这样重启后还在、没人登录时也跑——见 [Running as a service](#running-as-a-service)。
 
 6. **确认跑起来的是什么**：`sol --version`、`journalctl -u sol.service -f`（Linux）、
-   `tail -f /usr/local/var/log/sol.log`（macOS），或者控制面开着时的 `GET /v1/status`。
+   `tail -f /usr/local/var/log/sol.log`（macOS）、`Get-Content -Wait C:\ProgramData\sol\sol.log`
+   （Windows；计划任务跑的是安装目录里的 `run-sol.cmd`，由它把 sol 的输出接进这个文件），
+   或者控制面开着时的 `GET /v1/status`。安装脚本的"现状"和完成报告里也各有一行告诉你日志在哪。
 
 密钥绝不进 YAML：放进环境变量（`SOL_TOKEN`、`SOL_CMD_KEY`、`SOL_PACKET_KEY`），或放进只有服务账号
 能读的文件里，再由配置引用它。
@@ -724,7 +726,13 @@ $udp.Close()
    ```powershell
    New-Item -ItemType Directory -Force -Path C:\ProgramData\sol | Out-Null
    Move-Item .\sol.exe C:\ProgramData\sol\sol.exe -Force
-   schtasks /Create /TN sol /TR "C:\ProgramData\sol\sol.exe listen --config C:\ProgramData\sol\sol.yaml" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+   # 任务跑一个包装脚本，sol 的输出才有地方落：计划任务的 XML 没有重定向，而把
+   # cmd /c "… >> …" 塞进 /TR 是一串嵌套引号；把重定向关进我们自己这个文件里最省事。
+   @'
+   @echo off
+   "C:\ProgramData\sol\sol.exe" listen --config "C:\ProgramData\sol\sol.yaml" >> "C:\ProgramData\sol\sol.log" 2>&1
+   '@ | Set-Content C:\ProgramData\sol\run-sol.cmd -Encoding ascii
+   schtasks /Create /TN sol /TR "C:\ProgramData\sol\run-sol.cmd" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
    schtasks /Run /TN sol
    ```
 

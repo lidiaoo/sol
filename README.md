@@ -622,7 +622,10 @@ sol ifaces
    [Running as a service](#running-as-a-service).
 
 6. **Confirm what is running**: `sol --version`, `journalctl -u sol.service -f` (Linux),
-   `tail -f /usr/local/var/log/sol.log` (macOS), or `GET /v1/status` when the control plane is on.
+   `tail -f /usr/local/var/log/sol.log` (macOS), `Get-Content -Wait C:\ProgramData\sol\sol.log`
+   (Windows; the scheduled task runs `run-sol.cmd` from the install dir, which is what funnels sol's
+   output into that file), or `GET /v1/status` when the control plane is on. The installer's state
+   block and its completion report each print a line telling you where the log is.
 
 Secrets never belong in the YAML: put them in environment variables (`SOL_TOKEN`, `SOL_CMD_KEY`,
 `SOL_PACKET_KEY`) or in a file only the service account can read, and reference that from the
@@ -788,7 +791,16 @@ with a machine-level environment variable for the token:
    ```powershell
    New-Item -ItemType Directory -Force -Path C:\ProgramData\sol | Out-Null
    Move-Item .\sol.exe C:\ProgramData\sol\sol.exe -Force
-   schtasks /Create /TN sol /TR "C:\ProgramData\sol\sol.exe listen --config C:\ProgramData\sol\sol.yaml" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+   # the scheduled task runs a tiny wrapper so sol's output actually lands somewhere
+   # (a task's XML has no redirection; run-sol.cmd keeps the quoting inside its own file)
+   # The task runs a wrapper so sol's output actually lands somewhere: a task's XML has
+   # no redirection, and shoving cmd /c "… >> …" into /TR is a nest of quotes. Keep the
+   # redirect inside a file of our own.
+   @'
+   @echo off
+   "C:\ProgramData\sol\sol.exe" listen --config "C:\ProgramData\sol\sol.yaml" >> "C:\ProgramData\sol\sol.log" 2>&1
+   '@ | Set-Content C:\ProgramData\sol\run-sol.cmd -Encoding ascii
+   schtasks /Create /TN sol /TR "C:\ProgramData\sol\run-sol.cmd" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
    schtasks /Run /TN sol
    ```
 
