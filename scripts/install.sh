@@ -119,7 +119,12 @@ running_instances() { # running_instances <二进制完整路径>
 			# 比 argv[0]，而不是 readlink exe：cmdline 谁都能读，而 exe 链接在**非 root 读 root
 			# 进程**时会被内核拒掉（读出来是空）——"现状"是在未升权时打印的，于是 Linux 上
 			# 也看不见正在跑的那份（跟 Windows 上读不到 SYSTEM 进程的 .Path 是同一类错）。
-			argv0=$(tr '\0' '\n' <"$d/cmdline" 2>/dev/null | head -n1)
+			#
+			# 让 head 去读这个文件，而不是用 shell 的 `< 重定向`：进程可能在 glob 展开和读取之间
+			# 就退出了，而**重定向失败是 shell 自己报的错**，挂在命令上的 2>/dev/null 压不住它
+			# （真机上就冒过两行"/proc/<pid>/cmdline: 没有那个文件或目录"）。命令读文件时，
+			# 那个错归命令所有，2>/dev/null 就能压掉，读不到就当空。
+			argv0=$(head -c 4096 "$d/cmdline" 2>/dev/null | tr '\0' '\n' | head -n1)
 			if [ -n "$argv0" ]; then
 				[ "$argv0" = "$bin" ] && printf '%s\n' "$p"
 			else
