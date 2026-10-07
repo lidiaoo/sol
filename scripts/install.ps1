@@ -17,7 +17,9 @@ param(
 	[string]$SolAction = '',
 	# 卸载时"配置文件也一起删掉吗"的答案：在父进程问，带进升权子进程（子进程有自己的窗口，
 	# 在它里面提问人可能看不见，父进程却在等它——那就是"脚本没反应"）。环境变量走 UAC 不可靠（见文件开头）。
-	[string]$SolDelConfigs = '',
+	[string]$SolDelConfigs,
+	[string]$SolTakeOver,
+	[string]$SolForceClean = '',
 	[string]$SolService = '',
 	[string]$SolRunDir = '',
 	[string]$SolUnitName = '',
@@ -100,6 +102,7 @@ try {
 	Die "在这个目录里写不了文件：$UserConfig 与 $DesktopConfig 要生成在这儿。换一个你有写权限的目录再跑一次。"
 }
 
+$script:Child = $false
 $IsAdmin = $false
 try {
 	$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -504,6 +507,13 @@ function Show-Config {
 $script:NoAnswer = $false
 
 function Ask-Yes($prompt, $default) {
+	# 升权子进程有自己的窗口，很可能不在用户眼前：在那里 Read-Host 等人按键，而父进程在 -Wait 里
+	# 干等——用户看到的就是"脚本卡死没响应"（真机上就这么撞过两次）。子进程一律不问，取默认值；
+	# 该问的在父进程问，答案经内部参数带进来（环境变量过 UAC 不保证继承，这是文件开头记下的坑）。
+	if ($script:Child) {
+		Warn2 "（升权子进程里不提问：「$prompt」取默认值 $default；要它生效请在父进程那一步回答）"
+		return ($default -eq 'y')
+	}
 	$suffix = if ($default -eq 'y') { '[Y/n]' } else { '[y/N]' }
 	$ans = ''
 	try { $ans = (Read-Host "$prompt $suffix") } catch { $script:NoAnswer = $true; return $false }
@@ -532,6 +542,7 @@ function Show-Menu {
 }
 
 function Ask-Choice($prompt) {
+	if ($script:Child) { Warn2 '（升权子进程里不提问：直接退出）'; return 'quit' }
 	# 只认序号（回车＝1），同时容忍单字母的旧习惯；看不懂就重问，绝不猜。
 	for ($i = 0; $i -lt 5; $i++) {
 		$ans = ''
@@ -737,6 +748,8 @@ function Escalate-IfNeeded([string]$action) {
 	$rawArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
 		'-SolAction', $action, '-SolService', $svc, '-SolRunDir', $RunDir, '-SolUnitName', $TaskName)
 	if ($script:DelConfigsGiven) { $rawArgs += @('-SolDelConfigs', $(if ($script:DelConfigs) { 'yes' } else { 'no' })) }
+	if ($script:TakeOverGiven) { $rawArgs += @('-SolTakeOver', $(if ($script:TakeOver) { 'yes' } else { 'no' })) }
+	if ($script:ForceCleanGiven) { $rawArgs += @('-SolForceClean', $(if ($script:ForceClean) { 'yes' } else { 'no' })) }
 	if ($env:SOL_INSTALL_ROOT) { $rawArgs += @('-SolRoot', $env:SOL_INSTALL_ROOT) }
 	$argList = @($rawArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
 
@@ -746,7 +759,14 @@ function Escalate-IfNeeded([string]$action) {
 		# 而这正是"服务没注册"最难查的地方。子进程把全程写进 transcript，父进程随后打印出来。
 		$elevLog = Join-Path $RunDir "elevated-$action.log"
 		if (Test-Path $elevLog) { Remove-Item $elevLog -Force -ErrorAction SilentlyContinue }
-		$p = Start-Process -FilePath $hostExe -Verb RunAs -PassThru -Wait -WorkingDirectory $RunDir -ArgumentList $argList
+		# 不用 -Wait：UAC 对话框要是没被看到（藏在窗口后面、别的桌面、或只闪了下任务栏），控制台会
+		# 一声不吭地干等——用户看到的就是"卡死没响应"。自己轮询，并且每 10 秒报一次在等什么、等了多久。
+		$p = Start-Process -FilePath $hostExe -Verb RunAs -PassThru -WorkingDirectory $RunDir -ArgumentList $argList
+		$waited = 0
+		while (-not $p.WaitForExit(10000)) {
+			$waited += 10
+			Warn2 "还在等 UAC 授权框被点（已等 ${waited} 秒）：看不到它就按 Win 键或看任务栏；不点它，这里不会继续。"
+		}
 		Say ''
 		if (Test-Path $elevLog) {
 			Say '以管理员身份那一步的输出：'
@@ -810,8 +830,10 @@ function Invoke-Install {
 		Say ''
 		Warn2 "已经有一份计划任务 $TaskName，但它不是这个脚本建的（没有台账记着它，或台账说不是我们建的）。"
 		Say '      默认不许碰别人建的东西。'
-		if (-not (Ask-Yes '要我接管它吗？接管后按这份 install.yaml 覆盖它的定义，卸载时也会一起摘掉' 'n')) {
-			Die "没有接管，什么都没动。想手工来：schtasks /Delete /TN $TaskName /F；或换个名字装：`$env:SOL_UNIT_NAME='sol-mine'; .\install.ps1"
+		$takeOver = $script:TakeOver
+		if (-not $script:TakeOverGiven) { $takeOver = Ask-Yes '要我接管它吗？接管后按这份 install.yaml 覆盖它的定义，卸载时也会一起摘掉' 'n' }
+		if (-not $takeOver) {
+			Die "没有接管，什么都没动。想让它接管：右键 install.cmd 选「以管理员身份运行」（那样会在你看得见的窗口里问你）；想手工清掉：schtasks /Delete /TN $TaskName /F"
 		}
 		Say '      好，接管它（历史里会写明是接管来的，不是脚本新建的）。'
 	}
@@ -943,7 +965,9 @@ function Invoke-Uninstall {
 		if (Test-Path $DestBin) { Say "        · 二进制 $DestBin" }
 		if ($LocalBin) { Say "        · 执行目录里那份 $LocalBin" }
 		if (-not $env:SOL_INSTALL_ROOT) { Say '        · 防火墙规则 sol (WoL) 与机器 PATH 里那一行' }
-		if (-not (Ask-Yes '要我按上面的默认落点强制清理吗' 'n')) {
+		$force = $script:ForceClean
+		if (-not $script:ForceCleanGiven) { $force = Ask-Yes '要我按上面的默认落点强制清理吗' 'n' }
+		if (-not $force) {
 			Die "没有清理，什么都没动。手工来就是删上面那几样，再 schtasks /Delete /TN $TaskName /F。"
 		}
 		Say '      好，强制清理（历史里会记成"无台账的强制清理"）。'
@@ -1053,6 +1077,7 @@ function Show-Report($what) {
 $ElevatedAction = $ActionArg
 if (-not $ElevatedAction) { $ElevatedAction = $env:SOL_INSTALL_ACTION }
 if ($ElevatedAction) {
+	$script:Child = $true
 	$env:SOL_INSTALL_ELEVATED = '1'
 	$svc = $ServiceArg
 	if (-not $svc) { $svc = $env:SOL_INSTALL_SERVICE }
@@ -1061,6 +1086,9 @@ if ($ElevatedAction) {
 	$dcArg = $SolDelConfigs
 	if (-not $dcArg) { $dcArg = $env:SOL_INSTALL_DELCONFIGS }
 	if ($dcArg) { $script:DelConfigsGiven = $true; $script:DelConfigs = ($dcArg -eq 'yes') }
+	# 同一条规矩：这两个答案也由父进程问、经参数带进来。
+	if ($SolTakeOver) { $script:TakeOverGiven = $true; $script:TakeOver = ($SolTakeOver -eq 'yes') }
+	if ($SolForceClean) { $script:ForceCleanGiven = $true; $script:ForceClean = ($SolForceClean -eq 'yes') }
 	# 父进程看不见这个窗口：全程写进 transcript，交给它打印。
 	$elevLog = Join-Path $RunDir "elevated-$ElevatedAction.log"
 	$transcript = $false
@@ -1114,6 +1142,11 @@ if ($LedgerExists) {
 		'quit' { Show-Report 'none' }
 		default {
 			$script:ServiceChosen = ($LedgerJson.service.created_unit -eq $true)
+			# 台账说这个计划任务不是本脚本建的：接管与否在**父进程**问（子进程的窗口可能不在眼前）。
+			if ($LedgerJson.service.created_unit -ne $true) {
+				$script:TakeOver = Ask-Yes '台账说那个计划任务不是本脚本建的：要我接管它吗（按这份 install.yaml 覆盖它的定义，卸载时一起摘掉）' 'n'
+				$script:TakeOverGiven = $true
+			}
 			# 台账说没建过任务，而任务也确实不在（可能上次没跑完）：再问一次，
 			# 否则"我想装服务"在这条路上永远没机会说出口。
 			if (-not $script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT -and (Task-State) -ne 'installed') {
