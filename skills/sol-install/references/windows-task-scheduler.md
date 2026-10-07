@@ -50,3 +50,15 @@
   架构不符 → 现状块就提示"这份装不起来"，预检处直接停下并说清该下哪个包。
 - 写这类判定时注意：**判定函数要能返回空**（不是认识的格式就不判），否则 MSYS/Cygwin 这类环境下
   会把"看不懂"误报成"架构不对"。
+
+## SYSTEM 身份的任务：非管理员"看不见"它，而且会被静默跳过
+
+- 我们的任务用 `/RU SYSTEM /SC ONSTART` 注册 → 任务定义 `C:\Windows\System32\Tasks\<名字>` 的 ACL
+  只给 SYSTEM 与管理员。**非管理员的 `Get-ScheduledTask` 枚举会直接跳过读不到的任务**（不是报错），
+  于是"不在列表里"被当成"不存在"——真机上任务在、sol 在跑，现状却报"没有"。
+- 判别"到底有没有"的两个免权限办法（都不依赖中英文文案）：
+  1. `schtasks /Query /TN <名字>` 与 `schtasks /Query /TN <随机乱名>` 的输出**不一样 = 存在**（一样 = 没有）；
+  2. `[System.IO.File]::OpenRead("…\Tasks\<名字>")`：`UnauthorizedAccessException`（取 InnerException）
+     = 有但读不到、`FileNotFoundException` = 真的没有。
+- 但按项目要求，最简规矩是**非管理员不猜**：直接说"读不到内容，要管理员才看得到"。现状块是只读的，
+  不该为了看一眼就弹 UAC；升权那一步（装/卸）之后什么都看得见。

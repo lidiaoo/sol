@@ -629,6 +629,7 @@ It **reports what it found first, then asks** — nothing is changed until you a
 - **`预检 被拒绝`**: the port cannot be bound. Usually the previous copy is still running (the script stops it and retries); it can also be a Windows **excluded port range** (Hyper-V / WSL / Docker / VM) — use a higher port, or `net stop winnat && net start winnat` (until the next reboot).
 - **No log file on Windows**: check the runtime config for `logging: { output: file, file: ... }`. A scheduled task runs windowless, so nothing collects stdout — the log must be written by sol itself. The installer adds that stanza when you have not set one, and sol writes `C:\ProgramData\sol\sol.log`.
 
+- On Windows without administrator rights the service line says "读不到内容（计划任务 sol）：当前不是管理员，要管理员才看得到" (cannot read it -- needs administrator). That is not a failure: the scheduled task is registered as SYSTEM, so only administrators can read its definition, and an unelevated enumeration silently skips it. To see the whole picture, right-click `install.cmd` and choose "Run as administrator".
 #### Trying it somewhere harmless
 
 Set `SOL_INSTALL_ROOT=<dir>` before running: everything lands under that directory, it **never elevates**, and it **never touches** this machine's service manager, task scheduler or firewall. Our tests and CI run this way.
