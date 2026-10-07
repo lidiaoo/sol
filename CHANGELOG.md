@@ -196,6 +196,15 @@ tagged release.
 
 ### Fixed
 
+- **Uninstall and install no longer dead-end on the task's ownership, and the installer no longer
+  asks questions where nobody can answer them.** Uninstalling always removes the `sol` scheduled
+  task, and installing deletes it before recreating it instead of overwriting it in place (an
+  overwrite keeps whatever the old definition carried: old principal, old triggers, old ACL). The
+  installer also stops asking "take it over?" and "clean it up anyway?" -- those answers were needed
+  inside the elevated child, whose window the user may never see, and a Read-Host there blocks the
+  parent, which is exactly what "the script hangs with no response" was. Waiting for UAC now reports
+  every ten seconds what it is waiting for, and says to press Ctrl+C and run install.cmd as
+  administrator if no dialog ever appears.
 - **The settle window never fired on Windows, so one wake-on-LAN packet could put the machine back
   to sleep over and over.** The window notices a resume by asking how much of the elapsed time the
   machine spent not running. On Linux and macOS CLOCK_MONOTONIC freezes during suspend and the wall

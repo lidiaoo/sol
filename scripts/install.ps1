@@ -17,9 +17,7 @@ param(
 	[string]$SolAction = '',
 	# 卸载时"配置文件也一起删掉吗"的答案：在父进程问，带进升权子进程（子进程有自己的窗口，
 	# 在它里面提问人可能看不见，父进程却在等它——那就是"脚本没反应"）。环境变量走 UAC 不可靠（见文件开头）。
-	[string]$SolDelConfigs,
-	[string]$SolTakeOver,
-	[string]$SolForceClean = '',
+	[string]$SolDelConfigs = '',
 	[string]$SolService = '',
 	[string]$SolRunDir = '',
 	[string]$SolUnitName = '',
@@ -446,9 +444,8 @@ function Show-State {
 		# Test-Path 直接抛"拒绝访问"，在 $ErrorActionPreference='Stop' 下整只脚本当场死掉（真机实测）。
 		# 问"任务在不在"走列表那条路（Get-ScheduledTask / schtasks /Query），未升权也能读。
 		if ((Task-State) -eq 'installed') {
-			Warn2 "有计划任务但没有台账（$TaskName）：不是我装的，默认不动它——想接管就选 1（会问你要不要覆盖）。
-      要手工清掉：
-        schtasks /Delete /TN $TaskName /F"
+			Warn2 "有计划任务但没有台账（$TaskName）：不是我装的也归这个脚本管——选 1 会先删掉它、再按这份 install.yaml 重建；卸载也会删它。
+      要手工清掉：schtasks /Delete /TN $TaskName /F"
 		}
 	}
 	$st = Task-State
@@ -748,8 +745,6 @@ function Escalate-IfNeeded([string]$action) {
 	$rawArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
 		'-SolAction', $action, '-SolService', $svc, '-SolRunDir', $RunDir, '-SolUnitName', $TaskName)
 	if ($script:DelConfigsGiven) { $rawArgs += @('-SolDelConfigs', $(if ($script:DelConfigs) { 'yes' } else { 'no' })) }
-	if ($script:TakeOverGiven) { $rawArgs += @('-SolTakeOver', $(if ($script:TakeOver) { 'yes' } else { 'no' })) }
-	if ($script:ForceCleanGiven) { $rawArgs += @('-SolForceClean', $(if ($script:ForceClean) { 'yes' } else { 'no' })) }
 	if ($env:SOL_INSTALL_ROOT) { $rawArgs += @('-SolRoot', $env:SOL_INSTALL_ROOT) }
 	$argList = @($rawArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
 
@@ -762,6 +757,8 @@ function Escalate-IfNeeded([string]$action) {
 		# 不用 -Wait：UAC 对话框要是没被看到（藏在窗口后面、别的桌面、或只闪了下任务栏），控制台会
 		# 一声不吭地干等——用户看到的就是"卡死没响应"。自己轮询，并且每 10 秒报一次在等什么、等了多久。
 		$p = Start-Process -FilePath $hostExe -Verb RunAs -PassThru -WorkingDirectory $RunDir -ArgumentList $argList
+		# 万一授权框真的没弹出来（系统策略/焦点问题），这里会一直等：把出路直接写出来。
+		Say '      如果这里停住超过 10 秒、又没看到授权框：按 Ctrl+C，然后右键 install.cmd 选「以管理员身份运行」（那条路不需要中途授权）。'
 		$waited = 0
 		while (-not $p.WaitForExit(10000)) {
 			$waited += 10
@@ -826,16 +823,11 @@ function Invoke-Install {
 
 	# 别人的任务默认不覆盖——但**要问一句**：用户明确说要接管，就该能接管。死路是最糟的：
 	# 人说"我要装"，脚本却只回一句"不是你建的我不管"。
+	# 叫 sol 的任务归这个脚本管，不看是谁建的：注册时先删掉再按这份 install.yaml 重建（见
+	# Register-SolService），卸载时也会删掉。这里只是把话说清楚，不再问"要不要接管"。
 	if ($script:ServiceChosen -and ((Task-State) -eq 'installed') -and ($LedgerJson.service.created_unit -ne $true)) {
 		Say ''
-		Warn2 "已经有一份计划任务 $TaskName，但它不是这个脚本建的（没有台账记着它，或台账说不是我们建的）。"
-		Say '      默认不许碰别人建的东西。'
-		$takeOver = $script:TakeOver
-		if (-not $script:TakeOverGiven) { $takeOver = Ask-Yes '要我接管它吗？接管后按这份 install.yaml 覆盖它的定义，卸载时也会一起摘掉' 'n' }
-		if (-not $takeOver) {
-			Die "没有接管，什么都没动。想让它接管：右键 install.cmd 选「以管理员身份运行」（那样会在你看得见的窗口里问你）；想手工清掉：schtasks /Delete /TN $TaskName /F"
-		}
-		Say '      好，接管它（历史里会写明是接管来的，不是脚本新建的）。'
+		Warn2 "已经有一份计划任务 $TaskName，而且不是本脚本建的：按你的规矩，注册时先删掉它、再按这份 install.yaml 重建。"
 	}
 
 	# 例外：升级时几乎必然"绑不上端口"——因为正在跑的那份是我们自己的 sol.exe，占着同一个端口。
@@ -933,6 +925,13 @@ function Register-SolService {
 	# （早先为了让 stdout 有地方去，包了一层 run-sol.cmd，结果任务里只看到一个 .cmd，用户不认。
 	# 现在改成让 sol 自己写日志文件——见 Add-FileLoggingToConfig。）
 	$tr = '"' + $DestBin + '" ' + (($ArgsList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
+	# 规矩：已经装了就先删掉再重建，不做"就地覆盖"。覆盖会留下旧定义里的东西（旧主体、旧触发器、
+	# 旧 ACL）；重建一次拿到的和这份 install.yaml 完全一致。也不看是谁建的：叫 sol 的任务归这个脚本管。
+	if ((Task-State) -eq 'installed') {
+		Invoke-Native 'schtasks' @('/End', '/TN', $TaskName) | Out-Null
+		Invoke-Native 'schtasks' @('/Delete', '/TN', $TaskName, '/F') | Out-Null
+		Act 'admin' '先删掉已有的计划任务（不看是谁建的）' "schtasks /Delete /TN $TaskName /F"
+	}
 	# schtasks 自己的报错是"为什么没注册上"的唯一线索：绝不能吞掉它。
 	$r = Invoke-Native 'schtasks' @('/Create', '/TN', $TaskName, '/TR', $tr, '/SC', 'ONSTART', '/RU', 'SYSTEM', '/RL', 'HIGHEST', '/F')
 	if ($r.Code -ne 0) {
@@ -957,20 +956,11 @@ function Register-SolService {
 
 function Invoke-Uninstall {
 	if (-not $LedgerExists) {
-		# 没有台账不等于"不能清"：默认不瞎删，但把"会动什么"摆出来问一句——用户说要，就清。
+		# 没有台账也照样清：脚本只按**自己的名字**动手（计划任务 sol、默认落点的 sol.exe、防火墙规则
+		# sol (WoL)、机器 PATH 里那一行）。用户点的是"卸载"，就该卸载干净——不再拿"是不是我装的"当门槛。
 		Say ''
-		Warn2 "没有台账（$Ledger）：这个脚本没在这台机器上装过 sol。默认我不瞎删。"
-		Say '      按默认落点，会动的是：'
-		if ((Task-State) -eq 'installed') { Say "        · 计划任务 $TaskName" }
-		if (Test-Path $DestBin) { Say "        · 二进制 $DestBin" }
-		if ($LocalBin) { Say "        · 执行目录里那份 $LocalBin" }
-		if (-not $env:SOL_INSTALL_ROOT) { Say '        · 防火墙规则 sol (WoL) 与机器 PATH 里那一行' }
-		$force = $script:ForceClean
-		if (-not $script:ForceCleanGiven) { $force = Ask-Yes '要我按上面的默认落点强制清理吗' 'n' }
-		if (-not $force) {
-			Die "没有清理，什么都没动。手工来就是删上面那几样，再 schtasks /Delete /TN $TaskName /F。"
-		}
-		Say '      好，强制清理（历史里会记成"无台账的强制清理"）。'
+		Warn2 "没有台账（$Ledger）：这个脚本没在这台机器上装过 sol。仍按默认落点清理："
+		Say '        · 计划任务 sol（有就删）/ 默认落点的 sol.exe / 防火墙规则 sol (WoL) / 机器 PATH 里那一行'
 	}
 	# 先停进程再删：正在跑的 exe 删不掉（Windows 文件锁），而且它会一直占着端口——
 	# 下次安装的预检就会以"端口占用"失败，看起来像是装不上。
@@ -1086,9 +1076,6 @@ if ($ElevatedAction) {
 	$dcArg = $SolDelConfigs
 	if (-not $dcArg) { $dcArg = $env:SOL_INSTALL_DELCONFIGS }
 	if ($dcArg) { $script:DelConfigsGiven = $true; $script:DelConfigs = ($dcArg -eq 'yes') }
-	# 同一条规矩：这两个答案也由父进程问、经参数带进来。
-	if ($SolTakeOver) { $script:TakeOverGiven = $true; $script:TakeOver = ($SolTakeOver -eq 'yes') }
-	if ($SolForceClean) { $script:ForceCleanGiven = $true; $script:ForceClean = ($SolForceClean -eq 'yes') }
 	# 父进程看不见这个窗口：全程写进 transcript，交给它打印。
 	$elevLog = Join-Path $RunDir "elevated-$ElevatedAction.log"
 	$transcript = $false
@@ -1142,11 +1129,6 @@ if ($LedgerExists) {
 		'quit' { Show-Report 'none' }
 		default {
 			$script:ServiceChosen = ($LedgerJson.service.created_unit -eq $true)
-			# 台账说这个计划任务不是本脚本建的：接管与否在**父进程**问（子进程的窗口可能不在眼前）。
-			if ($LedgerJson.service.created_unit -ne $true) {
-				$script:TakeOver = Ask-Yes '台账说那个计划任务不是本脚本建的：要我接管它吗（按这份 install.yaml 覆盖它的定义，卸载时一起摘掉）' 'n'
-				$script:TakeOverGiven = $true
-			}
 			# 台账说没建过任务，而任务也确实不在（可能上次没跑完）：再问一次，
 			# 否则"我想装服务"在这条路上永远没机会说出口。
 			if (-not $script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT -and (Task-State) -ne 'installed') {
