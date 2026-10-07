@@ -416,6 +416,8 @@ function Show-State {
 		$shortSha = (Has-Sha256 $LocalBin).Substring(0, [Math]::Min(12, (Has-Sha256 $LocalBin).Length))
 		Say "  二进制      $LocalBin"
 		Say "  版本        $(Version-Tag $LocalBin)（sha256 $shortSha…）"
+		$fits = Test-BinaryFitsHost $LocalBin
+		if ($fits) { Warn2 "$fits——这份装不起来，去下本机架构的那个包。" }
 	} else {
 		Say '  二进制      没有找到可用的 sol.exe：脚本旁边、当前目录、PATH 里都没有'
 	}
@@ -598,8 +600,59 @@ function Append-History($what) {
 
 # ───────────────────────── 预检 / 装 / 卸 ─────────────────────────
 
+# ── 架构对不上：提前说人话，别让用户去看 .NET 的天书 ──
+# 在 x64 机器上解了 windows-arm64 的包时，真跑起来的报错是
+# "指定的可执行文件不是此操作系统平台的有效应用程序"。读 PE 头的 Machine 字段就能提前判断。
+
+# 读 PE 头里的 Machine（0 表示读不出来／不是 PE）。
+function Get-PEBinaryMachine($path) {
+	try {
+		$fs = [System.IO.File]::OpenRead($path)
+		try {
+			$br = New-Object System.IO.BinaryReader($fs)
+			if ($br.ReadUInt16() -ne 0x5A4D) { return 0 }        # 'MZ'
+			$fs.Position = 0x3C
+			$off = $br.ReadUInt32()
+			$fs.Position = $off
+			if ($br.ReadUInt32() -ne 0x00004550) { return 0 }    # 'PE\0\0'
+			return [int]$br.ReadUInt16()
+		} finally { $fs.Close() }
+	} catch { return 0 }
+}
+
+# 本机架构，统一成 x64 / arm64 / x86 这种写法。
+function Get-HostArchName {
+	$arch = ''
+	try { $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { }
+	if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
+	switch ("$arch".ToUpper()) {
+		'X64' { return 'x64' } 'AMD64' { return 'x64' }
+		'ARM64' { return 'arm64' }
+		'X86' { return 'x86' } 'ARM' { return 'arm' }
+		default { return "$arch".ToLower() }
+	}
+}
+
+# 二进制跟本机架构对不对得上：'' = 没问题；否则给一句能直接念给用户听的原因。
+function Test-BinaryFitsHost($path) {
+	if (-not $path -or -not (Test-Path $path)) { return '' }
+	if (-not ($path -like '*.exe')) { return '' }   # 不是 PE（例如被拿去做跨平台测试）就不判
+	$m = Get-PEBinaryMachine $path
+	if ($m -eq 0) { return '' }
+	$binArch = switch ($m) { 0x8664 { 'x64' } 0xAA64 { 'arm64' } 0x014C { 'x86' } 0x01C4 { 'arm' } default { '0x{0:X}' -f $m } }
+	$hostArch = Get-HostArchName
+	# x64 上跑 x86 是正常的（WOW64），其余不匹配都拦。
+	if (($binArch -eq $hostArch) -or ($hostArch -eq 'x64' -and $binArch -eq 'x86')) { return '' }
+	return "这份二进制是 $binArch 的，本机是 $hostArch（多半是下错架构的包了）"
+}
+
 function Invoke-Precheck {
 	if (-not $LocalBin) { return $true }
+	# 架构对不上就别装了：真跑起来只会给一句天书（"不是此操作系统平台的有效应用程序"）。
+	$fits = Test-BinaryFitsHost $LocalBin
+	if ($fits) {
+		Die "$fits。`n  $LocalBin`n本机架构：$(Get-HostArchName)。Windows 发布包是 sol-<版本>-windows-amd64.zip 或 -windows-arm64.zip——别拿错；真要跨架构用，就把 install.yaml 的 run.args 指向本机架构那份二进制。"
+	}
 	if (-not (Test-Path $RunConfig)) {
 		Warn2 "运行配置 $RunConfig 还不存在，没法预检；服务起来后会立刻退出（sol 拒绝在没有规则时启动）"
 		return $false

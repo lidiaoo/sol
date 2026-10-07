@@ -589,6 +589,8 @@ show_state() {
 	head2 "[现状]"
 	if [ -n "$LOCAL_BIN" ]; then
 		say "  二进制      $LOCAL_BIN"
+		fits=$(binary_fits_host "$LOCAL_BIN")
+		[ -n "$fits" ] && warn "$fits——这份装不起来，去下本机架构的那个包。"
 		say "  版本        $(version_tag "$LOCAL_BIN")（sha256 $(sha256 "$LOCAL_BIN" | cut -c1-12)…）"
 	else
 		say "  二进制      没有找到可用的 sol：脚本旁边、当前目录、\$PATH 里都没有"
@@ -746,8 +748,61 @@ act() { # act <是否root: root|user> <说明> [等价命令]
 	fi
 }
 
+# ── 架构对不上：提前说人话 ──
+# 下错架构的包（比如在 Intel Mac 上解了 darwin-arm64）真跑起来的报错是 "bad CPU type in executable"
+# 这种一句话，用户看不懂。读 ELF / Mach-O 头里的 machine 字段就能提前判断。
+
+binary_arch() { # binary_arch <文件>：x86_64 / arm64 / 空（不是认识的 ELF / Mach-O）
+	f=$1
+	[ -f "$f" ] || return 0
+	magic=$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' \n')
+	case "$magic" in
+	7f454c46) # ELF：e_machine 在偏移 18，2 字节小端
+		em=$(od -An -tx1 -j18 -N2 "$f" 2>/dev/null | tr -d ' \n')
+		case "$em" in
+		3e00) printf '%s' x86_64 ;;
+		b700) printf '%s' arm64 ;;
+		*) printf '' ;;
+		esac
+		;;
+	cffaedfe|cefaedfe) # Mach-O 64 位小端：cputype 在偏移 4
+		ct=$(od -An -tx1 -j4 -N4 "$f" 2>/dev/null | tr -d ' \n')
+		case "$ct" in
+		07000001) printf '%s' x86_64 ;;
+		0c000001) printf '%s' arm64 ;;
+		*) printf '' ;;
+		esac
+		;;
+	*) printf '' ;;
+	esac
+}
+
+host_arch() { # 统一成 x86_64 / arm64
+	m=$(uname -m 2>/dev/null || printf '')
+	case "$m" in
+	x86_64|amd64) printf '%s' x86_64 ;;
+	arm64|aarch64) printf '%s' arm64 ;;
+	*) printf '%s' "$m" ;;
+	esac
+}
+
+binary_fits_host() { # '' = 对得上；否则给一句能直接念给用户听的原因
+	ba=$(binary_arch "$1")
+	[ -n "$ba" ] || return 0
+	ha=$(host_arch)
+	[ "$ba" = "$ha" ] && return 0
+	printf '这份二进制是 %s 的，本机是 %s（多半是下错架构的包了）' "$ba" "$ha"
+}
+
 precheck() { # 用同一个二进制 + 同一份配置起一次（dry-run：匹配了也不会真做事）
 	[ -n "$LOCAL_BIN" ] || return 0
+	# 架构对不上就别装了：真跑起来只会给一句 "bad CPU type" 之类的天书。
+	fits=$(binary_fits_host "$LOCAL_BIN")
+	if [ -n "$fits" ]; then
+		die "$fits。
+  $LOCAL_BIN
+本机架构：$(host_arch)。发布包是 sol-<版本>-$(uname -s | tr 'A-Z' 'a-z')-$(host_arch).tar.gz——别拿错；真要跨架构用，就把 install.yaml 的 run.args 指向本机架构那份二进制。"
+	fi
 	if [ ! -f "$RUN_CONFIG" ]; then
 		warn "运行配置 $RUN_CONFIG 还不存在，没法预检；服务起来后会立刻退出（sol 拒绝在没有规则时启动）"
 		return 1
