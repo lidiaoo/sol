@@ -122,6 +122,14 @@ running_instances() { # running_instances <二进制完整路径>
 	esac
 }
 
+log_hint() { # 服务日志在哪看：launchd 写文件，systemd 进 journal
+	case "$SERVICE_KIND" in
+	launchd) printf '%s' "$PREFIX/var/log/sol.log" ;;
+	systemd) printf '%s' "journalctl -u $UNIT_NAME -f" ;;
+	*) printf '%s' "（$SERVICE_KIND 的日志位置未知）" ;;
+	esac
+}
+
 # 先 TERM 再 KILL。为什么要停：① 卸载时要删这个 exe，进程活着文件删不掉；
 # ② 更要紧的是它一直占着 UDP 端口，下一次安装的预检绑不上，看起来就是"端口占用"。
 stop_instances() { # stop_instances <二进制完整路径> <为什么>
@@ -275,10 +283,19 @@ run_limited() {
 LOCK_DIR="${TMPDIR:-/tmp}/sol-install.lock"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 	owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
-	if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+	# 只看 pid 活着是不够的：pid 会被复用，一个八竿子打不着的进程就能把锁"顶"住（真发生过）。
+	# 所以还要看它到底在不在跑这只脚本。
+	owner_cmd=$( [ -n "$owner" ] && ps -p "$owner" -o args= 2>/dev/null || true )
+	case "$owner_cmd" in
+	*install.sh*)
 		die "另一个安装/卸载正在进行（pid ${owner}，${LOCK_DIR}）。确定没有的话：rm -rf $LOCK_DIR"
+		;;
+	esac
+	if [ -n "$owner_cmd" ]; then
+		warn "锁里的 pid ${owner} 还活着，但它跑的不是本脚本（pid 被复用了），接管它。"
+	else
+		warn "发现上次留下的锁（pid ${owner:-未知} 已经不在了），接管它。"
 	fi
-	warn "发现上次留下的锁（pid ${owner:-未知} 已经不在了），接管它。"
 	rm -rf "$LOCK_DIR"
 	mkdir "$LOCK_DIR" 2>/dev/null || die "拿不到锁：$LOCK_DIR"
 fi
@@ -572,6 +589,7 @@ show_state() {
 	unregistered) say "  服务        SOL_INSTALL_ROOT 下只写单元文件，本机 systemd 里没有它" ;;
 	*) say "  服务        状态未知（没有 systemctl / launchctl？）" ;;
 	esac
+	say "  日志        $(log_hint)"
 	inst_bin=$(ledger_field binary)
 	[ -n "$inst_bin" ] || inst_bin="$BINDIR/sol"
 	inst_n=$(running_instances "$inst_bin" | wc -l | tr -d ' ')
@@ -734,7 +752,7 @@ write_ledger() { # write_ledger <incomplete: true|false> [prevVersion] [prevSha]
   },
   "firewall_rules": [],
   "config_paths": ["$RUN_CONFIG"],
-  "log_paths": [],
+  "log_paths": [$( [ "$SERVICE_KIND" = launchd ] && printf '"%s"' "$PREFIX/var/log/sol.log" )],
   "previous": { "installed_version": "$2", "sha256": "$3" },
   "incomplete": $1
 }
@@ -1072,6 +1090,7 @@ report() { # report <install|uninstall|none>
 		say "  安装配置    $USER_CONFIG        改这里，然后重跑脚本"
 		say "  运行配置    $RUN_CONFIG$( [ "$RUNTIME_CONFIG_GENERATED" = yes ] && printf '（刚生成的示例配置：三条规则，按需改）' )"
 		say "  台账        $LEDGER"
+		say "  服务日志    $(log_hint)"
 		say "  历史        ${HISTORY}（完整动作清单，带等价命令）"
 		say ""
 		say "  校验"

@@ -57,6 +57,10 @@ $DestBin = Join-Path $InstallDir 'sol.exe'
 $ServiceConfig = Join-Path $InstallDir 'sol.yaml'
 $Ledger = Join-Path $InstallDir 'install.json'
 $History = Join-Path $InstallDir 'install.log'
+# sol 的输出。计划任务以 SYSTEM 跑，stdout/stderr 本来没人接——所以任务跑的是我们写的包装脚本
+# run-sol.cmd，由它把输出重定向到这里（Windows 的计划任务本身没有重定向能力）。
+$LogFile = Join-Path $InstallDir 'sol.log'
+$TaskCmd = Join-Path $InstallDir 'run-sol.cmd'
 
 # install.yaml 放在**你执行脚本的那个目录**；运行配置 sol.yaml 放在**安装目录**里，跟 sol.exe 做伴。
 # 服务定义里用绝对路径，所以不踩"服务有自己的家目录"那个坑。
@@ -168,35 +172,38 @@ function Invoke-Native([string]$Exe, [string[]]$Argv) {
 	}
 }
 
-# 我们自己那份 sol.exe 现在有几个进程在跑。只认可执行文件路径就是它的：名字叫 sol.exe 的
-# 别人的进程与它无关（卸载时乱杀同名进程是另一种事故）。
-function Get-RunningInstances($path) {
-	$out = @()
-	if (-not $path) { return $out }
-	foreach ($p in (Get-Process -ErrorAction SilentlyContinue)) {
-		$exe = ''
-		try { $exe = $p.Path } catch { continue }
-		if ($exe -and ($exe -ieq $path)) { $out += $p }
+# 我们自己那份 sol.exe 现在有几个进程在跑（返回 pid 列表）。只认可执行文件路径就是它的：
+# 名字叫 sol.exe 的别人的进程与它无关（卸载时乱杀同名进程是另一种事故）。
+#
+# 为什么不用 Get-Process 的 .Path：计划任务以 SYSTEM 跑，而现状是**未升权**时打印的，那时读
+# 更高权限进程的可执行文件路径会失败（异常被吞掉），看起来就是"没有在跑"。CIM 的 Win32_Process
+# 任何人都能读，而且带命令行，正好用来认"是不是我们装的那份"。
+function Get-RunningSolIds($path) {
+	$ids = @()
+	if (-not $path) { return $ids }
+	foreach ($p in (Get-CimInstance Win32_Process -Filter "Name = 'sol.exe'" -ErrorAction SilentlyContinue)) {
+		if ($p.ExecutablePath -and ($p.ExecutablePath -ieq $path)) { $ids += [int]$p.ProcessId; continue }
+		if (-not $p.ExecutablePath -and $p.CommandLine -and ($p.CommandLine -imatch [regex]::Escape($path))) { $ids += [int]$p.ProcessId }
 	}
-	@($out)
+	@($ids)
 }
 
-# 为什么停：① 卸载要删这个 exe，进程活着删不掉（Windows 的文件锁）；② 更要紧的是它一直占着
-# UDP 端口，下一次安装的预检绑不上，看起来就是"端口占用"。
+# 为什么停：① 卸载要删这个 exe，进程活着文件删不掉（Windows 的文件锁）；② 更要紧的是它一直
+# 占着 UDP 端口，下一次安装的预检绑不上，看起来就是"端口占用"。
 function Stop-RunningInstances($path, $why) {
-	$procs = @(Get-RunningInstances $path)
-	if ($procs.Count -eq 0) { return }
-	$ids = @($procs | ForEach-Object { $_.Id })
+	$ids = @(Get-RunningSolIds $path)
+	if ($ids.Count -eq 0) { return }
 	Say "  先停掉还在跑的那份（$why）：pid $($ids -join ',')"
-	foreach ($p in $procs) { try { $p.Kill() } catch { } }
+	foreach ($procId in $ids) {
+		try { Stop-Process -Id $procId -Force -ErrorAction Stop } catch { }
+	}
 	for ($i = 0; $i -lt 12; $i++) {
 		Start-Sleep -Milliseconds 250
-		if (@(Get-RunningInstances $path).Count -eq 0) { break }
+		if (@(Get-RunningSolIds $path).Count -eq 0) { break }
 	}
-	$left = @(Get-RunningInstances $path)
+	$left = @(Get-RunningSolIds $path)
 	if ($left.Count -gt 0) {
-		foreach ($p in $left) { try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { } }
-		Act 'admin' "强杀没退出的 sol.exe（pid $($left.Id -join ',')）" "Stop-Process -Id $($left.Id -join ',') -Force"
+		Warn2 "还有 $($left.Count) 个没停掉：pid $($left -join ',')（可能没权限；动手前请确认）"
 	} else {
 		Act 'admin' "停掉还在跑的 sol.exe（pid $($ids -join ',')）" "Stop-Process -Id $($ids -join ',') -Force"
 	}
@@ -398,8 +405,9 @@ function Show-State {
 	}
 	$st = Task-State
 	if ($st -eq 'installed') { Say "  服务        计划任务 $TaskName 已注册" } else { Say "  服务        没有（计划任务 $TaskName 不存在）" }
+	Say "  日志        $LogFile"
 	$instBin = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
-	$instN = @(Get-RunningInstances $instBin).Count
+	$instN = @(Get-RunningSolIds $instBin).Count
 	if ($instN -gt 0) { Say "  进程        有 $instN 个在跑：$instBin（要用到端口时会先停掉它）" } else { Say '  进程        没有在跑' }
 	if (Test-Path $RunConfig) {
 		if ($script:RuntimeConfigGenerated) { Say "  运行配置    $RunConfig$(if ($script:RuntimeConfigCopied) { '（从执行目录拷到安装目录的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' })" }
@@ -509,7 +517,7 @@ function Write-Ledger($incomplete, $prevVersion, $prevSha) {
 		}
 		firewall_rules    = @()
 		config_paths      = @($RunConfig)
-		log_paths         = @()
+		log_paths         = @($LogFile)
 		previous          = [ordered]@{ installed_version = $prevVersion; sha256 = $prevSha }
 		incomplete        = $incomplete
 	}
@@ -636,6 +644,8 @@ function Invoke-Install {
 	# 你说"应用"但什么都没变 → 不折腾
 	if ($LedgerExists -and $newSha -eq $LedgerJson.sha256) {
 		$taskOk = ((Task-State) -eq 'installed') -or (-not $script:ServiceChosen)
+		# 还要确认任务跑的是我们的包装脚本：老安装的任务直接跑 exe、没有日志，得走完整路径升一次。
+		if ($taskOk -and $script:ServiceChosen -and (-not (Test-Path $TaskCmd))) { $taskOk = $false }
 		if ($taskOk) {
 			Say ''
 			Say "已是最新，无需操作：二进制没变（sha256 $newSha 与台账一致），计划任务与配置没变。"
@@ -655,7 +665,7 @@ function Invoke-Install {
 	# 那就先停它再试一次；还不过就把它按原样起回去，不让你白白少一个正在跑的服务。
 	if (-not (Invoke-Precheck)) {
 		$binNow = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
-		if (@(Get-RunningInstances $binNow).Count -gt 0) {
+		if (@(Get-RunningSolIds $binNow).Count -gt 0) {
 			Say ''
 			Say '预检绑不上端口，而我们有份 sol.exe 正在跑——多半就是它占着。先停掉它再试一次：'
 			Stop-RunningInstances $binNow '它占着端口，而预检要绑同一个端口'
@@ -732,8 +742,24 @@ function Invoke-Install {
 	Append-History 'install'
 }
 
+# sol 在计划任务里跑，stdout/stderr 本来没人接——所以"sol 的日志"在 Windows 上一直是空的。
+# 计划任务的 XML 没有重定向，而把 cmd /c "… >> …" 塞进 /TR 是一串嵌套引号的地狱；所以让任务跑
+# 这个我们自己维护的包装脚本（路径没有空格、没有嵌套引号），重定向由它完成。
+function Write-RunWrapper {
+	$inner = (($ArgsList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
+	$lines = @(
+		'@echo off',
+		'rem 由 install.ps1 生成：计划任务跑的就是它；下面这行把 sol 的输出留到 sol.log。',
+		'"' + $DestBin + '" ' + $inner + ' >> "' + $LogFile + '" 2>&1'
+	)
+	Invoke-WithRetry '写运行包装脚本' { Set-Content -Path $TaskCmd -Value $lines -Encoding ascii -ErrorAction Stop } | Out-Null
+	Act 'admin' '写运行包装脚本（任务跑它，sol 的输出落到 sol.log）' "Set-Content $TaskCmd -Value @('<exe 与参数> >> sol.log 2>&1')"
+}
+
 function Register-SolService {
-	$tr = '"' + $DestBin + '" ' + (($ArgsList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
+	Write-RunWrapper
+	# 任务跑的是包装脚本；--config 由包装脚本带着（所以"任务读哪份配置"看的是那个文件）。
+	$tr = $TaskCmd
 	# schtasks 自己的报错是"为什么没注册上"的唯一线索：绝不能吞掉它。
 	$r = Invoke-Native 'schtasks' @('/Create', '/TN', $TaskName, '/TR', $tr, '/SC', 'ONSTART', '/RU', 'SYSTEM', '/RL', 'HIGHEST', '/F')
 	if ($r.Code -ne 0) {
@@ -778,8 +804,15 @@ function Invoke-Uninstall {
 		Act 'admin' '从机器 PATH 撤下落点目录' "[Environment]::SetEnvironmentVariable('PATH', '...', 'Machine')"
 	}
 	$bin = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
-	Invoke-WithRetry '删二进制与 sol.bak' { Remove-Item -Path $bin, "$bin.bak" -Force -ErrorAction Stop } | Out-Null
-	Act 'admin' '删二进制与 sol.bak' "Remove-Item $bin, $bin.bak"
+	# sol.bak 只在"覆盖过旧版本"时才存在，包装脚本在老安装里也没有：不存在的路径不该
+	# 让重试器白转 10 圈、更不该报假警。删掉"存在的那几个"，再确认 exe 真的没了。
+	Invoke-WithRetry '删二进制与 sol.bak' {
+		foreach ($p in @($bin, "$bin.bak")) { if (Test-Path $p) { Remove-Item -Path $p -Force -ErrorAction Stop } }
+	} | Out-Null
+	if (Test-Path $bin) { Warn2 "$bin 还在（可能有别的进程占着，或没权限）" }
+	# 包装脚本是我们写的；删不掉/不存在都不算卸载失败。
+	Remove-Item -Path $TaskCmd -Force -ErrorAction SilentlyContinue
+	Act 'admin' '删二进制、sol.bak 与运行包装脚本' "Remove-Item $bin, $bin.bak; Remove-Item $TaskCmd"
 
 	$script:DelConfigs = $false
 	if (Ask-Yes '配置文件也一起删掉吗？' 'n') { $script:DelConfigs = $true }
@@ -809,6 +842,7 @@ function Show-Report($what) {
 			Say "  安装配置    $UserConfig        改这里，然后重跑脚本"
 			Say "  运行配置    $RunConfig$(if ($script:RuntimeConfigGenerated) { $(if ($script:RuntimeConfigCopied) { '（从执行目录拷到安装目录的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' }) })"
 			Say "  台账        $Ledger"
+			Say "  服务日志    $LogFile"
 			Say "  历史        $History（完整动作清单，带等价命令）"
 			Say ''
 			Say '  校验'
@@ -827,6 +861,7 @@ function Show-Report($what) {
 				Say "  配置        保留：$UserConfig、$RunConfig"
 				Say "              要删：Remove-Item $UserConfig, $RunConfig"
 			}
+			Say "  服务日志    $LogFile（留着；要删：Remove-Item $LogFile）"
 			Say "  历史        $History"
 		}
 		'none' {
