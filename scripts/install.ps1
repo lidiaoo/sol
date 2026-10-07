@@ -15,6 +15,9 @@
 [CmdletBinding()]
 param(
 	[string]$SolAction = '',
+	# 卸载时"配置文件也一起删掉吗"的答案：在父进程问，带进升权子进程（子进程有自己的窗口，
+	# 在它里面提问人可能看不见，父进程却在等它——那就是"脚本没反应"）。环境变量走 UAC 不可靠（见文件开头）。
+	[string]$SolDelConfigs = '',
 	[string]$SolService = '',
 	[string]$SolRunDir = '',
 	[string]$SolUnitName = '',
@@ -658,8 +661,11 @@ function Escalate-IfNeeded([string]$action) {
 	if (-not $needs) { return }
 
 	Say ''
-	Say '这一步要写 ProgramData、注册计划任务、改机器 PATH，需要管理员。'
+	if ($action -eq 'uninstall') { Say '这一步要摘掉计划任务、删掉安装目录里的二进制、撤掉防火墙规则和 PATH，需要管理员。' }
+	else { Say '这一步要写安装目录、注册计划任务、改机器 PATH，需要管理员。' }
 	Say '我用 UAC 以管理员身份重新执行一遍自己：同一个目录、你刚才的答案带过去，不会再问一遍。'
+	Say '接下来会弹一个 UAC 授权框（“你要允许此应用对你的设备进行更改吗”）。'
+	Say '看不到它就看任务栏、或按 Win 键找一下——**不点它，这里会一直等，看起来就像卡住了**。'
 
 	if ($Piped) {
 		Die "这一步需要管理员，但脚本是管道执行（irm … | iex）的：没有文件可以重新以管理员身份运行。请先存成文件再跑：`n  irm <install.ps1 的地址> -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`n  或者直接右键 install.cmd 选“以管理员身份运行”。"
@@ -671,6 +677,7 @@ function Escalate-IfNeeded([string]$action) {
 	# 带空格的取值要自己加引号：PowerShell 拼命令行时不会替你加，路径里有空格就会把参数切断。
 	$rawArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
 		'-SolAction', $action, '-SolService', $svc, '-SolRunDir', $RunDir, '-SolUnitName', $TaskName)
+	if ($script:DelConfigsGiven) { $rawArgs += @('-SolDelConfigs', $(if ($script:DelConfigs) { 'yes' } else { 'no' })) }
 	if ($env:SOL_INSTALL_ROOT) { $rawArgs += @('-SolRoot', $env:SOL_INSTALL_ROOT) }
 	$argList = @($rawArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
 
@@ -907,8 +914,10 @@ function Invoke-Uninstall {
 	if (Test-Path $bin) { Warn2 "$bin 还在（可能有别的进程占着，或没权限）" }
 	Act 'admin' '删二进制、sol.bak 与运行包装脚本' "Remove-Item $bin, $bin.bak, $TaskCmd"
 
-	$script:DelConfigs = $false
-	if (Ask-Yes '配置文件也一起删掉吗？' 'n') { $script:DelConfigs = $true }
+	if (-not $script:DelConfigsGiven) {
+		$script:DelConfigs = $false
+		if (Ask-Yes '配置文件也一起删掉吗？' 'n') { $script:DelConfigs = $true }
+	}
 	if ($script:DelConfigs) {
 		Remove-Item -Path $UserConfig -Force -ErrorAction SilentlyContinue
 		Remove-Item -Path $RunConfig -Force -ErrorAction SilentlyContinue
@@ -975,6 +984,10 @@ if ($ElevatedAction) {
 	$svc = $ServiceArg
 	if (-not $svc) { $svc = $env:SOL_INSTALL_SERVICE }
 	$script:ServiceChosen = ($svc -eq 'yes')
+	# 卸载的"配置删不删"父进程已经问过了：直接用带过来的答案，别在这个窗口里再问一遍。
+	$dcArg = $SolDelConfigs
+	if (-not $dcArg) { $dcArg = $env:SOL_INSTALL_DELCONFIGS }
+	if ($dcArg) { $script:DelConfigsGiven = $true; $script:DelConfigs = ($dcArg -eq 'yes') }
 	# 父进程看不见这个窗口：全程写进 transcript，交给它打印。
 	$elevLog = Join-Path $RunDir "elevated-$ElevatedAction.log"
 	$transcript = $false
@@ -1013,7 +1026,13 @@ if ($LedgerExists) {
 	Show-Menu
 	$choice = Ask-Choice '请选择'
 	switch ($choice) {
-		'uninstall' { Escalate-IfNeeded 'uninstall'; Invoke-Uninstall; Show-Report 'uninstall' }
+		'uninstall' {
+			# 先问、再升权：答案随内部参数带过去，子进程不会再问（它的窗口不一定在你眼前）。
+			$script:DelConfigs = Ask-Yes '配置文件也一起删掉吗？' 'n'
+			$script:DelConfigsGiven = $true
+			$env:SOL_INSTALL_DELCONFIGS = if ($script:DelConfigs) { 'yes' } else { 'no' }
+			Escalate-IfNeeded 'uninstall'; Invoke-Uninstall; Show-Report 'uninstall'
+		}
 		'regenerate' {
 			Remove-Item -Path $UserConfig -Force -ErrorAction SilentlyContinue
 			Write-UserConfig
