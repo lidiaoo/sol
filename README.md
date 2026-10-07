@@ -581,6 +581,55 @@ embeds a pseudo-version naming the tree (`v0.0.0-<timestamp>-<commit>`) plus the
 `go install ...@v1.2.3` embeds that tag. Everything survives `-s -w -trimpath`, so the released
 binary can still say what it is.
 
+### Using the installer (no arguments, numbered menu)
+
+Install, upgrade, check status and uninstall all go through **one script with one
+entry point**, and you never pass it any arguments:
+
+| Platform | How to run it |
+| --- | --- |
+| Linux / macOS | `./install.sh` (or `sh install.sh`) |
+| Windows | double-click the shipped `install.cmd`, or `powershell -ExecutionPolicy Bypass -File .\install.ps1` |
+
+It **reports what it found first, then asks** — nothing is changed until you answer.
+
+#### What each line of the status block means
+
+- `二进制` / `版本`: the copy in the directory you ran the script from; `PATH 上的 sol` is what the system already has.
+- `已安装` / `台账`: the installer's own record (`/usr/local/share/sol/install.json`; Windows `C:\ProgramData\sol\install.json`). "last time did not finish" means: run it again and it will.
+- `服务`: whether the systemd unit / launchd job / scheduled task exists. On Windows an extra `启动` line prints the command the task actually runs (executable + arguments), so you do not have to dig through Task Scheduler.
+- `日志`: where the service log is — Linux `journalctl -u sol.service -f`, macOS `/usr/local/var/log/sol.log`, Windows `C:\ProgramData\sol\sol.log`.
+- `进程`: whether sol is running, matched by **executable path**, never by process name. Without elevation it can only match by name and says so explicitly.
+- `权限`: when you are not an administrator, this says when privileges will be needed (a Unix re-exec through sudo; one UAC prompt on Windows).
+- `运行配置`: the config the service actually reads. Edit that one; the copy in your exec directory is only the input.
+
+#### The menu (Enter = 1)
+
+    1  Apply the install config (install or upgrade per run.args)
+    2  Uninstall (remove the service and everything the ledger says we created)
+    3  Regenerate install.yaml
+    4  Quit, change nothing
+
+#### Afterwards
+
+- **Change behaviour**: edit the runtime `sol.yaml` (ports, matching, actions), or `install.yaml`'s `run.args` (how it is started). Re-run and pick `1`.
+- **Upgrade**: drop the new `sol` / `sol.exe` next to the script and pick `1`. It stops our own service first, swaps the binary, then starts it again — so it never trips over "address already in use".
+- **Uninstall**: pick `2`. Service, binary and ledger go away; you are asked whether to keep `sol.yaml` / `install.yaml`.
+- **Every step is logged**: `install.log` records each action with its equivalent command, so you can reproduce any of it by hand.
+
+#### When a line does not make sense
+
+- **`服务 没有（计划任务 X 不存在）` while the ledger says it was installed**: the task was deleted, or a "cleanup/optimizer" tool removed it. Re-run and pick `1` to create it again. (The script now verifies the task right after creating it, and reports a failure instead of claiming success.)
+- **Windows `服务 … 看不清`**: no permission to list tasks. Re-run as administrator.
+- **`预检 被拒绝`**: the port cannot be bound. Usually the previous copy is still running (the script stops it and retries); it can also be a Windows **excluded port range** (Hyper-V / WSL / Docker / VM) — use a higher port, or `net stop winnat && net start winnat` (until the next reboot).
+- **No log file on Windows**: check the runtime config for `logging: { output: file, file: ... }`. A scheduled task runs windowless, so nothing collects stdout — the log must be written by sol itself. The installer adds that stanza when you have not set one, and sol writes `C:\ProgramData\sol\sol.log`.
+
+#### Trying it somewhere harmless
+
+Set `SOL_INSTALL_ROOT=<dir>` before running: everything lands under that directory, it **never elevates**, and it **never touches** this machine's service manager, task scheduler or firewall. Our tests and CI run this way.
+
+> With Hermes installed, the same rules (including the traps each platform actually bit us with) live in the `sol-install` skill: type `/sol-install`.
+
 ### Verify Installation
 
 ```bash
@@ -623,8 +672,8 @@ sol ifaces
 
 6. **Confirm what is running**: `sol --version`, `journalctl -u sol.service -f` (Linux),
    `tail -f /usr/local/var/log/sol.log` (macOS), `Get-Content -Wait C:\ProgramData\sol\sol.log`
-   (Windows; the scheduled task runs `run-sol.cmd` from the install dir, which is what funnels sol's
-   output into that file), or `GET /v1/status` when the control plane is on. The installer's state
+   (Windows; the scheduled task runs `sol.exe` itself, and sol writes that file itself through the
+   `logging` stanza in the runtime config), or `GET /v1/status` when the control plane is on. The state
    block and its completion report each print a line telling you where the log is.
 
 Secrets never belong in the YAML: put them in environment variables (`SOL_TOKEN`, `SOL_CMD_KEY`,
@@ -791,16 +840,10 @@ with a machine-level environment variable for the token:
    ```powershell
    New-Item -ItemType Directory -Force -Path C:\ProgramData\sol | Out-Null
    Move-Item .\sol.exe C:\ProgramData\sol\sol.exe -Force
-   # the scheduled task runs a tiny wrapper so sol's output actually lands somewhere
-   # (a task's XML has no redirection; run-sol.cmd keeps the quoting inside its own file)
-   # The task runs a wrapper so sol's output actually lands somewhere: a task's XML has
-   # no redirection, and shoving cmd /c "… >> …" into /TR is a nest of quotes. Keep the
-   # redirect inside a file of our own.
-   @'
-   @echo off
-   "C:\ProgramData\sol\sol.exe" listen --config "C:\ProgramData\sol\sol.yaml" >> "C:\ProgramData\sol\sol.log" 2>&1
-   '@ | Set-Content C:\ProgramData\sol\run-sol.cmd -Encoding ascii
-   schtasks /Create /TN sol /TR "C:\ProgramData\sol\run-sol.cmd" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+   # The task runs sol.exe itself: the task's action is just the exe and its arguments.
+   # A task has no stdout to collect, so sol writes its own log file — add this to the config:
+   #   logging: { output: file, file: 'C:\ProgramData\sol\sol.log' }
+   schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\ProgramData\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
    schtasks /Run /TN sol
    ```
 

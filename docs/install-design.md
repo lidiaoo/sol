@@ -237,7 +237,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 
 - `./install.yaml`：脚本的**输入**（"sol 怎么跑"）。改完重跑脚本即可；已有就一个字都不覆盖。
 - 运行配置 `sol.yaml`：脚本只在它不存在时生成一份**开箱即用**的——三条规则：纯包 → 关机（端口 11）、magic+"reboot" → 重启（12）、magic+"sleep" → 睡眠（10），并附一段显式的 `security:`（`settle: 5s` + 三个 5s 冷却）；服务没有配置文件会直接拒绝启动（crash-loop），而小白最可能的顺序就是先跑起来再改。
-  - **Windows：放在安装目录**（`C:\ProgramData\sol\sol.yaml`），跟 `sol.exe` 做伴，计划任务跑的是安装目录里的 `run-sol.cmd`，`--config` 由它指着安装目录这份配置。执行目录里那份**不是**服务认的配置；你要是以前在执行目录改过 `sol.yaml`，重跑脚本会把它**原样拷进**安装目录，并把 `install.yaml` 里 `--config` 的取值换成安装目录的路径（内容不丢，原文件也不动）。
+  - **Windows：放在安装目录**（`C:\ProgramData\sol\sol.yaml`），跟 `sol.exe` 做伴，计划任务直接跑 `sol.exe listen --config …`（任务计划里"操作"一栏看得见 exe 和参数），`--config` 指向安装目录这份配置；任务没有 stdout 可接，脚本会在配置里补一节 `logging: {output: file}` 让 sol 自己写日志。执行目录里那份**不是**服务认的配置；你要是以前在执行目录改过 `sol.yaml`，重跑脚本会把它**原样拷进**安装目录，并把 `install.yaml` 里 `--config` 的取值换成安装目录的路径（内容不丢，原文件也不动）。
   - **为什么 Windows 不一样**：计划任务以 `SYSTEM` 开机就跑，配置放在某个用户的项目目录里容易被挪走、删掉，或者 `SYSTEM` 根本读不到。Linux/macOS 保持执行目录——配置跟你执行脚本的地方在一起，改完重跑即可。
 - **端口 <1024 在 Linux/macOS 上要 root**，所以默认配置意味着：正常安装（动手前会升权）没问题；但"不要 root 的用户级安装"在这种配置下预检会失败（sol 报 `bind: permission denied`），那种场景得把端口改成 ≥1024。Windows 上低端口不需要特权，不受这一条影响。
 
@@ -328,7 +328,7 @@ run:
 | 运行配置 `sol.yaml`（开箱即用的示例配置：三条规则 + 显式写出的默认护栏 `settle: 5s` 与三个 5s 冷却，只在不存在时生成，绝不覆盖） | 执行脚本的那个目录 | 同 Linux | **安装目录** `C:\ProgramData\sol\sol.yaml`（跟 `sol.exe` 做伴，计划任务读的就是它；执行目录里那份会被拷过去） |
 | 服务管理器 | systemd | launchd | 计划任务（纯 exe 不能当服务） |
 | 装服务的额外文件 | `/etc/systemd/system/sol.service` | `/Library/LaunchDaemons/com.lidiaoo.sol.plist` | 计划任务 `sol` + 防火墙规则 |
-| 日志去向 | systemd 收 stdout → journald（`journalctl -u sol.service`） | launchd 要 `StandardErrorPath` → `/usr/local/var/log/sol.log` | **计划任务不收集 stdout**：任务跑我们生成的 `run-sol.cmd`，里面 `… >> C:\ProgramData\sol\sol.log 2>&1`；想改用配置的 `logging.output: file` 也行 |
+| 日志去向 | systemd 收 stdout → journald（`journalctl -u sol.service`） | launchd 要 `StandardErrorPath` → `/usr/local/var/log/sol.log` | **计划任务不收集 stdout**：任务直接跑 `sol.exe`，日志靠运行配置里的 `logging: { output: file, file: C:\ProgramData\sol\sol.log }`（缺省时由脚本补上这一节） |
 | 日志路径报给用户 | 现状与完成报告都打 `日志`/`服务日志` 一行；台账 `log_paths` 记文件（systemd 没有文件，故为空） | 同左（`log_paths` = `/usr/local/var/log/sol.log`） | 同左（`log_paths` = `C:\ProgramData\sol\sol.log`） |
 | 防火墙 | 检测到 `ufw` / `firewalld` 才加规则 | 默认不动（macOS 应用防火墙不拦 UDP 入站；开了就提示手动放行） | `netsh advfirewall` / `New-NetFirewallRule` |
 | 首次进入方式 | `curl … install.sh \| sh` | 同 Linux，另加 quarantine 处理 | `irm … install.ps1 \| iex`，或双击 `install.cmd` |
@@ -385,13 +385,8 @@ WantedBy=multi-user.target
 **Windows**（计划任务，纯 exe 不能注册成服务）：
 
 ```powershell
-schtasks /Create /TN sol /TR "C:\ProgramData\sol\run-sol.cmd" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\ProgramData\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
 
-# run-sol.cmd（脚本写它）：任务跑它才有日志留得住——计划任务的 XML 没有重定向，
-# 而把 cmd /c "… >> …" 塞进 /TR 是一串嵌套引号；包装脚本把引号关在自己文件里。
-@echo off
-"C:\ProgramData\sol\sol.exe" listen --config "C:\ProgramData\sol\sol.yaml" >> "C:\ProgramData\sol\sol.log" 2>&1
-schtasks /Run /TN sol
 schtasks /Query /TN sol /V /FO LIST
 ```
 

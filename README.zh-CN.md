@@ -526,6 +526,54 @@ strip）。裸 `go build` 不需要打标：工具链自己会嵌入一个点明
 （`v0.0.0-<时间戳>-<提交>`）以及提交号，`go install ...@v1.2.3` 则嵌入那个 tag。这些信息在
 `-s -w -trimpath` 之后依然在，所以发布的二进制仍然说得出自己是谁。
 
+### 安装脚本怎么用（零参数 · 编号菜单）
+
+装完/升级/看现状/卸载，都用**同一个脚本、同一个入口**，不给它传任何参数：
+
+| 平台 | 怎么跑 |
+| --- | --- |
+| Linux / macOS | `./install.sh`（或 `sh install.sh`） |
+| Windows | 双击随附的 `install.cmd`，或 `powershell -ExecutionPolicy Bypass -File .\install.ps1` |
+
+它**先报现状、再问你要做什么**，在你回答之前不改动任何东西。
+
+#### 现状块每行是什么意思
+
+- `二进制` / `版本`：你执行目录里那份；`PATH 上的 sol` 是系统里已有的那份。
+- `已安装` / `台账`：脚本自己装的记录（`/usr/local/share/sol/install.json`；Windows `C:\ProgramData\sol\install.json`）。说"上次没装完"就再跑一次补上。
+- `服务`：systemd 单元 / launchd 任务 / 计划任务在不在。Windows 还会多一行 `启动`，写的就是任务真正跑的命令行（可执行文件 + 参数），不用去任务计划里猜。
+- `日志`：服务日志在哪看——Linux `journalctl -u sol.service -f`，macOS `/usr/local/var/log/sol.log`，Windows `C:\ProgramData\sol\sol.log`。
+- `进程`：有没有 sol 在跑（按**可执行文件路径**认，不是按进程名）。没升权时只能按名字识别，它会说清楚"认不出是不是安装目录那份"。
+- `权限`：当前不是管理员时，说明什么时候会要权限（Unix 用 sudo 重跑一遍自己；Windows 一次 UAC）。
+- `运行配置`：服务真正读的那份配置。改它才是改行为；执行目录里那份只是"输入"。
+
+#### 选项（回车 = 1）
+
+    1  按配置应用（按 install.yaml 里的 run.args 装或升级）
+    2  卸载（摘掉服务，按台账删掉自己建的东西）
+    3  重新生成 install.yaml
+    4  退出，什么都不改
+
+#### 装完之后
+
+- **改行为**：编辑运行配置 `sol.yaml`（听哪些端口、匹配什么、干什么），或者编辑 `install.yaml` 的 `run.args`（怎么起）。改完重跑脚本选 `1`。
+- **升级**：把新的 `sol` / `sol.exe` 放到执行目录（跟脚本同一个目录），重跑选 `1`。它会先停掉自己那份服务再换二进制，换完再起——不会撞"端口占用"。
+- **卸载**：选 `2`。服务、二进制、台账都清掉；`sol.yaml` / `install.yaml` 留不留由你答。
+- **每一步都有台账**：`install.log` 记着每个动作和它的等价命令（想手工复核就照抄那行）。
+
+#### 读不懂的现象怎么查
+
+- **`服务 没有（计划任务 X 不存在）`，可台账说装过**：任务被删过、或被"优化/清理"工具动过。重跑选 `1` 会再建（脚本现在会在建完任务后复核一次，建不上就记成"没装完"并在报告里说）。
+- **Windows 上 `服务 … 看不清`**：没管理员权限读任务列表。以管理员身份重跑一次就能看清。
+- **`预检 被拒绝`**：端口占不上。多半是上一份还在跑（脚本会先停掉它再试一次）；也可能是系统把这段端口**排除**了（Hyper-V / WSL / Docker / 虚拟机常见）→ 换高端口，或 `net stop winnat && net start winnat`（重启后失效）。
+- **Windows 上没有日志文件**：检查运行配置里有没有 `logging: { output: file, file: ... }`——计划任务是"无窗口"跑的，stdout 没人接，所以日志必须由 sol 自己写文件（安装脚本在你没写这一节时会补上一条，然后由 sol 写进 `C:\ProgramData\sol\sol.log`）。
+
+#### 想装到别处试（不改本机）
+
+设 `SOL_INSTALL_ROOT=<目录>` 再跑脚本：落点全在那个目录里，**永不升权**，也**绝不碰**本机的服务管理器/计划任务/防火墙——测试和 CI 都靠它。
+
+> 装了 Hermes 的话，这些规矩（含三平台真机踩过的坑）也在 `sol-install` 技能里：直接打 `/sol-install` 就行。
+
 ### Verify Installation
 
 ```bash
@@ -565,7 +613,7 @@ sol ifaces
 
 6. **确认跑起来的是什么**：`sol --version`、`journalctl -u sol.service -f`（Linux）、
    `tail -f /usr/local/var/log/sol.log`（macOS）、`Get-Content -Wait C:\ProgramData\sol\sol.log`
-   （Windows；计划任务跑的是安装目录里的 `run-sol.cmd`，由它把 sol 的输出接进这个文件），
+   （Windows；计划任务直接跑 `sol.exe`，日志由 sol 自己写进这个文件——运行配置里的 `logging` 那一节），
    或者控制面开着时的 `GET /v1/status`。安装脚本的"现状"和完成报告里也各有一行告诉你日志在哪。
 
 密钥绝不进 YAML：放进环境变量（`SOL_TOKEN`、`SOL_CMD_KEY`、`SOL_PACKET_KEY`），或放进只有服务账号
@@ -726,13 +774,10 @@ $udp.Close()
    ```powershell
    New-Item -ItemType Directory -Force -Path C:\ProgramData\sol | Out-Null
    Move-Item .\sol.exe C:\ProgramData\sol\sol.exe -Force
-   # 任务跑一个包装脚本，sol 的输出才有地方落：计划任务的 XML 没有重定向，而把
-   # cmd /c "… >> …" 塞进 /TR 是一串嵌套引号；把重定向关进我们自己这个文件里最省事。
-   @'
-   @echo off
-   "C:\ProgramData\sol\sol.exe" listen --config "C:\ProgramData\sol\sol.yaml" >> "C:\ProgramData\sol\sol.log" 2>&1
-   '@ | Set-Content C:\ProgramData\sol\run-sol.cmd -Encoding ascii
-   schtasks /Create /TN sol /TR "C:\ProgramData\sol\run-sol.cmd" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+   # 计划任务直接跑 sol.exe：任务计划里"操作"一栏就是 exe + 参数，一眼看得懂。
+   # 任务没有 stdout 可接，所以日志由 sol 自己写文件——运行配置里补一节：
+   #   logging: { output: file, file: 'C:\ProgramData\sol\sol.log' }
+   schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\ProgramData\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
    schtasks /Run /TN sol
    ```
 

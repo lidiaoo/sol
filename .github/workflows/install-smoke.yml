@@ -237,19 +237,19 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           "y`ny`n" | & pwsh -NoProfile -File .\install.ps1
-      - name: Assert the task runs our wrapper, the wrapper reads the install-dir config, the output lands in sol.log, and it is listening
+      - name: Assert the task runs sol.exe with the install-dir config, that the config asks sol to log to a file, and that the log fills up
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           schtasks /Query /TN sol
           if (-not (Test-Path 'C:\ProgramData\sol\sol.exe')) { throw 'sol.exe 不在安装目录' }
           if (-not (Test-Path 'C:\ProgramData\sol\sol.yaml')) { throw '运行配置不在安装目录' }
-          if (-not (Test-Path 'C:\ProgramData\sol\run-sol.cmd')) { throw '任务该跑的运行包装脚本不在安装目录' }
           $q = (schtasks /Query /TN sol /V /FO LIST | Out-String)
-          if ($q -notmatch 'run-sol\.cmd') { throw "计划任务跑的不是我们的包装脚本：`n$q" }
-          $w = Get-Content 'C:\ProgramData\sol\run-sol.cmd' -Raw
-          if ($w -notmatch 'C:\\ProgramData\\sol\\sol\.yaml') { throw "包装脚本没带安装目录那份配置：`n$w" }
-          if ($w -notmatch 'sol\.log') { throw "包装脚本没把输出重定向到 sol.log：`n$w" }
+          if ($q -notmatch 'sol\.exe') { throw "计划任务跑的不是 sol.exe：`n$q" }
+          if ($q -notmatch 'C:\\ProgramData\\sol\\sol\.yaml') { throw "计划任务没带安装目录那份配置：`n$q" }
+          $cfg = Get-Content 'C:\ProgramData\sol\sol.yaml' -Raw
+          if ($cfg -notmatch 'output:\s*file') { throw "运行配置里没有让 sol 写文件日志的 logging 一节：`n$cfg" }
+          if ($cfg -notmatch 'sol\.log') { throw "运行配置里的日志文件路径不对：`n$cfg" }
           $i = 0
           while ($i -lt 20) {
             if (Get-NetUDPEndpoint -LocalPort 10133 -ErrorAction SilentlyContinue) { break }
@@ -259,7 +259,7 @@ jobs:
             Get-ChildItem 'C:\ProgramData\sol' | Out-String | Write-Host
             throw 'sol.exe 没在监听 10133'
           }
-          # 计划任务跑包装脚本就是为了留住 sol 的输出：这一条是这件事的真验证（Linux/macOS 上没法验）。
+          # 计划任务没有 stdout 可接，日志靠 sol 自己按配置写文件：这是这件事的真验证（Linux/macOS 上没法验）。
           if (-not (Test-Path 'C:\ProgramData\sol\sol.log')) { throw 'sol 的输出没落到 sol.log' }
           if ((Get-Item 'C:\ProgramData\sol\sol.log').Length -eq 0) { throw 'sol.log 是空的' }
       - name: 'Re-run is idempotent (numbered menu: 1 = apply)'
