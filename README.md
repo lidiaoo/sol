@@ -631,7 +631,9 @@ make lint
 ```
 
 `make build` stamps the version with `git describe`, and `make build-static` produces the shape
-the release pipeline ships (static, stripped). A plain `go build` needs no stamp: the toolchain
+the release pipeline ships (static, stripped). Both also stamp whether the tree was dirty, counting
+tracked edits only — the toolchain's own flag also counts untracked files, and building creates some
+(`dist/stage/...`), which would make a clean tree report `-dirty`. A plain `go build` needs no stamp: the toolchain
 embeds a pseudo-version naming the tree (`v0.0.0-<timestamp>-<commit>`) plus the commit, and
 `go install ...@v1.2.3` embeds that tag. Everything survives `-s -w -trimpath`, so the released
 binary can still say what it is.

@@ -68,7 +68,11 @@ rm -rf "$STAGE" 2>/dev/null || true
 rm -f "$DIST"/*.tar.gz "$DIST"/*.zip "$DIST"/checksums.txt "$DIST"/install.sh "$DIST"/install.ps1 "$DIST"/install.cmd 2>/dev/null || true
 mkdir -p "$STAGE"
 
-LDFLAGS="-s -w -X github.com/lidiaoo/sol/internal/buildinfo.version=$VERSION"
+# 脏标记同样盖章，口径与上面那套一致（只算已跟踪改动）：工具链自带的 vcs.modified 连未跟踪文件也算，
+# 而出包过程本身就在写 dist/stage/...，不盖的话"干净树"出出来的包也会自称 -dirty。
+DIRTY_STAMP=false
+[ "$DIRTY" = yes ] && DIRTY_STAMP=true
+LDFLAGS="-s -w -X github.com/lidiaoo/sol/internal/buildinfo.version=$VERSION -X github.com/lidiaoo/sol/internal/buildinfo.dirty=$DIRTY_STAMP"
 
 say "版本    $VERSION"
 say "落点    $DIST"

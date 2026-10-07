@@ -29,6 +29,15 @@ const (
 // version is stamped at link time (-X ...buildinfo.version=...); empty means "not stamped".
 var version = ""
 
+// dirty is stamped the same way (-X ...buildinfo.dirty=true|false) and says whether the tree had
+// uncommitted changes at build time. Empty means "not stamped" and leaves the decision to the
+// toolchain's own vcs.modified. Our build paths (Makefile, scripts/release.sh, goreleaser) stamp it
+// because the two definitions of "dirty" disagree: the toolchain also counts untracked files, and
+// building creates some (dist/stage/...), so a tree that is clean by our definition -- tracked
+// changes only, the same rule `git describe --dirty` and release.sh use -- would still come out
+// saying "-dirty".
+var dirty = ""
+
 // Version returns the version string to display.
 func Version() string {
 	if version != "" {
@@ -45,8 +54,10 @@ func Version() string {
 }
 
 // Revision returns the commit the binary was built from, shortened, with a "-dirty" suffix when
-// the tree had uncommitted changes at build time. It is empty when the build carries no VCS
-// information at all, which happens for a module install or a build outside a checkout.
+// the tree had uncommitted changes at build time. Tracked changes only: the link-time stamp decides
+// when it is present, and only an unstamped build falls back to the toolchain's vcs.modified, which
+// also counts untracked files. It is empty when the build carries no VCS information at all, which
+// happens for a module install or a build outside a checkout.
 func Revision() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -75,8 +86,25 @@ func Revision() string {
 		revision = revision[:revisionLength]
 	}
 
+	return withDirty(revision, modified)
+}
+
+// withDirty applies this project's rule for the "-dirty" suffix. The link-time stamp wins where it
+// exists -- it was computed with the rule the rest of the project uses (tracked edits only) -- and
+// only an unstamped build falls back to what the toolchain reported, which also counts untracked
+// files. Split out from Revision so the rule can be tested without depending on whether the build
+// carries VCS information at all.
+func withDirty(revision string, toolchainModified bool) string {
+	modified := toolchainModified
+	switch dirty {
+	case "true":
+		modified = true
+	case "false":
+		modified = false
+	}
+
 	if modified {
-		revision += "-dirty"
+		return revision + "-dirty"
 	}
 
 	return revision

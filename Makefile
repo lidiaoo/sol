@@ -1,5 +1,11 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -X github.com/lidiaoo/sol/internal/buildinfo.version=$(VERSION)
+# "Dirty" means tracked edits only, exactly like `git describe --dirty` and scripts/release.sh do it.
+# The toolchain's own vcs.modified also counts untracked files, and building creates some
+# (dist/stage/...), so a clean tree would otherwise still come out -dirty. Stamp it ourselves;
+# `make DIRTY=1 build` forces the dirty branch.
+DIRTY := $(shell git status --porcelain --untracked-files=no 2>/dev/null | head -1 | sed 's/.*/true/')
+LDFLAGS := -X github.com/lidiaoo/sol/internal/buildinfo.version=$(VERSION) \
+	-X github.com/lidiaoo/sol/internal/buildinfo.dirty=$(if $(DIRTY),true,false)
 GO ?= go
 
 # The module needs this Go version (see go.mod). Older toolchains - gccgo 1.18 is one of them -

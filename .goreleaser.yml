@@ -18,6 +18,10 @@ builds:
     ldflags:
       - -s -w
       - -X github.com/lidiaoo/sol/internal/buildinfo.version={{ .Version }}
+      # CI builds from a tag checkout, which is clean by definition (tracked changes only). Stamp it,
+      # or the revision would report "-dirty": the toolchain counts untracked files, and goreleaser
+      # writes into dist/ while building.
+      - -X github.com/lidiaoo/sol/internal/buildinfo.dirty=false
 
 archives:
   - id: sol
