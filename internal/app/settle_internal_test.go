@@ -10,23 +10,31 @@ import (
 	"github.com/lidiaoo/sol/internal/domain/wol"
 )
 
-// at returns a settleState whose clock is a variable, plus a pointer to that variable. startWall and
-// startMono are anchored on the same instant, except when a test wants to simulate a suspend by
-// letting the wall clock run ahead of the monotonic one.
-func at(now *time.Time) *settleState {
-	st := newSettleState()
-	st.now = func() time.Time { return *now }
-	st.startWall = now.Round(0)
-	st.startMono = *now
+// fakeSleepClock lets a test decide how much of the elapsed time the machine spent not running,
+// which is the signal the settle window reacts to. Substituting it keeps these tests independent of
+// the platform's clocks - and of whether anyone suspended the machine they run on.
+type fakeSleepClock struct{ slept time.Duration }
 
-	return st
+func (f *fakeSleepClock) sleepSince() time.Duration { return f.slept }
+func (f *fakeSleepClock) reanchor()                 { f.slept = 0 }
+
+// at returns a settleState whose clock is a variable, plus a handle on the suspend signal.
+func at(now *time.Time) (*settleState, *fakeSleepClock) {
+	fake := &fakeSleepClock{}
+	st := newSettleState()
+
+	st.now = func() time.Time { return *now }
+	st.clock = fake
+	st.start = *now
+
+	return st, fake
 }
 
 func TestSettleSuppressesRightAfterStart(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	guard := at(&now)
+	guard, _ := at(&now)
 
 	require.Equal(t, 2*time.Minute, guard.remaining(2*time.Minute))
 
@@ -42,7 +50,7 @@ func TestSettleIgnoresAnOldProcess(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().Add(-2 * time.Hour)
-	guard := at(&now)
+	guard, _ := at(&now)
 
 	now = time.Now()
 
@@ -53,36 +61,54 @@ func TestSettleDisablesWithZeroWindow(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	guard := at(&now)
+	guard, _ := at(&now)
 
 	require.Zero(t, guard.remaining(0))
 }
 
-// A suspend shows up as the wall clock running ahead of the monotonic clock: CLOCK_MONOTONIC stops
-// while the machine is down, the wall clock does not. The window then runs from the moment sol sees
-// the machine is back, which is the copy of the packet that arrived right after the resume.
+func TestSettleIgnoresClockNoise(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	guard, fake := at(&now)
+
+	// Under the threshold: a drifting wall clock, not a suspend. Nothing may be re-anchored.
+	fake.slept = settleDriftThreshold - time.Second
+
+	then := now
+
+	now = now.Add(10 * time.Second)
+
+	require.Zero(t, guard.remaining(time.Second), "the window still ends on schedule")
+
+	require.Equal(t, then, guard.start, "a little drift is not a resume")
+}
+
+// A resume is the moment the machine was not running while time passed: the window then runs from
+// the moment sol sees the machine is back, which is the copy of the packet that arrives right after
+// the resume - the very one that has to be refused.
 func TestSettleDetectsAResume(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	guard := at(&now)
+	guard, fake := at(&now)
 
-	// Two hours of wall time passed, but only a second of monotonic time: the machine was suspended.
-	guard.startWall = now.Add(-2 * time.Hour).Round(0)
-	guard.startMono = now.Add(-time.Second)
+	// Two hours passed, and the machine spent all of it suspended.
+	fake.slept = 2 * time.Hour
 
 	detected := now
 
-	require.Equal(t, 2*time.Minute, guard.remaining(2*time.Minute))
+	require.Equal(t, 2*time.Minute, guard.remaining(2*time.Minute), "the window restarts on a resume")
 
 	// The reference was re-anchored when the resume was seen, so the same suspend cannot be counted
 	// twice and the window cannot be extended by looking at it again.
-	require.Equal(t, detected.Round(0), guard.startWall, "the reference is re-anchored after a resume")
+	require.Equal(t, detected, guard.start, "the reference is re-anchored after a resume")
+	require.Zero(t, fake.slept, "the platform clock is re-anchored too")
 
 	now = now.Add(2 * time.Minute)
 
 	require.Zero(t, guard.remaining(2*time.Minute))
-	require.Equal(t, detected.Round(0), guard.startWall, "re-anchored once, not on every call")
+	require.Equal(t, detected, guard.start, "re-anchored once, not on every call")
 }
 
 func TestListenServiceSettleSuppressesDispatch(t *testing.T) {

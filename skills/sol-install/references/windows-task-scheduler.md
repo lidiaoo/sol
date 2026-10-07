@@ -62,3 +62,13 @@
      = 有但读不到、`FileNotFoundException` = 真的没有。
 - 但按项目要求，最简规矩是**非管理员不猜**：直接说"读不到内容，要管理员才看得到"。现状块是只读的，
   不该为了看一眼就弹 UAC；升权那一步（装/卸）之后什么都看得见。
+
+## Windows 上"休眠期间时钟不停"会坑掉 resume 判定（运行期，不是安装期）
+
+- 判定"机器刚从 suspend 回来"的常见手法是"wall clock 增量 − 单调钟增量"：Linux/macOS 的
+  CLOCK_MONOTONIC 休眠期间不走，这个差就是睡眠时长。**Windows 上两者都不停**——Go 的单调钟是
+  `QueryPerformanceCounter`，standby/hibernate 期间照样计数——差值恒为 0，判定永远不触发。
+- Windows 的正解是系统自带的那对计数器：`GetTickCount64`（**含**休眠）− `QueryUnbiasedInterruptTime`
+  （**只算工作态**）= 睡眠时长。两个调用都在 kernel32，不需要新依赖（`syscall.NewLazyDLL` + `unsafe`）。
+- 写这类判定的测试时注意：**"醒着时不漂移"必须有一条真测试**（两计数同步走），否则会误报 resume 把
+  正常功能全挡掉；而"真的休眠过一次"只能在愿意休眠的机器上验，本机不该拿真实服务去 suspend。

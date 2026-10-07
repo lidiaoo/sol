@@ -1,6 +1,7 @@
 package app
 
 import (
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -18,26 +19,23 @@ import (
 //
 // The window is measured from whichever event happened last, so a whole burst lands inside it.
 type settleState struct {
-	mu        sync.Mutex
-	now       func() time.Time
-	startWall time.Time // wall reading only: Round(0) drops the monotonic reading
-	startMono time.Time // the same instant carrying its monotonic reading, for time.Since
-	lastWake  time.Time // monotonic reading of the last detected resume
+	mu       sync.Mutex
+	now      func() time.Time
+	clock    sleepClock // platform-specific: how much of the elapsed time the machine was not running
+	start    time.Time  // the window runs from here: process start, or the last resume we noticed
+	lastWake time.Time  // when that resume was noticed
 }
 
-// settleDriftThreshold is how far the wall clock has to run ahead of the monotonic clock before that
-// counts as a resume rather than clock noise. CLOCK_MONOTONIC does not advance while the machine is
-// suspended and the wall clock does, so a suspend shows up as precisely this difference - which is
-// the only way to notice a resume without asking the operating system.
+// settleDriftThreshold is how much of the elapsed time has to be time the machine spent not running
+// before that counts as a resume rather than clock noise. How that is measured differs per platform;
+// see sleepClock, and note that the obvious measurement does not work on Windows.
 const settleDriftThreshold = 5 * time.Second
 
 func newSettleState() *settleState {
-	now := time.Now()
-
 	return &settleState{
-		now:       time.Now,
-		startWall: now.Round(0),
-		startMono: now,
+		now:   time.Now,
+		clock: newSleepClock(),
+		start: time.Now(),
 	}
 }
 
@@ -56,13 +54,15 @@ func (st *settleState) remaining(window time.Duration) time.Duration {
 	// Re-anchor on every resume we notice, so one suspend is not counted twice and the window runs
 	// from the moment sol sees the machine is back - which is the copy of the packet that arrived
 	// right after the resume, the very one that has to be refused.
-	if drift := now.Round(0).Sub(st.startWall) - now.Sub(st.startMono); drift > settleDriftThreshold {
+	if slept := st.clock.sleepSince(); slept > settleDriftThreshold {
 		st.lastWake = now
-		st.startWall = now.Round(0)
-		st.startMono = now
+		st.start = now
+		st.clock.reanchor()
+
+		slog.Info("machine resumed from sleep", "slept", slept.Round(time.Second).String())
 	}
 
-	if left := window - now.Sub(st.startMono); left > 0 {
+	if left := window - now.Sub(st.start); left > 0 {
 		return left
 	}
 

@@ -196,6 +196,16 @@ tagged release.
 
 ### Fixed
 
+- **The settle window never fired on Windows, so one wake-on-LAN packet could put the machine back
+  to sleep over and over.** The window notices a resume by asking how much of the elapsed time the
+  machine spent not running. On Linux and macOS CLOCK_MONOTONIC freezes during suspend and the wall
+  clock does not, which is what the code measured; on Windows nothing freezes - Go's monotonic clock
+  is QueryPerformanceCounter, which keeps counting through standby and hibernation - so that
+  measurement was always zero and every copy of the packet was honoured: sleep, wake, sleep again.
+  The question is now answered per platform (`internal/app/settle_clock*.go`), on Windows with
+  GetTickCount64 (sleep included) minus QueryUnbiasedInterruptTime (working-state time only), and a
+  resume is logged as `machine resumed from sleep`. The per-action cooldown was never affected: a
+  burst inside its window is still collapsed to one run.
 - **A `${VAR}` inside a YAML comment no longer makes that variable required.** Environment
   substitution ran over the raw file, so commenting out a line such as
   `# secure_on: "${NAS_WOL_PASSWORD}"` made sol refuse to start. Substitution is now per line,
