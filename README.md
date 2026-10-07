@@ -567,6 +567,11 @@ Expand-Archive -Path "sol.zip" -DestinationPath "." -Force
 > Upstream's last tagged release, v0.0.2, predates the configuration file, the extra actions and the port-9 change; read the
 > [CHANGELOG](CHANGELOG.md) before upgrading an existing installation.
 
+**Building a release locally**: `scripts/release.sh v0.1.0` produces `dist/sol-v0.1.0-<os>-<arch>.tar.gz` (`.zip` on
+Windows) plus loose `install.sh` / `install.ps1` / `install.cmd` assets and `checksums.txt`. The archive layout is a
+single executable directory — binary, installer scripts and README — so unpacking it and running the installer is all
+it takes. CI produces the same set through goreleaser (same names, same contents).
+
 ### Build from source
 
 ```bash

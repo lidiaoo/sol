@@ -513,6 +513,10 @@ Expand-Archive -Path "sol.zip" -DestinationPath "." -Force
 > 上游最后一个 tag 是 v0.0.2，配置文件、额外动作与端口 9 的变更都在它之后；升级既有安装前请先读
 > [CHANGELOG](CHANGELOG.md)。
 
+**出发布包（本地）**：`scripts/release.sh v0.1.0` → `dist/` 里有 `sol-v0.1.0-<os>-<arch>.tar.gz`（Windows 是 `.zip`）、
+`install.sh` / `install.ps1` / `install.cmd` 单文件资产，以及 `checksums.txt`。包里的布局就是一个执行目录：
+二进制 + 安装脚本 + README，解包进去直接跑安装脚本即可。CI 用 goreleaser 出同一套（名字、内容一致）。
+
 ### Build from source
 
 ```bash

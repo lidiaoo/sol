@@ -34,3 +34,6 @@ go.work
 /scripts/sol.yaml
 /scripts/install.yaml
 /scripts/elevated-*.log
+
+# 发布产物（scripts/release.sh 的落点）
+/dist/
