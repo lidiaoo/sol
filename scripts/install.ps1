@@ -1076,15 +1076,23 @@ if ($ElevatedAction) {
 	$dcArg = $SolDelConfigs
 	if (-not $dcArg) { $dcArg = $env:SOL_INSTALL_DELCONFIGS }
 	if ($dcArg) { $script:DelConfigsGiven = $true; $script:DelConfigs = ($dcArg -eq 'yes') }
+	# 先说话、再开 transcript：transcript 要是有半点磨蹭（或它自己出问题），用户看到的就是一个
+	# 空白窗口——先出字，至少知道"子进程起来了、卡在下一句"。这一行也写进后面的 transcript。
+	Say "（已用管理员权限重跑：$ElevatedAction）"
+	Say "  工作目录    $RunDir"
+	Say "  执行的动作  $ElevatedAction（服务 $($script:ServiceChosen)）"
+	# 进度条在无人看的窗口里只会拖慢：关掉。
+	$ProgressPreference = 'SilentlyContinue'
 	# 父进程看不见这个窗口：全程写进 transcript，交给它打印。
 	$elevLog = Join-Path $RunDir "elevated-$ElevatedAction.log"
 	$transcript = $false
 	try {
 		Start-Transcript -Path $elevLog -Append -Force | Out-Null
 		$transcript = $true
-	} catch { }
+	} catch {
+		Warn2 "没能开 transcript（$elevLog）：$($_.Exception.Message)（不影响这次执行，但父进程里看不到这段输出）"
+	}
 	try {
-		Say "（已用管理员权限重跑：$ElevatedAction）"
 		switch ($ElevatedAction) {
 			'install' { Invoke-Install; if ($script:Noop) { Say '（什么都没改。）' } else { Show-Report 'install' } }
 			'uninstall' { Invoke-Uninstall; Show-Report 'uninstall' }

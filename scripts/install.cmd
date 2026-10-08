@@ -13,6 +13,10 @@ if not exist "%PS%" (
 )
 
 echo Running the sol installer. It prints what it found, then asks before changing anything.
+echo.
+echo NOTE: if a SECOND PowerShell window pops up later, that is the administrator step.
+echo       It may look blank for a moment, then prints its own progress and closes itself.
+echo       Nothing here moves until it finishes.
 "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
 set rc=%ERRORLEVEL%
 echo.
