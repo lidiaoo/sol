@@ -41,7 +41,7 @@ function Note-Progress($msg) {
 
 function Say($msg) { Note-Progress $msg; Write-Host $msg }
 function Head2($msg) { Write-Host ""; Write-Host $msg -ForegroundColor White }
-function Warn2($msg) { Write-Warning $msg }
+function Warn2($msg) { Note-Progress "警告: $msg"; Write-Warning $msg }
 function Die($msg) { Write-Host $msg -ForegroundColor Red; exit 1 }
 # .NET 里明确"UTF-8 且不带 BOM"。PowerShell 5.1 的 -Encoding UTF8 是带 BOM 的：
 # 生成的 YAML/JSON 会被塞一个 BOM，而 .ps1 自身若没 BOM，5.1 又会按 ANSI/GBK 读它（中文变乱码、
@@ -581,6 +581,7 @@ function Act($kind, $what, $cmd) {
 	$line = "[$kind] $what"
 	if ($cmd) { $line += "`n        `$ $cmd" }
 	$script:Actions += $line
+	Note-Progress $line
 }
 
 function Write-Ledger($incomplete, $prevVersion, $prevSha) {
@@ -760,7 +761,8 @@ function Escalate-IfNeeded([string]$action) {
 		# UAC 子进程有自己的窗口，它的输出在父进程里一个字都看不到——失败也是静悄悄的，
 		# 而这正是"服务没注册"最难查的地方。子进程把全程写进 transcript，父进程随后打印出来。
 		$elevLog = Join-Path $RunDir "elevated-$action.log"
-		if (Test-Path $elevLog) { Remove-Item $elevLog -Force -ErrorAction SilentlyContinue }
+		$progressFile = Join-Path $RunDir "elevated-$action.progress"
+		if (Test-Path $progressFile) { Remove-Item $progressFile -Force -ErrorAction SilentlyContinue }
 		# 不用 -Wait：UAC 对话框要是没被看到（藏在窗口后面、别的桌面、或只闪了下任务栏），控制台会
 		# 一声不吭地干等——用户看到的就是"卡死没响应"。自己轮询，并且每 10 秒报一次在等什么、等了多久。
 		$p = Start-Process -FilePath $hostExe -Verb RunAs -PassThru -WorkingDirectory $RunDir -ArgumentList $argList
@@ -783,11 +785,11 @@ function Escalate-IfNeeded([string]$action) {
 			}
 		}
 		Say ''
-		if (Test-Path $elevLog) {
+		if (Test-Path $progressFile) {
 			Say '以管理员身份那一步的输出：'
-			foreach ($l in (Get-Content -Encoding UTF8 $elevLog)) { Say "  $l" }
+			foreach ($l in (Get-Content -Encoding UTF8 $progressFile)) { Say "  $l" }
 		} else {
-			Warn2 "以管理员身份那一步没有留下输出（$elevLog 不存在）。退出码：$($p.ExitCode)"
+			Warn2 "以管理员身份那一步没有留下任何输出（$progressFile 不存在）。退出码：$($p.ExitCode)"
 		}
 		exit $p.ExitCode
 	} catch {
@@ -1094,25 +1096,16 @@ if ($ElevatedAction) {
 	$dcArg = $SolDelConfigs
 	if (-not $dcArg) { $dcArg = $env:SOL_INSTALL_DELCONFIGS }
 	if ($dcArg) { $script:DelConfigsGiven = $true; $script:DelConfigs = ($dcArg -eq 'yes') }
-	# 先说话、再开 transcript：transcript 要是有半点磨蹭（或它自己出问题），用户看到的就是一个
-	# 空白窗口——先出字，至少知道"子进程起来了、卡在下一句"。这一行也写进后面的 transcript。
+	# 行式进度：父进程边等边念（见 Escalate-IfNeeded）。放在最前面，连下面三行也进得了记录。
+	$script:ProgressFile = Join-Path $RunDir "elevated-$ElevatedAction.progress"
+	Remove-Item -Path $script:ProgressFile -Force -ErrorAction SilentlyContinue
+	# 进度条在没人看的窗口里只会拖慢：关掉。
+	$ProgressPreference = 'SilentlyContinue'
+	# 这里原先还开 Start-Transcript，事后由父进程打印。真机上它在升权窗口里卡死过——用户看到的就是
+	# "三行之后一片空白"，而子进程一直不结束、父进程一直等。行式进度文件既能实时读、也够留档，播录去掉。
 	Say "（已用管理员权限重跑：$ElevatedAction）"
 	Say "  工作目录    $RunDir"
 	Say "  执行的动作  $ElevatedAction（服务 $($script:ServiceChosen)）"
-	# 进度条在无人看的窗口里只会拖慢：关掉。
-	$ProgressPreference = 'SilentlyContinue'
-	# 行式进度：父进程会边等边念出来（见 Escalate-IfNeeded）。
-	$script:ProgressFile = Join-Path $RunDir "elevated-$ElevatedAction.progress"
-	Remove-Item -Path $script:ProgressFile -Force -ErrorAction SilentlyContinue
-	# 父进程看不见这个窗口：全程写进 transcript，交给它打印。
-	$elevLog = Join-Path $RunDir "elevated-$ElevatedAction.log"
-	$transcript = $false
-	try {
-		Start-Transcript -Path $elevLog -Append -Force | Out-Null
-		$transcript = $true
-	} catch {
-		Warn2 "没能开 transcript（$elevLog）：$($_.Exception.Message)（不影响这次执行，但父进程里看不到这段输出）"
-	}
 	try {
 		switch ($ElevatedAction) {
 			'install' { Invoke-Install; if ($script:Noop) { Say '（什么都没改。）' } else { Show-Report 'install' } }
@@ -1122,8 +1115,6 @@ if ($ElevatedAction) {
 	} catch {
 		Say "出错了：$_"
 		Say $_.ScriptStackTrace
-	} finally {
-		if ($transcript) { try { Stop-Transcript | Out-Null } catch { } }
 	}
 	exit 0
 }
