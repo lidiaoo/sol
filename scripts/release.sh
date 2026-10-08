@@ -174,7 +174,9 @@ if command -v file >/dev/null 2>&1; then
 		*) die "$p 的二进制格式不对（期望含 \"$want_os\"）：$desc" ;;
 		esac
 		if [ -n "$want_arch" ]; then
-			printf '%s' "$desc" | grep -Eq "$want_arch" || die "$p 的架构不对（期望 ${want_arch}）：$desc"
+			# -i 不能少：macOS 自带的 file(1) 对 PE arm64 打印 "Aarch64"（大写 A、小写 arch64），
+			# Linux 上是 "ARM aarch64"，Windows 无 file。大小写不敏感一次解决三种写法。
+			printf '%s' "$desc" | grep -Eqi "$want_arch" || die "$p 的架构不对（期望 ${want_arch}）：$desc"
 		fi
 		printf '  %-24s %s\n' "$p" "$desc"
 	done
