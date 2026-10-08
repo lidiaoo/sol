@@ -1108,6 +1108,26 @@ if ($ElevatedAction) {
 	Remove-Item -Path $script:ProgressFile -Force -ErrorAction SilentlyContinue
 	# 进度条在没人看的窗口里只会拖慢：关掉。
 	$ProgressPreference = 'SilentlyContinue'
+	# 真机现场（花了整整几轮才认出来）：用户点一下这个窗口，Windows 控制台的“快速编辑”就进入标记模式，
+	# conhost 不再读取本进程的输出、本进程的写操作随之阻塞——看起来就是“三行之后一片空白、按回车才继续”。
+	# 子进程一进来就把自己控制台设成“不许快速编辑”，从根上避免。失败不影响执行（老系统/受限环境）。
+	try {
+		if (-not ('Sol.ConsoleGuard' -as [type])) {
+			Add-Type -Namespace Sol -Name ConsoleGuard -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetConsoleMode(IntPtr h, out uint mode);
+[DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetConsoleMode(IntPtr h, uint mode);
+public static bool DisableQuickEdit() {
+    const uint ENABLE_QUICK_EDIT_MODE = 0x0040;
+    IntPtr h = GetStdHandle(-10);
+    uint mode;
+    if (!GetConsoleMode(h, out mode)) return false;
+    return SetConsoleMode(h, mode & ~ENABLE_QUICK_EDIT_MODE);
+}
+'@
+		}
+		if ([Sol.ConsoleGuard]::DisableQuickEdit()) { Note-Progress '（已关掉这个窗口的“快速编辑”，点它不会再冻住）' }
+	} catch { }
 	# 这里原先还开 Start-Transcript，事后由父进程打印。真机上它在升权窗口里卡死过——用户看到的就是
 	# "三行之后一片空白"，而子进程一直不结束、父进程一直等。行式进度文件既能实时读、也够留档，播录去掉。
 	Say "（已用管理员权限重跑：$ElevatedAction）"
