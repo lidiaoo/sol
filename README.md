@@ -640,6 +640,8 @@ binary can still say what it is.
 
 ### Using the installer (no arguments, numbered menu)
 
+Real-machine pitfalls behind these behaviours are collected in [docs/install-pitfalls.md](docs/install-pitfalls.md).
+
 Install, upgrade, check status and uninstall all go through **one script with one
 entry point**, and you never pass it any arguments:
 

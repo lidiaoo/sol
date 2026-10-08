@@ -440,6 +440,8 @@ schtasks /Query /TN sol /V /FO LIST
    ELF 的 `e_machine` / Mach-O 的 `cputype`（sh），不匹配就在**现状块**里先提示"这份装不起来"，
    并在预检处直接停下、说清两边架构、给出该下哪个包。断言：s58 的用例 6，以及把 sh 侧真实函数
    抽出来跑六条真二进制（darwin/linux × amd64/arm64 识别正确，`.exe` 不在此判定内——PE 归 ps1）。
+> 真机上咬出来的坑、判据和「别再犯」的规矩，集中记在 [install-pitfalls.md](install-pitfalls.md)。
+
 6. **非管理员一律说"读不到"，绝不说"不存在"**：计划任务以 SYSTEM 身份注册，任务定义
    `C:\Windows\System32\Tasks\<名字>` 的 ACL 只给 SYSTEM 与管理员；非管理员的 `Get-ScheduledTask`
    枚举会**静默跳过**它读不到的任务——于是"不在列表里"被误报成"不存在"（真机实测：任务在、sol 在跑，
