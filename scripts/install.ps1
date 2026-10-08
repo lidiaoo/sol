@@ -740,6 +740,10 @@ function Escalate-IfNeeded([string]$action) {
 	else { Say '这一步要写安装目录、注册计划任务、改机器 PATH，需要管理员。' }
 	Say '我用 UAC 以管理员身份重新执行一遍自己：同一个目录、你刚才的答案带过去，不会再问一遍。'
 	Say '接下来会弹一个 UAC 授权框（“你要允许此应用对你的设备进行更改吗”）。'
+	# 这一条是真机上花了几轮才找出来的：那个窗口出来后**别用鼠标点它**——Windows 控制台的“快速编辑”
+	# 默认开着，点一下会进入标记模式，conhost 停止读输出、进程的写也跟着阻塞，看起来就是“一片空白、
+	# 怎么都不动”，而按一下回车或 Esc 就解冻。多发一句，省掉这一整轮猜谜。
+	Say '那个窗口出来之后**不要用鼠标点它**：Windows 控制台的“快速编辑”会让它冻住（看起来一片空白）。真冻住了，在它里面按一下回车或 Esc 就能解冻。'
 	Say '看不到它就看任务栏、或按 Win 键找一下——**不点它，这里会一直等，看起来就像卡住了**。'
 
 	if ($Piped) {
@@ -775,6 +779,9 @@ function Escalate-IfNeeded([string]$action) {
 		while (-not $p.WaitForExit(10000)) {
 			$waited += 10
 			Warn2 "还在等那一步结束（已等 ${waited} 秒）：如果屏幕上没有第二个窗口，或它是空白的，它就是卡住了——按 Ctrl+C，然后右键 install.cmd 选「以管理员身份运行」。"
+			if ($waited -ge 60 -and $shown -eq 0) {
+				Say '  已经 60 秒没有任何进度：多半就是那个窗口被点住、冻在“快速编辑”里了——在它里面按回车或 Esc 解冻；或者按 Ctrl+C，改走“以管理员身份运行”。'
+			}
 			if (Test-Path $progressFile) {
 				$all = @(Get-Content -Path $progressFile -Encoding UTF8 -ErrorAction SilentlyContinue)
 				if ($all.Count -gt $shown) {
