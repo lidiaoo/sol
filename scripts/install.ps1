@@ -193,9 +193,14 @@ function Invoke-Native([string]$Exe, [string[]]$Argv) {
 function Get-RunningSolIds($path) {
 	$ids = @()
 	if (-not $path) { return $ids }
-	foreach ($p in (Get-CimInstance Win32_Process -Filter "Name = 'sol.exe'" -ErrorAction SilentlyContinue)) {
-		if ($p.ExecutablePath -and ($p.ExecutablePath -ieq $path)) { $ids += [int]$p.ProcessId; continue }
-		if (-not $p.ExecutablePath -and $p.CommandLine -and ($p.CommandLine -imatch [regex]::Escape($path))) { $ids += [int]$p.ProcessId }
+	# 这里原先是 Get-CimInstance（WMI）。真机上"要停掉正在跑的那份"这一步卡死过——WMI 查询可以无限期
+	# 挂住，而 Get-Process 是本地调用，不会。路径读不到时（任务是以 SYSTEM 身份跑的）退化成按名字算，
+	# 反正规矩已经定了：叫 sol 的就归这个脚本管。
+	foreach ($p in @(Get-Process -Name 'sol' -ErrorAction SilentlyContinue)) {
+		$exe = ''
+		try { $exe = $p.Path } catch { }
+		if ($exe -and ($exe -ieq $path)) { $ids += [int]$p.Id; continue }
+		if (-not $exe) { $ids += [int]$p.Id }
 	}
 	@($ids)
 }
@@ -203,8 +208,9 @@ function Get-RunningSolIds($path) {
 # 为什么停：① 卸载要删这个 exe，进程活着文件删不掉（Windows 的文件锁）；② 更要紧的是它一直
 # 占着 UDP 端口，下一次安装的预检绑不上，看起来就是"端口占用"。
 function Stop-RunningInstances($path, $why) {
+	Note-Progress "  查有没有在跑的 sol.exe（$path）"
 	$ids = @(Get-RunningSolIds $path)
-	if ($ids.Count -eq 0) { return }
+	if ($ids.Count -eq 0) { Note-Progress '  没有在跑的，跳过'; return }
 	Say "  先停掉还在跑的那份（$why）：pid $($ids -join ',')"
 	foreach ($procId in $ids) {
 		try { Stop-Process -Id $procId -Force -ErrorAction Stop } catch { }
@@ -740,6 +746,7 @@ function Escalate-IfNeeded([string]$action) {
 	else { Say '这一步要写安装目录、注册计划任务、改机器 PATH，需要管理员。' }
 	Say '我用 UAC 以管理员身份重新执行一遍自己：同一个目录、你刚才的答案带过去，不会再问一遍。'
 	Say '接下来会弹一个 UAC 授权框（“你要允许此应用对你的设备进行更改吗”）。'
+	Say '授权之后不会再出现第二个窗口：需要管理员的那一步在后台跑，它的每一步都会显示在这个屏幕里。'
 	# 这一条是真机上花了几轮才找出来的：那个窗口出来后**别用鼠标点它**——Windows 控制台的“快速编辑”
 	# 默认开着，点一下会进入标记模式，conhost 停止读输出、进程的写也跟着阻塞，看起来就是“一片空白、
 	# 怎么都不动”，而按一下回车或 Esc 就解冻。多发一句，省掉这一整轮猜谜。
@@ -769,7 +776,9 @@ function Escalate-IfNeeded([string]$action) {
 		if (Test-Path $progressFile) { Remove-Item $progressFile -Force -ErrorAction SilentlyContinue }
 		# 不用 -Wait：UAC 对话框要是没被看到（藏在窗口后面、别的桌面、或只闪了下任务栏），控制台会
 		# 一声不吭地干等——用户看到的就是"卡死没响应"。自己轮询，并且每 10 秒报一次在等什么、等了多久。
-		$p = Start-Process -FilePath $hostExe -Verb RunAs -PassThru -WorkingDirectory $RunDir -ArgumentList $argList
+		# 不显示窗口：那个窗口在真机上"必须按一下回车才动"（用户反馈了多轮），而它要说的每句话
+		# 都已经经进度文件转述到眼前这个窗口里了。-WindowStyle Hidden 让它完全不可见，也就无从被冻住。
+		$p = Start-Process -FilePath $hostExe -Verb RunAs -PassThru -WindowStyle Hidden -WorkingDirectory $RunDir -ArgumentList $argList
 		# 万一授权框真的没弹出来（系统策略/焦点问题），这里会一直等：把出路直接写出来。
 		Say '      如果这里停住超过 10 秒、又没看到授权框：按 Ctrl+C，然后右键 install.cmd 选「以管理员身份运行」（那条路不需要中途授权）。'
 		# 子进程每说一句都会追进这个文件：边等边把它念出来，用户就不用去猜那个窗口。
