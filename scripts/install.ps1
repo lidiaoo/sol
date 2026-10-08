@@ -175,7 +175,10 @@ function Invoke-Native([string]$Exe, [string[]]$Argv) {
 	$old = $ErrorActionPreference
 	$ErrorActionPreference = 'Continue'
 	try {
-		$out = & $Exe @Argv 2>&1
+		# `$null |` 是关键，别再删：原生命令（schtasks 的确认提示就是典型）会在 stdin 上等人按键，
+		# 真机上那就是"脚本卡死、按回车才继续"，而升权那一步现在是隐藏窗口——用户连那个窗口都看不到，
+		# 更按不了。给它们一个空 stdin（立刻 EOF），它们只能取默认值然后返回。
+		$out = $null | & $Exe @Argv 2>&1
 		return @{ Code = $LASTEXITCODE; Out = (($out | Out-String).Trim()) }
 	} catch {
 		return @{ Code = -1; Out = "$_" }
