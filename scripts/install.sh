@@ -590,7 +590,7 @@ show_state() {
 	if [ -n "$LOCAL_BIN" ]; then
 		say "  二进制      $LOCAL_BIN"
 		fits=$(binary_fits_host "$LOCAL_BIN")
-		[ -n "$fits" ] && warn "$fits——这份装不起来，去下本机架构的那个包。"
+		[ -n "$fits" ] && warn "${fits}——这份装不起来，去下本机架构的那个包。"
 		say "  版本        $(version_tag "$LOCAL_BIN")（sha256 $(sha256 "$LOCAL_BIN" | cut -c1-12)…）"
 	else
 		say "  二进制      没有找到可用的 sol：脚本旁边、当前目录、\$PATH 里都没有"
@@ -799,7 +799,7 @@ precheck() { # 用同一个二进制 + 同一份配置起一次（dry-run：匹�
 	# 架构对不上就别装了：真跑起来只会给一句 "bad CPU type" 之类的天书。
 	fits=$(binary_fits_host "$LOCAL_BIN")
 	if [ -n "$fits" ]; then
-		die "$fits。
+		die "${fits}。
   $LOCAL_BIN
 本机架构：$(host_arch)。发布包是 sol-<版本>-$(uname -s | tr 'A-Z' 'a-z')-$(host_arch).tar.gz——别拿错；真要跨架构用，就把 install.yaml 的 run.args 指向本机架构那份二进制。"
 	fi

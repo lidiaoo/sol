@@ -42,7 +42,7 @@ die() { printf '错误: %s\n' "$*" >&2; exit 1; }
 
 command -v git >/dev/null 2>&1 || die "需要 git（判断工作区是否干净、取版本号）"
 GO=${GO:-go}
-command -v "$GO" >/dev/null 2>&1 || die "找不到 $GO（用 GO=/path/to/go 指定）"
+command -v "$GO" >/dev/null 2>&1 || die "找不到 ${GO}（用 GO=/path/to/go 指定）"
 
 # 版本号：要么显式给，要么取最近的 tag；带 -dirty 的树默认拒绝打包（发布不该是脏树）。
 # 只把**已跟踪文件的改动**算脏：未跟踪的 .idea/、dist/ 之类不该拦住发布（不然每台机器都"脏"）。
@@ -174,7 +174,7 @@ if command -v file >/dev/null 2>&1; then
 		*) die "$p 的二进制格式不对（期望含 \"$want_os\"）：$desc" ;;
 		esac
 		if [ -n "$want_arch" ]; then
-			printf '%s' "$desc" | grep -Eq "$want_arch" || die "$p 的架构不对（期望 $want_arch）：$desc"
+			printf '%s' "$desc" | grep -Eq "$want_arch" || die "$p 的架构不对（期望 ${want_arch}）：$desc"
 		fi
 		printf '  %-24s %s\n' "$p" "$desc"
 	done

@@ -66,5 +66,9 @@ Windows 安装「卡死」这件事，前后猜错了四次——UAC 框没弹�
 
 - 沙箱（`SOL_INSTALL_ROOT`）里**永不**碰任务计划/服务管理器。
 - `.ps1` 必须带 UTF-8 BOM：PS 5.1 按 ANSI/GBK 读无 BOM 文件，中文会把引号搞乱。
+- **macOS 自带 bash 3.2 会把紧跟在变量名后面的高字节算进变量名**：`$want_arch）` 实际取的是
+  `want_arch\xef`，`set -u` 下当场 unbound variable，整只脚本一行都跑不出来（Linux 的 bash 5 不会）。
+  规矩：变量后面紧跟非中文/非 ASCII 时一律写 `${VAR}`。判据：`make test` 里的
+  `TestShellScriptsBraceVariablesBeforeNonASCII` 会扫 `scripts/*.sh` 并报出行号。
 - PowerShell 数组字面量别留尾随逗号。
 - 升权前把话说清楚（会弹 UAC、窗口可能藏在哪、出路是什么），别让控制台看起来是死的。
