@@ -32,7 +32,14 @@ $ErrorActionPreference = 'Stop'
 
 $Design = 'docs/install-design.md'
 
-function Say($msg) { Write-Host $msg }
+# 子进程的窗口可能根本不在用户眼前（真机上就是"蓝窗口一片空白"）。所以子进程每说一句都顺手追加
+# 进一个**行式**进度文件：父进程在等它的同时把新行念出来，用户在眼前这个窗口里就能看见它走到哪一步。
+function Note-Progress($msg) {
+	if (-not $script:ProgressFile) { return }
+	try { Add-Content -Path $script:ProgressFile -Value ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $msg) -Encoding UTF8 -ErrorAction Stop } catch { }
+}
+
+function Say($msg) { Note-Progress $msg; Write-Host $msg }
 function Head2($msg) { Write-Host ""; Write-Host $msg -ForegroundColor White }
 function Warn2($msg) { Write-Warning $msg }
 function Die($msg) { Write-Host $msg -ForegroundColor Red; exit 1 }
@@ -759,10 +766,21 @@ function Escalate-IfNeeded([string]$action) {
 		$p = Start-Process -FilePath $hostExe -Verb RunAs -PassThru -WorkingDirectory $RunDir -ArgumentList $argList
 		# 万一授权框真的没弹出来（系统策略/焦点问题），这里会一直等：把出路直接写出来。
 		Say '      如果这里停住超过 10 秒、又没看到授权框：按 Ctrl+C，然后右键 install.cmd 选「以管理员身份运行」（那条路不需要中途授权）。'
+		# 子进程每说一句都会追进这个文件：边等边把它念出来，用户就不用去猜那个窗口。
+		$progressFile = Join-Path $RunDir "elevated-$action.progress"
+		$shown = 0
 		$waited = 0
 		while (-not $p.WaitForExit(10000)) {
 			$waited += 10
-			Warn2 "还在等 UAC 授权框被点（已等 ${waited} 秒）：看不到它就按 Win 键或看任务栏；不点它，这里不会继续。"
+			Warn2 "还在等那一步结束（已等 ${waited} 秒）：如果屏幕上没有第二个窗口，或它是空白的，它就是卡住了——按 Ctrl+C，然后右键 install.cmd 选「以管理员身份运行」。"
+			if (Test-Path $progressFile) {
+				$all = @(Get-Content -Path $progressFile -Encoding UTF8 -ErrorAction SilentlyContinue)
+				if ($all.Count -gt $shown) {
+					Say '  那一步目前做到：'
+					foreach ($l in $all[$shown..($all.Count - 1)]) { Say "    $l" }
+					$shown = $all.Count
+				}
+			}
 		}
 		Say ''
 		if (Test-Path $elevLog) {
@@ -1083,6 +1101,9 @@ if ($ElevatedAction) {
 	Say "  执行的动作  $ElevatedAction（服务 $($script:ServiceChosen)）"
 	# 进度条在无人看的窗口里只会拖慢：关掉。
 	$ProgressPreference = 'SilentlyContinue'
+	# 行式进度：父进程会边等边念出来（见 Escalate-IfNeeded）。
+	$script:ProgressFile = Join-Path $RunDir "elevated-$ElevatedAction.progress"
+	Remove-Item -Path $script:ProgressFile -Force -ErrorAction SilentlyContinue
 	# 父进程看不见这个窗口：全程写进 transcript，交给它打印。
 	$elevLog = Join-Path $RunDir "elevated-$ElevatedAction.log"
 	$transcript = $false
