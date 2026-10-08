@@ -234,4 +234,6 @@ fi
 say ""
 say "下一步："
 say "  git tag $VERSION && git push origin $VERSION        # 打 tag（CI 会在 release 创建后自动出同一套包）"
-say "  gh release create $VERSION dist/* --title $VERSION  # 手动发也行（没有 gh 就用网页上传 dist/ 里的文件）"
+# 注意别用 dist/*：那会带上 dist/stage/ 这个目录，gh 会当资产上传并报 "read dist/stage: is a directory"。
+	say "  gh release create $VERSION dist/sol-* dist/checksums.txt dist/install.* --title $VERSION"
+	say "                                     # （dist/stage/ 是给人看的目录，不要上传；没有 gh 就用网页传上面这些文件）"

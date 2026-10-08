@@ -561,7 +561,9 @@ CI 那边：在 GitHub 上**创建 release** 时，`.github/workflows/release.ya
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
-gh release create v0.1.0 dist/* --title v0.1.0      # or upload the files from dist/ by hand
+gh release create v0.1.0 dist/sol-* dist/checksums.txt dist/install.* --title v0.1.0
+# (not dist/*: that would include the directory dist/stage/ and gh would try to upload it,
+#  failing with "read dist/stage: is a directory")
 ```
 
 ### Build from source
