@@ -38,7 +38,7 @@ it - nothing here is a dead end, and every one of them ends with a working servi
 | Power this machine off / reboot / suspend it from the LAN | [Install](#installation) - run the installer, it asks everything (no arguments, numbered menu) | A service that starts at boot (`systemd` / `launchd` / Task Scheduler) and a `sol.yaml` you can edit |
 | Try it first, without touching this machine's services | [Quick start](#quick-start) and [Trying it somewhere harmless](#trying-it-somewhere-harmless) | `sol listen` running by hand; `--dry-run` prints what it would do instead of doing it |
 | Run it with flags only, no configuration file | [Simple mode](#simple-mode-command-line) - `sol listen --port 10010 --iface eth0` | The same daemon, configured entirely on the command line |
-| Fire actions from HTTP - scripts, dashboards, another host | [Control plane](#control-plane) - off by default, one field to switch on | `POST /v1/actions/<name>` and friends, bound to `127.0.0.1`, with a bearer token |
+| Fire actions from HTTP - scripts, dashboards, another host | [Control plane](#control-plane) - off by default, one field to switch on; the curl calls are [here](#turning-it-on-and-calling-it) | `POST /v1/actions/<name>` and friends, bound to `127.0.0.1`, with a bearer token |
 | Match packets precisely: several ports, several NICs, content, custom actions | [Configuration file mode](#configuration-file-mode) | A `sol.yaml` that matches by port, NIC, source subnet, content and HMAC, and can run your own commands |
 | Build the binary, or produce the release packages yourself | [Build from source](#build-from-source) / [Building the release packages yourself](#building-the-release-packages-yourself) | `sol` for every platform, and a `dist/` archive ready to publish |
 
@@ -727,6 +727,63 @@ the token is wrong or missing, and the same rejection goes to the audit log. A c
 (`curl: (7)`) means nothing is listening at all: sol is not running, `enabled` is not true - or it
 refused to start, which a missing token variable causes. The control plane is started at start-up, not
 by a reload, so a restart is what applies this block.
+
+#### Other ways to drive it (Postman, ApiPost, UpSnap, phone apps)
+
+```bash
+# any HTTP client works: curl, Postman, ApiPost, a button in a dashboard
+curl -X POST -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/actions/nas-wake
+# any Wake-on-LAN sender works too: UpSnap, PowerControl, a phone Wake-on-LAN app.
+# Point it at this host, choose a non-reserved port (9 and 7 take bare magic packets only)
+# and put the target device's own MAC in the packet - the port decides what happens.
+```
+
+curl is just the most convenient client: the control plane speaks plain HTTP, so Postman and ApiPost
+work against the same endpoint (method `POST`, the bearer token in the `Authorization` header, the
+action name in the path). In the other direction, anything that can send a Wake-on-LAN magic packet
+works as a trigger without HTTP at all - UpSnap, PowerControl, or a phone Wake-on-LAN app: point it at
+this host, choose a **non-reserved** port and put the target device's MAC in the packet. Ports 9 and 7
+are reserved: they accept bare magic packets only, and no action may be attached to them, so use a port
+at or above 1024 for these groups.
+
+Both directions meet in a **group**: the thing a panel, an app or a script calls. Give every device and
+every action of that device its own name and its own port, and put all of that device's network cards in
+the same group - the wired ones and the wireless ones.
+
+```yaml
+version: 1
+actions:
+  # one action per NIC: wol.send takes a single MAC, so a group is a sequence
+  - { name: nas-wake-lan,  type: wol.send, mac: "AA:BB:CC:00:00:01", broadcast: 192.168.0.255 }
+  - { name: nas-wake-wifi, type: wol.send, mac: "AA:BB:CC:00:00:02", broadcast: 192.168.0.255 }
+  - { name: nas-wake, type: sequence, steps: [nas-wake-lan, nas-wake-wifi] }
+rules:
+  # group "nas-sleep": this host sleeps when one of its own NICs is addressed (wired and wireless)
+  - match: { ports: [10130], mac: self, content: { kind: none } }
+    action: power.sleep
+  # group "nas-wake": the same idea for waking another machine
+  - match: { ports: [10131], content: { kind: suffix, value: "nas-wake" } }
+    action: nas-wake
+```
+
+`mac: self` covers every NIC of the host that runs sol, which is what a "sleep this machine" group
+needs. `wol.send` takes one MAC per action, so a "wake that machine" group is a `sequence` over one
+action per NIC - the wired and the wireless address of the same box. Because the grouping lives in
+named actions, every HTTP client shows it as a button, and a packet on the group's port triggers exactly
+the same thing.
+
+#### Grouping devices: one group per device and action
+
+| Group | Reached by | Effect |
+| --- | --- | --- |
+| `nas-sleep` (port 10130) | a magic packet addressed to any NIC of this host | `power.sleep` on this host |
+| `nas-wake` (port 10131, or `POST /v1/actions/nas-wake`) | a payload ending in `nas-wake`, or HTTP | wakes `nas` on every NIC it has |
+| `desk-reboot` (port 10132) | a magic packet addressed to any NIC of this host | `power.reboot` on this host |
+
+The naming is a convention, not syntax: sol matches ports, MACs and payloads, so `nas-wake` is simply
+the name you gave that port and that action. Keep the rule and the action name the same, and the group
+is self-documenting in the log, in `/v1/rules` and in any client you point at it.
+
 ### Audit log destination
 
 The audit trail goes to stderr by default, so a service manager owns it (`journalctl -u sol`).

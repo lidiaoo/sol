@@ -32,7 +32,7 @@ SoL 是一个监听 Wake-on-LAN 魔法包的服务：当收到的包命中配置
 | 让这台机器能被局域网关机 / 重启 / 睡眠 | [Install](#installation) —— 跑安装脚本，它会把该问的都问全（零参数、编号菜单） | 开机自启的服务（`systemd` / `launchd` / 计划任务）和一份你能改的 `sol.yaml` |
 | 先试一下，不动这台机器的服务 | [Quick start](#quick-start) 与 [Installation](#installation) | 手工跑着的 `sol listen`；`--dry-run` 只打印它打算做什么，不动手 |
 | 只用命令行参数跑，不要配置文件 | [Simple mode](#simple-mode-command-line) —— `sol listen --port 10010 --iface eth0` | 同一个守护进程，全靠命令行配置 |
-| 用 HTTP 触发动作——脚本、面板、另一台机器 | [Control plane](#control-plane) —— 默认关着，改一个字段就能开 | `POST /v1/actions/<name>` 等端点，只绑 `127.0.0.1`，带令牌 |
+| 用 HTTP 触发动作——脚本、面板、另一台机器 | [Control plane](#control-plane) —— 默认关着，改一个字段就能开；curl 调用在[那一节](#control-plane)里 | `POST /v1/actions/<name>` 等端点，只绑 `127.0.0.1`，带令牌 |
 | 要精确匹配：多个端口、多张网卡、包内容、自定义动作 | [Configuration file mode](#configuration-file-mode) | 一份按端口、网卡、来源网段、包内容、HMAC 匹配的 `sol.yaml`，还能跑你自己的命令 |
 | 自己编译，或自己出发布包 | [Build from source](#build-from-source) / [Installation](#installation) | 各平台的 `sol`，以及可以直接发布的 `dist/` 包 |
 
@@ -670,6 +670,58 @@ curl -s -X POST -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/r
 `/v1/...` 回 `401` 且正文 `{"error":"unauthorized"}`，就是令牌错或没带上，同一次拒绝也会写进审计日志。
 连不上（`curl: (7)`）说明根本没人在听：sol 没在跑、`enabled` 不是 true、或者它启动被拒（缺令牌变量就会
 这样）。控制面是**启动时**拉起的，热重载不管它，所以改完要重启。
+
+#### 用别的工具驱动它（Postman、ApiPost、UpSnap、手机 App）
+
+```bash
+# any HTTP client works: curl, Postman, ApiPost, a button in a dashboard
+curl -X POST -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/actions/nas-wake
+# any Wake-on-LAN sender works too: UpSnap, PowerControl, a phone Wake-on-LAN app.
+# Point it at this host, choose a non-reserved port (9 and 7 take bare magic packets only)
+# and put the target device's own MAC in the packet - the port decides what happens.
+```
+
+curl 只是最顺手的客户端：控制面说的是普通 HTTP，所以 Postman、ApiPost 对着同一个端点就能用（方法
+`POST`、`Authorization` 头里放令牌、路径里放动作名）。反过来，任何能发 Wake-on-LAN 魔法包的东西都能
+当触发器，根本不需要 HTTP——UpSnap、PowerControl、手机上的 Wake-on-LAN App：指向这台主机，选一个
+**非保留端口**，把目标设备自己的 MAC 放进包里。9 和 7 是保留端口：只接受裸魔法包，且不允许挂任何动作，
+所以这类分组请用 1024 以上的端口。
+
+两个方向最后都落到一个**组**上：它才是面板、App、脚本真正调用的东西。给每台设备、每个动作各自一个名字
+和一个端口，并把这台设备的**所有网卡**——有线的和无线的——放进同一个组。
+
+```yaml
+version: 1
+actions:
+  # one action per NIC: wol.send takes a single MAC, so a group is a sequence
+  - { name: nas-wake-lan,  type: wol.send, mac: "AA:BB:CC:00:00:01", broadcast: 192.168.0.255 }
+  - { name: nas-wake-wifi, type: wol.send, mac: "AA:BB:CC:00:00:02", broadcast: 192.168.0.255 }
+  - { name: nas-wake, type: sequence, steps: [nas-wake-lan, nas-wake-wifi] }
+rules:
+  # group "nas-sleep": this host sleeps when one of its own NICs is addressed (wired and wireless)
+  - match: { ports: [10130], mac: self, content: { kind: none } }
+    action: power.sleep
+  # group "nas-wake": the same idea for waking another machine
+  - match: { ports: [10131], content: { kind: suffix, value: "nas-wake" } }
+    action: nas-wake
+```
+
+`mac: self` 覆盖运行 sol 这台主机的全部网卡，正是"让这台机器睡"那个组需要的写法；而 `wol.send` 一个
+动作只能带一个 MAC，所以"把这台机器唤醒"的组是一个 `sequence`，每张网卡一个动作——同一台机器的有线地址
+和无线地址都在里面。因为"组"落在具名动作上，任何 HTTP 客户端里它就是一个按钮，而往这个组的端口发一个包
+触发的是同一件事。
+
+#### 按设备分组：每台设备、每个动作一组
+
+| 组 | 怎么触发 | 效果 |
+| --- | --- | --- |
+| `nas-sleep`（端口 10130） | 目标 MAC 是本机任一网卡的魔法包 | 让本机 `power.sleep` |
+| `nas-wake`（端口 10131，或 `POST /v1/actions/nas-wake`） | 载荷以 `nas-wake` 结尾，或走 HTTP | 把 `nas` 的所有网卡都唤醒 |
+| `desk-reboot`（端口 10132） | 目标 MAC 是本机任一网卡的魔法包 | 让本机 `power.reboot` |
+
+命名是约定，不是语法：sol 匹配的是端口、MAC 和载荷，`nas-wake` 只是你给那个端口和那个动作起的名字。
+让规则名和动作名保持一致，这个组就会在日志、`/v1/rules` 和你接的任何一个客户端里自解释。
+
 ### Audit log destination
 
 审计日志默认进 stderr，交给服务管理器管（`journalctl -u sol`）。`logging.output` 可以改：`stdout`，
