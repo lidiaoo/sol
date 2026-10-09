@@ -36,6 +36,17 @@ SoL 是一个监听 Wake-on-LAN 魔法包的服务：当收到的包命中配置
 | 要精确匹配：多个端口、多张网卡、包内容、自定义动作 | [Configuration file mode](#configuration-file-mode) | 一份按端口、网卡、来源网段、包内容、HMAC 匹配的 `sol.yaml`，还能跑你自己的命令 |
 | 自己编译，或自己出发布包 | [Build from source](#build-from-source) / [Installation](#installation) | 各平台的 `sol`，以及可以直接发布的 `dist/` 包 |
 
+```bash
+sh install.sh                                     # or unpack a release; the menu asks everything
+sol listen --config sol.yaml --dry-run            # watch the matches without acting on them
+curl -s http://127.0.0.1:8080/healthz             # control plane: on with server.http.enabled
+curl -s -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/status
+```
+
+上面四条命令就是整个产品的第一屏：装上、看一眼、用 HTTP 调它。完整的 curl 集合——每个端点、每种回答
+是什么意思、以及在 Linux / macOS / Windows 上怎么把令牌交给服务——都在下面的
+[Control plane](#control-plane) 里。
+
 ## 目录
 
 - [Description](#description) —— 它监听什么、能做什么、支持哪些平台

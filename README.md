@@ -42,6 +42,17 @@ it - nothing here is a dead end, and every one of them ends with a working servi
 | Match packets precisely: several ports, several NICs, content, custom actions | [Configuration file mode](#configuration-file-mode) | A `sol.yaml` that matches by port, NIC, source subnet, content and HMAC, and can run your own commands |
 | Build the binary, or produce the release packages yourself | [Build from source](#build-from-source) / [Building the release packages yourself](#building-the-release-packages-yourself) | `sol` for every platform, and a `dist/` archive ready to publish |
 
+```bash
+sh install.sh                                     # or unpack a release; the menu asks everything
+sol listen --config sol.yaml --dry-run            # watch the matches without acting on them
+curl -s http://127.0.0.1:8080/healthz             # control plane: on with server.http.enabled
+curl -s -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/status
+```
+
+The four commands above are the whole product in one screen: install, look, and call it over HTTP. The
+full curl set - every endpoint, what each answer means, and how to hand the token to the service on
+Linux, macOS and Windows - is in [Control plane](#control-plane) below.
+
 ## Contents
 
 - [Description](#description) - what it listens for, what it can do, on which platforms
