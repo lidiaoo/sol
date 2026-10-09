@@ -32,6 +32,7 @@ SoL 是一个监听 Wake-on-LAN 魔法包的服务：当收到的包命中配置
 | 让这台机器能被局域网关机 / 重启 / 睡眠 | [Install](#installation) —— 跑安装脚本，它会把该问的都问全（零参数、编号菜单） | 开机自启的服务（`systemd` / `launchd` / 计划任务）和一份你能改的 `sol.yaml` |
 | 先试一下，不动这台机器的服务 | [Quick start](#quick-start) 与 [Installation](#installation) | 手工跑着的 `sol listen`；`--dry-run` 只打印它打算做什么，不动手 |
 | 只用命令行参数跑，不要配置文件 | [Simple mode](#simple-mode-command-line) —— `sol listen --port 10010 --iface eth0` | 同一个守护进程，全靠命令行配置 |
+| 用 Home Assistant 驱动它——事件推出去、按钮自动化接进来 | [Home Assistant](#home-assistant) —— 两个方向各一个 webhook，需要特权的那半留在 sol 里 | 面板里能看到事件，一个按钮就能让某台机器睡眠或唤醒 |
 | 用 HTTP 触发动作——脚本、面板、另一台机器 | [Control plane](#control-plane) —— 默认关着，改一个字段就能开；curl 调用在[那一节](#control-plane)里 | `POST /v1/actions/<name>` 等端点，只绑 `127.0.0.1`，带令牌 |
 | 要精确匹配：多个端口、多张网卡、包内容、自定义动作 | [Configuration file mode](#configuration-file-mode) | 一份按端口、网卡、来源网段、包内容、HMAC 匹配的 `sol.yaml`，还能跑你自己的命令 |
 | 自己编译，或自己出发布包 | [Build from source](#build-from-source) / [Installation](#installation) | 各平台的 `sol`，以及可以直接发布的 `dist/` 包 |
@@ -54,6 +55,7 @@ curl -s -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/status
 - [Installation](#installation) —— 安装脚本、发布包、从源码编译、装完自检
 - [Run the service](#run-the-service) —— 参数、配置文件、规则、动作、控制面
 - [Running as a service](#running-as-a-service) —— `systemd`、`launchd`、计划任务
+- [Home Assistant](#home-assistant) —— 两个方向，以及为什么这样分工值得
 - [Ports and privileges](#ports-and-privileges) —— 端口号为什么决定要不要 root
 - [Choosing interfaces](#choosing-interfaces) —— 监听哪几张网卡，以及怎么列出来
 - [Testing your setup](#testing-your-setup) —— 发一个包、读它的回答
@@ -1082,6 +1084,132 @@ started or woke up` / `already running`，有重试时间就带上），计入 `
 `sol_rate_limited_total`、`sol_settle_skipped_total`、`sol_inflight_total`），在控制面回 **429**。
 启动日志会打印生效的窗口（`action cooldown`、`settle window`）；配了限流时 `GET /v1/status`
 也会回显当前的 `rate_limit`。
+
+## Home Assistant
+
+
+这个搭配两个方向都能走，而且分工正是它舒服的原因：Home Assistant 管自动化、面板和通知，sol 管需要
+特权的那半边——睡眠、重启、关机、局域网唤醒——连同它的冷却、settle 窗口和审计日志。Home Assistant
+不需要 root、不需要 shell 插件、也不需要你机器的口令。
+
+##### sol 主动告诉 Home Assistant
+
+这个方向什么都不用对外暴露：由 sol 去拨号。
+
+```yaml
+version: 1
+actions:
+  - name: tell-home-assistant
+    type: http
+    method: POST
+    url: "http://homeassistant.local:8123/api/webhook/sol_event"
+    headers: { Content-Type: application/json }
+    body: '{"event":"{{.Action}}","from":"{{.SrcIP}}","port":{{.DstPort}}}'
+    timeout: 5s
+    retries: 2
+rules:
+  - match: { ports: [10141], content: { kind: none } }
+    action: tell-home-assistant      # a bare packet tells Home Assistant; it decides what to do
+  - match: { ports: [10143], content: { kind: none } }
+    action: power.shutdown           # this is the port Home Assistant's wake_on_lan action sends to
+security:
+  url_allowlist: ["http://homeassistant.local:8123/api/webhook/sol_event"]
+  cooldowns: { power.shutdown: 5s }
+```
+```yaml
+# Home Assistant: configuration.yaml
+automation:
+  - alias: "sol: report every trigger"
+    triggers:
+      - trigger: webhook
+        webhook_id: sol_event
+        allowed_methods: [POST]
+        local_only: true
+    actions:
+      - action: notify.mobile_app_phone
+        data:
+          message: "{{ trigger.json.event }} from {{ trigger.json.from }}:{{ trigger.json.port }}"
+```
+
+`sol_event` 是你自己起的 webhook id；Home Assistant 监听
+`http://<home-assistant>:8123/api/webhook/<webhook_id>`。sol 插进 body 的那些内容都会以
+`trigger.json` 送到，所以通知里能说清"哪台机器、从哪儿被点名"——这是裸 Wake-on-LAN 包永远带不了的上下文。
+
+##### Home Assistant 指挥 sol
+
+两种做法，通常第二种就够。
+
+走局域网包——Home Assistant 自带的 `wake_on_lan` 动作可以直接打到 sol 的端口，于是一个按钮、一条自动化
+或一句语音就成了触发器，不需要新的暴露面、也没有令牌要管：
+
+```yaml
+# Home Assistant: no HTTP, no exposed control plane - just a bare magic packet on the group's port
+- action: wake_on_lan.send_magic_packet
+  data:
+    mac: "AA:BB:CC:00:00:01"
+    broadcast_address: "192.168.0.120"    # the host that runs sol
+    broadcast_port: 10143                 # the port that group listens on
+```
+
+走 HTTP——想调用**具名动作**（包括上面那些"组"）就用 `rest_command`。这是唯一需要 Home Assistant
+能访问到控制面的情形，所以给 `server.http.listen` 一个局域网地址、配一个长令牌，并把防火墙收紧：
+
+```yaml
+# Home Assistant: configuration.yaml - press a button, sol does the privileged part
+rest_command:
+  sol_sleep_desk:
+    url: "http://sol-host.lan:8080/v1/actions/desk-sleep"
+    method: post
+    headers:
+      Authorization: !secret sol_token      # the secret holds "Bearer <long random string>"
+      Content-Type: application/json
+  sol_wake_nas:
+    url: "http://sol-host.lan:8080/v1/actions/nas-wake"
+    method: post
+    headers:
+      Authorization: !secret sol_token
+```
+
+##### 把 sol 做成面板里的传感器
+
+```yaml
+# Home Assistant: sol as a sensor, so the dashboard shows what it is really doing
+rest:
+  - resource: "http://sol-host.lan:8080/v1/status"
+    headers:
+      Authorization: !secret sol_token
+    scan_interval: 60
+    sensor:
+      - name: "sol matched"
+        value_template: "{{ value_json.matched }}"
+      - name: "sol suppressed"
+        value_template: "{{ value_json.suppressed }}"
+      - name: "sol version"
+        value_template: "{{ value_json.version }}"
+binary_sensor:
+  - platform: rest
+    resource: "http://sol-host.lan:8080/healthz"
+    value_template: "{{ value_json.status == 'ok' }}"
+    device_class: connectivity
+```
+
+##### 这个组合好在哪
+
+- **没有轮询。** 包一命中 sol 就推过去，Home Assistant 不用去问。
+- **特权只留在一处。** 以 root 运行的是一个带审计日志的小二进制，而不是你的自动化平台；Home Assistant
+  只负责发包或调用一个具名动作。
+- **两个方向都有凭据。** 出站被 `url_allowlist` 钉住（写完整 URL，不是主机名）；入站要么带令牌，要么
+  干脆什么凭据都不带——一个裸魔法包打到一个"只做那个端口被配置去做的事"的端口上。
+- **唤醒风暴已经解决了。** 冷却与 settle 窗口是 sol 的，所以一串唤醒包、或者一次从睡眠里醒过来，都无法
+  把 Home Assistant 刚下达的那次睡眠按回去。
+- **上下文能带过去。** `{{.SrcIP}}`、`{{.DstPort}}`、`{{.Action}}`、`{{.Arg.x}}` 都会进 webhook body，
+  所以 Home Assistant 能按"**谁**发的"分支，而不是只知道"有东西发了"。
+- **两头都有记录。** sol 把命中、动作和结果写进自己的日志，Home Assistant 留下自动化 trace；排查一次没
+  生效的唤醒，从两份日志开始，而不是靠猜。
+
+两件要避免的事：Home Assistant 的 `wake_on_lan` 发的是**裸包、不带载荷**，所以要打到一个规则写
+`content: { kind: none }` 的端口上（上面"每台设备、每个动作一组"的约定正是为此）；另外别让一条
+Home Assistant 自动化反过来触发**同一个组**——冷却会吸收掉它，但回环不该是承重设计。
 
 ## Running as a service
 

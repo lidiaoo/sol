@@ -38,6 +38,7 @@ it - nothing here is a dead end, and every one of them ends with a working servi
 | Power this machine off / reboot / suspend it from the LAN | [Install](#installation) - run the installer, it asks everything (no arguments, numbered menu) | A service that starts at boot (`systemd` / `launchd` / Task Scheduler) and a `sol.yaml` you can edit |
 | Try it first, without touching this machine's services | [Quick start](#quick-start) and [Trying it somewhere harmless](#trying-it-somewhere-harmless) | `sol listen` running by hand; `--dry-run` prints what it would do instead of doing it |
 | Run it with flags only, no configuration file | [Simple mode](#simple-mode-command-line) - `sol listen --port 10010 --iface eth0` | The same daemon, configured entirely on the command line |
+| Drive it from Home Assistant - notifications out, buttons and automations in | [Home Assistant](#home-assistant) - a webhook each way, and the privileged half stays in sol | Events in your dashboard, and a button that suspends or wakes a machine |
 | Fire actions from HTTP - scripts, dashboards, another host | [Control plane](#control-plane) - off by default, one field to switch on; the curl calls are [here](#turning-it-on-and-calling-it) | `POST /v1/actions/<name>` and friends, bound to `127.0.0.1`, with a bearer token |
 | Match packets precisely: several ports, several NICs, content, custom actions | [Configuration file mode](#configuration-file-mode) | A `sol.yaml` that matches by port, NIC, source subnet, content and HMAC, and can run your own commands |
 | Build the binary, or produce the release packages yourself | [Build from source](#build-from-source) / [Building the release packages yourself](#building-the-release-packages-yourself) | `sol` for every platform, and a `dist/` archive ready to publish |
@@ -60,6 +61,7 @@ Linux, macOS and Windows - is in [Control plane](#control-plane) below.
 - [Installation](#installation) - the installer, the releases, building from source, verifying
 - [Run the service](#run-the-service) - flags, configuration file, rules, actions, the control plane
 - [Running as a service](#running-as-a-service) - `systemd`, `launchd`, Task Scheduler
+- [Home Assistant](#home-assistant) - both directions, and why the split is worth it
 - [Ports and privileges](#ports-and-privileges) - why a port number decides whether you need root
 - [Choosing interfaces](#choosing-interfaces) - which NICs are listened on, and how to list them
 - [Testing your setup](#testing-your-setup) - sending a packet and reading the answer
@@ -1170,6 +1172,138 @@ just started or woke up` / `already running`) with the retry delay where there i
 `sol_inflight_total`), and answered with **429** on the control plane. Start-up logs the
 configured windows (`action cooldown`, `settle window`), and `GET /v1/status` reports the live
 `rate_limit` when one is configured.
+
+## Home Assistant
+
+
+The pairing works in both directions, and the split is what makes it pleasant: Home Assistant keeps the
+automation, the dashboard and the notifications, while sol keeps the privileged part - suspending,
+rebooting, powering off and waking on the LAN - with its cooldowns, its settle window and its audit log.
+Home Assistant never needs root, never needs a shell add-on, and never needs your machine's password.
+
+##### sol tells Home Assistant
+
+This is the direction that needs nothing exposed: sol dials out.
+
+```yaml
+version: 1
+actions:
+  - name: tell-home-assistant
+    type: http
+    method: POST
+    url: "http://homeassistant.local:8123/api/webhook/sol_event"
+    headers: { Content-Type: application/json }
+    body: '{"event":"{{.Action}}","from":"{{.SrcIP}}","port":{{.DstPort}}}'
+    timeout: 5s
+    retries: 2
+rules:
+  - match: { ports: [10141], content: { kind: none } }
+    action: tell-home-assistant      # a bare packet tells Home Assistant; it decides what to do
+  - match: { ports: [10143], content: { kind: none } }
+    action: power.shutdown           # this is the port Home Assistant's wake_on_lan action sends to
+security:
+  url_allowlist: ["http://homeassistant.local:8123/api/webhook/sol_event"]
+  cooldowns: { power.shutdown: 5s }
+```
+```yaml
+# Home Assistant: configuration.yaml
+automation:
+  - alias: "sol: report every trigger"
+    triggers:
+      - trigger: webhook
+        webhook_id: sol_event
+        allowed_methods: [POST]
+        local_only: true
+    actions:
+      - action: notify.mobile_app_phone
+        data:
+          message: "{{ trigger.json.event }} from {{ trigger.json.from }}:{{ trigger.json.port }}"
+```
+
+`sol_event` is the webhook id you invent; Home Assistant listens on
+`http://<home-assistant>:8123/api/webhook/<webhook_id>`. Everything sol interpolated into the body
+arrives as `trigger.json`, so the notification can say which machine was addressed from where - context a
+plain Wake-on-LAN packet could never carry.
+
+##### Home Assistant tells sol
+
+Two ways, and the second one is usually the right one.
+
+Over LAN packets - Home Assistant's own `wake_on_lan` action can be pointed at sol's port, so a button,
+an automation or a voice command becomes a trigger with no new exposure and no token to manage:
+
+```yaml
+# Home Assistant: no HTTP, no exposed control plane - just a bare magic packet on the group's port
+- action: wake_on_lan.send_magic_packet
+  data:
+    mac: "AA:BB:CC:00:00:01"
+    broadcast_address: "192.168.0.120"    # the host that runs sol
+    broadcast_port: 10143                 # the port that group listens on
+```
+
+Over HTTP - if you want to call a *named action* (including the groups above), a `rest_command` does it.
+This is the one case where the control plane has to be reachable from Home Assistant, so give it a LAN
+address in `server.http.listen` and a long token, and keep the firewall tight:
+
+```yaml
+# Home Assistant: configuration.yaml - press a button, sol does the privileged part
+rest_command:
+  sol_sleep_desk:
+    url: "http://sol-host.lan:8080/v1/actions/desk-sleep"
+    method: post
+    headers:
+      Authorization: !secret sol_token      # the secret holds "Bearer <long random string>"
+      Content-Type: application/json
+  sol_wake_nas:
+    url: "http://sol-host.lan:8080/v1/actions/nas-wake"
+    method: post
+    headers:
+      Authorization: !secret sol_token
+```
+
+##### sol as a sensor in the dashboard
+
+```yaml
+# Home Assistant: sol as a sensor, so the dashboard shows what it is really doing
+rest:
+  - resource: "http://sol-host.lan:8080/v1/status"
+    headers:
+      Authorization: !secret sol_token
+    scan_interval: 60
+    sensor:
+      - name: "sol matched"
+        value_template: "{{ value_json.matched }}"
+      - name: "sol suppressed"
+        value_template: "{{ value_json.suppressed }}"
+      - name: "sol version"
+        value_template: "{{ value_json.version }}"
+binary_sensor:
+  - platform: rest
+    resource: "http://sol-host.lan:8080/healthz"
+    value_template: "{{ value_json.status == 'ok' }}"
+    device_class: connectivity
+```
+
+##### Why this pairing is worth it
+
+- **Nothing polls.** sol pushes the moment a packet matches; Home Assistant does not have to ask.
+- **Privilege stays in one place.** The part that runs as root is a small binary with an audit log, not
+  your automation platform. Home Assistant only sends a packet or calls a named action.
+- **Both directions are authenticated.** The outbound call is pinned by `url_allowlist` (a full URL, not
+  a host), the inbound one carries a bearer token or, for the packet path, nothing at all - a bare magic
+  packet on a port that only does what that port was configured to do.
+- **The wake-storm problem is already solved.** Cooldowns and the settle window are sol's, so a burst of
+  wake-up packets, or a resume from suspend, cannot undo the suspend Home Assistant just asked for.
+- **Context travels.** `{{.SrcIP}}`, `{{.DstPort}}`, `{{.Action}}` and `{{.Arg.x}}` go into the webhook
+  body, so Home Assistant can branch on *who* sent the packet instead of only *that* something was sent.
+- **Both ends keep a record.** sol writes the match, the action and the result to its own log; Home
+  Assistant writes the automation trace. Debugging a missed wake-up starts from two logs, not from
+  guessing.
+
+Two things to avoid: Home Assistant's `wake_on_lan` action sends a **bare** packet with no payload, so
+point it at a port whose rule matches `content: { kind: none }` (that is what the port-per-group
+convention above is for), and do not wire a Home Assistant automation back into the same group that
+triggered it - the cooldowns will absorb it, but a loop is not load-bearing design.
 
 ## Running as a service
 
