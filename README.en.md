@@ -328,12 +328,14 @@ gh release create v0.1.0 dist/sol-* dist/checksums.txt dist/install.* --title v0
 ### Build from source
 
 ```bash
-make build          # or: go build .
+make build          # or: go build -o build/sol .
+./build/sol --version
 make test
 make lint
 ```
 
-`make build` stamps the version with `git describe`, and `make build-static` produces the shape
+Development builds all land in `build/` (`make build` writes `build/sol`, `build/sol.exe` on Windows); release
+archives stay in `dist/`, written by `scripts/release.sh`. `make build` stamps the version with `git describe`, and `make build-static` produces the shape
 the release pipeline ships (static, stripped). Both also stamp whether the tree was dirty, counting
 tracked edits only — the toolchain's own flag also counts untracked files, and building creates some
 (`dist/stage/...`), which would make a clean tree report `-dirty`. A plain `go build` needs no stamp: the toolchain

@@ -295,12 +295,14 @@ gh release create v0.1.0 dist/sol-* dist/checksums.txt dist/install.* --title v0
 ### Build from source
 
 ```bash
-make build          # or: go build .
+make build          # or: go build -o build/sol .
+./build/sol --version
 make test
 make lint
 ```
 
-`make build` 用 `git describe` 打上版本号，`make build-static` 产出发布流水线那种形态（静态、
+开发构建的产物统一落在 `build/`（`make build` 写 `build/sol`，Windows 上是 `build/sol.exe`；发布包仍由
+`scripts/release.sh` 写到 `dist/`）。`make build` 用 `git describe` 打上版本号，`make build-static` 产出发布流水线那种形态（静态、
 strip）。两个目标还会盖上"树脏不脏"的章，口径只算**已跟踪**改动——工具链自带的那个标记连未跟踪
 文件也算，而出包过程本身就会写 `dist/stage/...`，于是干净的树也会被说成 `-dirty`。裸 `go build` 不需要打标：工具链自己会嵌入一个点明源码树的伪版本
 （`v0.0.0-<时间戳>-<提交>`）以及提交号，`go install ...@v1.2.3` 则嵌入那个 tag。这些信息在

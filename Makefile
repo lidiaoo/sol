@@ -8,6 +8,11 @@ LDFLAGS := -X github.com/lidiaoo/sol/internal/buildinfo.version=$(VERSION) \
 	-X github.com/lidiaoo/sol/internal/buildinfo.dirty=$(if $(DIRTY),true,false)
 GO ?= go
 
+# Where the development binaries land. Release archives stay in dist/ (scripts/release.sh).
+EXT := $(if $(filter windows,$(shell $(GO) env GOOS 2>/dev/null)),.exe,)
+BIN ?= build/sol$(EXT)
+BINSTATIC ?= build/sol-static$(EXT)
+
 # The module needs this Go version (see go.mod). Older toolchains - gccgo 1.18 is one of them -
 # fail deep inside the standard library with "package log/slog is not in GOROOT", which says
 # nothing about the cause. Name the requirement instead, and let GO name a different binary.
@@ -21,11 +26,11 @@ check-go:
 		  echo "point make at the right toolchain, for example: make GO=/path/to/go1.26/bin/go build"; exit 1; }
 
 build: check-go
-	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o sol .
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) .
 
 # Same as build, but the shape the release pipeline produces: static, stripped, no paths.
 build-static: check-go
-	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w $(LDFLAGS)" -o sol-static .
+	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(BINSTATIC) .
 
 test: check-go
 	$(GO) test -tags mock -race -cover ./...

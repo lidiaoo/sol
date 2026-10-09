@@ -17,7 +17,8 @@
 # Go workspace file
 go.work
 
-# Build output
+# Build output：开发构建统一落 build/（发布包在 dist/，见下）
+/build/
 /sol
 /sol.exe
 /sol-*
