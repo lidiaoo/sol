@@ -72,3 +72,16 @@ Windows 安装「卡死」这件事，前后猜错了四次——UAC 框没弹�
   `TestShellScriptsBraceVariablesBeforeNonASCII` 会扫 `scripts/*.sh` 并报出行号。
 - PowerShell 数组字面量别留尾随逗号。
 - 升权前把话说清楚（会弹 UAC、窗口可能藏在哪、出路是什么），别让控制台看起来是死的。
+
+## 10. Windows 上 `token_file` 用不了（**决定：不修**，用 `token_env`）
+
+- 现象：`config C:\ProgramData\sol\sol.yaml: cannot resolve a configured secret: token: … must not be
+  group/other readable (chmod 600)` —— 哪怕 ACL 已经收得只剩 SYSTEM 和管理员。
+- 原因：那个检查读的是 POSIX 权限位（`readSecretFile` 里的 `Mode().Perm()&0o077`）；Windows 没有这套
+  权限位，文件模式恒为「group/other 可读」，所以**必然失败**，与配置写得多干净无关。
+- 结论：Windows 上控制面令牌走 **`token_env`**（服务以 SYSTEM 运行，读到的是机器级变量，所以要用管理员
+  `setx SOL_TOKEN "…" /M` 再重启任务）。`token_file` 只在 POSIX 上有意义；两份 README 都写了这一点，
+  提示保持不变。
+- 已知代价：`internal/config` 的 `TestLoadSecretErrorsFilePermissions` 在 Windows 上必然失败（同一个
+  原因），**不是回归**。这是刻意的取舍——不要为了「让这个测试变绿」去改那个检查。
+
