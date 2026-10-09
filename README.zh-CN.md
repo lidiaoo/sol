@@ -350,46 +350,52 @@ token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文�
 
 #### 打开它并用 curl 调用
 
+把下面这段加进**服务实际读的那份配置**（`/etc/sol/sol.yaml`、`~/.config/sol/sol.yaml`，或 `--config`
+指定的路径）。安装脚本生成的默认配置里**已经有这一节，只是 `enabled: false`**，所以只需要打开开关——
+但得先给令牌找一个来源：`token_env` 填的是**环境变量的名字**，把令牌本身写在那儿就是那个会让启动失败的
+错误。
+
 ```yaml
-version: 1
 server:
   http:
     enabled: true
     listen: 127.0.0.1:8080
     auth: { type: bearer, token_env: SOL_TOKEN }   # the variable's NAME, never the token itself
-rules:
-  - match: { ports: [10], content: { kind: none } }
-    action: power.sleep
 ```
 
-`token_env` 填的是**环境变量的名字**，不是密钥本身——把令牌直接写进 YAML（或写成
-`token_env: mytoken`）就是那个会让启动失败的错误。服务以 `SYSTEM`/root 身份运行时读到的是**机器级**
-变量，所以在那里设一次，然后重启 sol：
+把这个变量交给**服务**，然后重启它。服务看不到你当前 shell 的环境变量，所以三端各有各的落点：
 
 ```bash
-setx SOL_TOKEN "<a long random string>" /M     # Windows: machine-wide, run as administrator
-schtasks /End /TN sol && schtasks /Run /TN sol # then restart the task (a reload does not restart it)
+# Linux (systemd): put it in the unit, or in /etc/sol/http.env and reference that file
+systemctl edit sol                  # Environment=SOL_TOKEN=<long random string>
+systemctl restart sol
+# macOS (launchd): add it to the daemon's EnvironmentVariables, then reload the daemon
+#   /Library/LaunchDaemons/com.lidiaoo.sol.plist -> <key>EnvironmentVariables</key>
+sudo launchctl kickstart -k system/com.lidiaoo.sol
+# Windows (Task Scheduler runs sol as SYSTEM, so the variable must be machine-wide)
+setx SOL_TOKEN "<long random string>" /M
+schtasks /End /TN sol && schtasks /Run /TN sol
 ```
 
-Windows 上请用 `token_env`。`token_file` 的 0600 检查是按 POSIX 权限位做的，而 Windows 没有这套
-权限位，所以那条路在 Windows 上会被拒绝。
+`SOL_TOKEN` 是"一段长随机串"的占位符。Windows 上请用 `token_env`：`token_file` 的 0600 检查读的是
+Windows 没有的 POSIX 权限位，所以那条路在那里会被拒绝。
 
-在同一台机器上调用（Windows 10 自带 `curl.exe`；在 PowerShell 里要写全 `curl.exe`，否则 `curl` 是
-`Invoke-WebRequest` 的别名）。cmd 里变量写 `%SOL_TOKEN%`，PowerShell 里写 `$env:SOL_TOKEN`：
+然后调用它。Windows 10 自带 `curl.exe`——在 PowerShell 里要写全 `curl.exe`，否则 `curl` 是
+`Invoke-WebRequest` 的别名。cmd 里变量写 `%SOL_TOKEN%`、PowerShell 写 `$env:SOL_TOKEN`、
+Linux/macOS 写 `$SOL_TOKEN`：
 
 ```bash
-curl.exe -s http://127.0.0.1:8080/healthz                  # the only endpoint that needs no token
-curl.exe -s -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/status
-curl.exe -s -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/rules
-curl.exe -s -X POST -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/actions/power.sleep
-curl.exe -s -X POST -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/reload
+curl -s http://127.0.0.1:8080/healthz                   # the only endpoint that needs no token
+curl -s -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/status
+curl -s -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/rules
+curl -s -X POST -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/actions/power.sleep
+curl -s -X POST -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/reload
 ```
 
-`/healthz` 回 `{"status":"ok"}` 说明控制面起来了；但它**不校验令牌**，所以它回答不了"令牌对不对"。
-任何 `/v1/...` 回 `401` 且正文是 `{"error":"unauthorized"}`，就是令牌错或没带上，同一次拒绝也会写进
-审计日志。连不上（`curl: (7)`）说明根本没人在听：sol 没在跑、`enabled` 不是 true、或者它启动时被拒了
-（缺少令牌变量就会这样）。
-
+`/healthz` 回 `{"status":"ok"}` 说明控制面起来了；但它**不校验令牌**，回答不了"令牌对不对"。任何
+`/v1/...` 回 `401` 且正文 `{"error":"unauthorized"}`，就是令牌错或没带上，同一次拒绝也会写进审计日志。
+连不上（`curl: (7)`）说明根本没人在听：sol 没在跑、`enabled` 不是 true、或者它启动被拒（缺令牌变量就会
+这样）。控制面是**启动时**拉起的，热重载不管它，所以改完要重启。
 ### Audit log destination
 
 审计日志默认进 stderr，交给服务管理器管（`journalctl -u sol`）。`logging.output` 可以改：`stdout`，
