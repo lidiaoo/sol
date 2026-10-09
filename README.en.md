@@ -338,7 +338,9 @@ Development builds all land in `build/` (`make build` writes `build/sol`, `build
 archives stay in `dist/`, written by `scripts/release.sh`. `make build` stamps the version with `git describe`, and `make build-static` produces the shape
 the release pipeline ships (static, stripped). Both also stamp whether the tree was dirty, counting
 tracked edits only — the toolchain's own flag also counts untracked files, and building creates some
-(`dist/stage/...`), which would make a clean tree report `-dirty`. A plain `go build` needs no stamp: the toolchain
+(`dist/stage/...`), which would make a clean tree report `-dirty`. A plain `go build` needs no stamp (**note**: without `-o` it writes the executable into the **current
+directory** - use `make build`, or `go build -o build/sol .`, to keep it in `build/`; `go install .` puts it in
+`$(go env GOBIN)`): the toolchain
 embeds a pseudo-version naming the tree (`v0.0.0-<timestamp>-<commit>`) plus the commit, and
 `go install ...@v1.2.3` embeds that tag. Everything survives `-s -w -trimpath`, so the released
 binary can still say what it is.

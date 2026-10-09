@@ -304,7 +304,9 @@ make lint
 开发构建的产物统一落在 `build/`（`make build` 写 `build/sol`，Windows 上是 `build/sol.exe`；发布包仍由
 `scripts/release.sh` 写到 `dist/`）。`make build` 用 `git describe` 打上版本号，`make build-static` 产出发布流水线那种形态（静态、
 strip）。两个目标还会盖上"树脏不脏"的章，口径只算**已跟踪**改动——工具链自带的那个标记连未跟踪
-文件也算，而出包过程本身就会写 `dist/stage/...`，于是干净的树也会被说成 `-dirty`。裸 `go build` 不需要打标：工具链自己会嵌入一个点明源码树的伪版本
+文件也算，而出包过程本身就会写 `dist/stage/...`，于是干净的树也会被说成 `-dirty`。裸 `go build` 不需要打标：工具链自己会嵌入一个点明源码树的伪版本（**注意**：它不带 `-o` 时会把可执行文件
+写到**当前目录**——想统一落 `build/` 就用 `make build`，或写 `go build -o build/sol .`；`go install .` 则装进
+`$(go env GOBIN)`）
 （`v0.0.0-<时间戳>-<提交>`）以及提交号，`go install ...@v1.2.3` 则嵌入那个 tag。这些信息在
 `-s -w -trimpath` 之后依然在，所以发布的二进制仍然说得出自己是谁。
 
