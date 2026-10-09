@@ -9,10 +9,47 @@ SoL 是一个监听 Wake-on-LAN 魔法包的服务：当收到的包命中配置
 规则可以按端口、目标 MAC、网卡、来源网段和包内容匹配，所以一个实例就能同时服务多个发送方、
 多张网卡和多种语义。
 
-## Inspiration
+包可以用三种方式找到它，任选其一都能用：
 
-项目的灵感来自 Habr 上的文章 ["Выключаем компьютер через Wake-on-Lan"](https://habr.com/ru/articles/816765/)：
-它演示了如何把 Wake-on-LAN 包改造成"关机"而不是"唤醒"。
+- **UDP** —— 魔法包本身：按端口、按网卡、按来源网段、按包内容、按 HMAC 匹配（局域网里发过来的那种）。
+- **HTTP** —— 控制面，默认关闭，只绑 `127.0.0.1` 并强制令牌（脚本或另一台机器发过来的那种）。
+- **远程命令** —— 转发一个或多个 UDP 包，默认关闭（你的某个 action 往外发的那种）。
+
+只想先看它动一下，两分钟：
+
+1. 拿到可执行文件：[Install](#installation)（或者解开一个发布包，或[自己编译](#build-from-source)）。
+2. 写一份最小配置——一个端口、一个动作；也可以跳过文件，直接用
+   [Simple mode](#simple-mode-command-line)。
+3. 给自己发一个魔法包：`curl`、`nc`，或者 [Testing your setup 里那条 PowerShell 命令](#testing-your-setup)，
+   然后看着日志里跳出那一行。
+
+## 多种使用方式
+
+照你想做的事挑一行。每一行都指向讲它的那一节 —— 没有死路，每条都能走到一个能用的服务。
+
+| 我想…… | 从哪开始 | 最后得到什么 |
+| --- | --- | --- |
+| 让这台机器能被局域网关机 / 重启 / 睡眠 | [Install](#installation) —— 跑安装脚本，它会把该问的都问全（零参数、编号菜单） | 开机自启的服务（`systemd` / `launchd` / 计划任务）和一份你能改的 `sol.yaml` |
+| 先试一下，不动这台机器的服务 | [Quick start](#quick-start) 与 [Installation](#installation) | 手工跑着的 `sol listen`；`--dry-run` 只打印它打算做什么，不动手 |
+| 只用命令行参数跑，不要配置文件 | [Simple mode](#simple-mode-command-line) —— `sol listen --port 10010 --iface eth0` | 同一个守护进程，全靠命令行配置 |
+| 用 HTTP 触发动作——脚本、面板、另一台机器 | [Control plane](#control-plane) —— 默认关着，改一个字段就能开 | `POST /v1/actions/<name>` 等端点，只绑 `127.0.0.1`，带令牌 |
+| 要精确匹配：多个端口、多张网卡、包内容、自定义动作 | [Configuration file mode](#configuration-file-mode) | 一份按端口、网卡、来源网段、包内容、HMAC 匹配的 `sol.yaml`，还能跑你自己的命令 |
+| 自己编译，或自己出发布包 | [Build from source](#build-from-source) / [Installation](#installation) | 各平台的 `sol`，以及可以直接发布的 `dist/` 包 |
+
+## 目录
+
+- [Description](#description) —— 它监听什么、能做什么、支持哪些平台
+- [Quick start](#quick-start) —— 解开、跑起来、看它工作
+- [Installation](#installation) —— 安装脚本、发布包、从源码编译、装完自检
+- [Run the service](#run-the-service) —— 参数、配置文件、规则、动作、控制面
+- [Running as a service](#running-as-a-service) —— `systemd`、`launchd`、计划任务
+- [Ports and privileges](#ports-and-privileges) —— 端口号为什么决定要不要 root
+- [Choosing interfaces](#choosing-interfaces) —— 监听哪几张网卡，以及怎么列出来
+- [Testing your setup](#testing-your-setup) —— 发一个包、读它的回答
+- [Troubleshooting](#troubleshooting) —— 用户真会撞上的那些消息
+- [Security Notes](#security-notes) —— 对外暴露任何东西之前先读它
+- [Migration notes (breaking changes)](#migration-notes-breaking-changes)
+- [Inspiration](#inspiration)、[Attribution](#attribution)、[License](#license)
 
 ## Description
 
@@ -78,6 +115,243 @@ sol 也能唤醒**别的**机器。`wol.send` 向固定目标发魔法包（`mac
 
 有件事值得直说：sol 作用在**它自己运行的那台机器**上，而且只在它运行时生效。它是"收到 WoL 就关机"的
 接收端，不是叫醒一台睡着机器的东西。
+
+## Quick start
+
+1. **先看哪几张网卡会应答。** `sol ifaces` 里标 `AUTO yes` 的就是：这是这台机器的**身份**（它真实的
+   网卡），不是"此刻恰好 up 的网卡"的快照。
+
+2. **写一份配置。** sol 先看 `/etc/sol/sol.yaml`，再看 `~/.config/sol/sol.yaml`——三个平台都是这两个
+   位置，`~` 就是你的主目录。要放别处用 `--config`（或 `$SOL_CONFIG`）指过去；显式给的路径不存在
+   会**报错**，不会静默回退。一个都没有时它**拒绝启动**（`no rules configured`），而不是假装在监听。
+
+   ```yaml
+   version: 1
+   rules:
+     - match: { ports: [10010] }
+       action: power.shutdown
+   ```
+
+3. **先无副作用地试一遍。** `--dry-run` 只把"本来会发生什么"写进日志、什么都不做；它同时也是确认
+   "包到底有没有被匹配上"的最快办法。
+
+   ```bash
+   sol listen --config /etc/sol/sol.yaml --dry-run
+   ```
+
+4. **从另一台机器发一个魔法包**，然后看日志里有没有
+   `magic packet matched ... action=power.shutdown`——见 [Testing your setup](#testing-your-setup)。
+
+5. **装成服务**，这样重启后还在、没人登录时也跑——见 [Running as a service](#running-as-a-service)。
+
+6. **确认跑起来的是什么**：`sol --version`、`journalctl -u sol.service -f`（Linux）、
+   `tail -f /usr/local/var/log/sol.log`（macOS）、`Get-Content -Wait C:\ProgramData\sol\sol.log`
+   （Windows；计划任务直接跑 `sol.exe`，日志由 sol 自己写进这个文件——运行配置里的 `logging` 那一节），
+   或者控制面开着时的 `GET /v1/status`。安装脚本的"现状"和完成报告里也各有一行告诉你日志在哪。
+
+密钥绝不进 YAML：放进环境变量（`SOL_TOKEN`、`SOL_CMD_KEY`、`SOL_PACKET_KEY`），或放进只有服务账号
+能读的文件里，再由配置引用它。
+
+## Installation
+
+### Quick Install（零参数安装脚本）
+
+一条命令，没有任何参数。它先认出现状、把它准备做什么打印出来，动手之前先问你。
+
+**Linux / macOS：**
+```console
+curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh -o install.sh && sh install.sh
+```
+
+**Windows**（PowerShell；也可以直接双击随附的 `install.cmd`）：
+```console
+irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。它在**你执行
+脚本的那个目录**里写 `install.yaml`，内容只有"sol 怎么跑"；同时保证有一份能跑的运行配置：纯包 → 关机
+（端口 11）、magic+"reboot" → 重启（12）、magic+"sleep" → 睡眠（10）。服务没有规则会拒绝启动，所以
+脚本直接写一份能跑的。它还把两个"重复包护栏"**写在文件里**——`security.settle` 与三个电源动作各 5s 的
+冷却：默认值一眼看得见，也一眼知道怎么关掉。**这份配置放哪，平台不同**：Linux/macOS 就是执行目录里的 `sol.yaml`；Windows 放在
+**安装目录**（`C:\ProgramData\sol\sol.yaml`，跟 `sol.exe` 做伴）——计划任务以 SYSTEM 开机就跑，配置不该
+依赖一个可能被挪走的项目目录；你在执行目录里改过的那份会被**原样拷过去**，不会丢。改配置就编辑它、再
+重跑一遍脚本。
+**端口 <1024 在 Linux/macOS 上要 root**：脚本动手前会升权，正常安装不用管；但如果是不要 root 的
+用户级安装，要把端口改成 ≥1024。
+它把现状、配置在哪都打印出来，再问两个问题：要不要装成服务、是否继续。你说"是"之前什么都不改。
+
+**权限**：它不会一开始就以 root 跑。轮到需要权限的步骤（写 `/usr/local/bin`、注册服务）时，Linux/macOS
+上它用 `sudo` **重跑一遍自己**，Windows 上弹 **UAC** 以管理员身份重跑，并把你刚才的答案带过去——不会
+再问第二遍。你要是拒绝了，它就停下来说明原因，而不是装到一半。
+
+**重跑脚本**就是看现状、改 sol 的跑法（改文件再跑一遍）、或卸载（选 `2`；它会先把还在跑的 sol 停掉，删配置前还会再问一次）。
+它做的每一件事都追加写进 `install.log`（带等价命令），和台账 `install.json` 放在一起。
+
+东西落在哪：二进制 `/usr/local/bin/sol`（Windows `C:\ProgramData\sol\sol.exe`），台账与历史
+`/usr/local/share/sol/`（Windows `C:\ProgramData\sol\`），运行配置 `sol.yaml` 在执行脚本的那个目录
+（Windows `C:\ProgramData\sol\sol.yaml`——跟二进制做伴，计划任务读的就是它）；只有你选了装服务才会多一个
+systemd 单元 / launchd plist / 计划任务。你自己已有的配置与日志一个都不碰（没有才写一份）。
+
+这份脚本三平台通用，但目前只在 Linux 上真机跑过；macOS 与 Windows 分支的证据强度记在
+[docs/install-design.md](docs/install-design.md)（等 CI 覆盖）。
+
+### Download the release directly（自己下 release）
+
+**Linux AMD64:**
+```bash
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+```
+
+**Linux ARM64:**
+```bash
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+```
+
+**macOS Intel:**
+```bash
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+```
+
+**macOS Apple Silicon:**
+```bash
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
+```
+
+**Windows (PowerShell):**
+```powershell
+Invoke-WebRequest -Uri "https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-windows-amd64.zip" -OutFile "sol.zip"
+Expand-Archive -Path "sol.zip" -DestinationPath "." -Force
+```
+
+> 上游最后一个 tag 是 v0.0.2，配置文件、额外动作与端口 9 的变更都在它之后；升级既有安装前请先读
+> [CHANGELOG](CHANGELOG.md)。
+
+**自己出发布包**：一条命令，Linux / macOS / Windows（Git Bash）上完全一样，见下面的
+[自己生成 dist 发布包](#自己生成-dist-发布包)。Go 交叉编译，一台机器就能出全六份；CI 用 goreleaser 出同一套（名字、内容一致）。
+
+### 自己生成 dist 发布包
+
+`scripts/release.sh` 把 CI 发的那套包写进 `dist/`。三个平台**任选一台**都能跑——Go 交叉编译，
+不需要为每个目标平台各准备一台机器：
+
+```bash
+sh scripts/release.sh v0.1.0
+```
+
+```text
+dist/sol-v0.1.0-linux-amd64.tar.gz      dist/sol-v0.1.0-windows-amd64.zip
+dist/sol-v0.1.0-linux-arm64.tar.gz      dist/sol-v0.1.0-windows-arm64.zip
+dist/sol-v0.1.0-darwin-amd64.tar.gz     dist/checksums.txt
+dist/sol-v0.1.0-darwin-arm64.tar.gz     dist/install.sh  dist/install.ps1  dist/install.cmd
+```
+
+各平台怎么跑——命令完全一样，只是**在哪个 shell 里敲**不同：
+
+| 平台 | 这样跑 | 说明 |
+| --- | --- | --- |
+| Linux | `sh scripts/release.sh v0.1.0` | 需要 `git` 和 `go`；只有要出 Windows 包时才需要 `zip` |
+| macOS | `sh scripts/release.sh v0.1.0` | 同上；有 `file` 的话会多做一遍格式/架构核对（可选） |
+| Windows | 开 **Git Bash**：`cd /e/Common/Project/GolandProjects/sol && sh scripts/release.sh v0.1.0` | 原装的 Git for Windows 就够，不用装 WSL |
+
+Windows 上没有 `zip` 时，`.zip` 会走 PowerShell 的 `Compress-Archive` 生成；没有 `file` 时，格式/架构
+核对会跳过并说明。两样都不影响出包。`make` 里**故意没有**这个目标——打包和构建是两件事。
+
+每个包解出来就是一个目录，也就是"执行目录"：二进制、三个安装脚本、中英 README、CHANGELOG、
+LICENSE、`sol-example.yaml`、`sol.schema.json`，以及 `skills/`（Hermes 的 `sol-install` 技能）。
+解包进去跑安装脚本即可，没有别的要配。
+
+选项：
+
+- `sh scripts/release.sh` 不带版本号时取 `git describe --tags --always`，并且**拒绝脏树**——只算已跟踪
+  文件的改动，未跟踪的 `dist/`、`.idea/` 不算；`--allow-dirty` 可以明确接受。
+- `--platforms "windows/amd64 linux/arm64"` 只出其中几个平台。
+- `-h` 看用法。
+
+它拒绝发出坏东西：每条二进制都核对格式与架构，包里的安装脚本必须与仓库里**逐字节一致**，技能目录
+必须完整，最后还会在宿主平台上真跑一遍刚编出来的二进制（`--version`）。
+
+CI 那边：在 GitHub 上**创建 release** 时，`.github/workflows/release.yaml` 用 goreleaser 出同一套包：
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+gh release create v0.1.0 dist/sol-* dist/checksums.txt dist/install.* --title v0.1.0
+# (not dist/*: that would include the directory dist/stage/ and gh would try to upload it,
+#  failing with "read dist/stage: is a directory")
+```
+
+### Build from source
+
+```bash
+make build          # or: go build .
+make test
+make lint
+```
+
+`make build` 用 `git describe` 打上版本号，`make build-static` 产出发布流水线那种形态（静态、
+strip）。两个目标还会盖上"树脏不脏"的章，口径只算**已跟踪**改动——工具链自带的那个标记连未跟踪
+文件也算，而出包过程本身就会写 `dist/stage/...`，于是干净的树也会被说成 `-dirty`。裸 `go build` 不需要打标：工具链自己会嵌入一个点明源码树的伪版本
+（`v0.0.0-<时间戳>-<提交>`）以及提交号，`go install ...@v1.2.3` 则嵌入那个 tag。这些信息在
+`-s -w -trimpath` 之后依然在，所以发布的二进制仍然说得出自己是谁。
+
+### 安装脚本怎么用（零参数 · 编号菜单）
+
+这些行为背后的真机踩坑记录集中在 [docs/install-pitfalls.md](docs/install-pitfalls.md)。
+
+装完/升级/看现状/卸载，都用**同一个脚本、同一个入口**，不给它传任何参数：
+
+| 平台 | 怎么跑 |
+| --- | --- |
+| Linux / macOS | `./install.sh`（或 `sh install.sh`） |
+| Windows | 双击随附的 `install.cmd`，或 `powershell -ExecutionPolicy Bypass -File .\install.ps1` |
+
+它**先报现状、再问你要做什么**，在你回答之前不改动任何东西。
+
+#### 现状块每行是什么意思
+
+- `二进制` / `版本`：你执行目录里那份；`PATH 上的 sol` 是系统里已有的那份。
+- `已安装` / `台账`：脚本自己装的记录（`/usr/local/share/sol/install.json`；Windows `C:\ProgramData\sol\install.json`）。说"上次没装完"就再跑一次补上。
+- `服务`：systemd 单元 / launchd 任务 / 计划任务在不在。Windows 还会多一行 `启动`，写的就是任务真正跑的命令行（可执行文件 + 参数），不用去任务计划里猜。
+- `日志`：服务日志在哪看——Linux `journalctl -u sol.service -f`，macOS `/usr/local/var/log/sol.log`，Windows `C:\ProgramData\sol\sol.log`。
+- `进程`：有没有 sol 在跑（按**可执行文件路径**认，不是按进程名）。没升权时只能按名字识别，它会说清楚"认不出是不是安装目录那份"。
+- `权限`：当前不是管理员时，说明什么时候会要权限（Unix 用 sudo 重跑一遍自己；Windows 一次 UAC）。
+- `运行配置`：服务真正读的那份配置。改它才是改行为；执行目录里那份只是"输入"。
+
+#### 选项（回车 = 1）
+
+    1  按配置应用（按 install.yaml 里的 run.args 装或升级）
+    2  卸载（摘掉服务，按台账删掉自己建的东西）
+    3  重新生成 install.yaml
+    4  退出，什么都不改
+
+#### 装完之后
+
+- **改行为**：编辑运行配置 `sol.yaml`（听哪些端口、匹配什么、干什么），或者编辑 `install.yaml` 的 `run.args`（怎么起）。改完重跑脚本选 `1`。
+- **升级**：把新的 `sol` / `sol.exe` 放到执行目录（跟脚本同一个目录），重跑选 `1`。它会先停掉自己那份服务再换二进制，换完再起——不会撞"端口占用"。
+- **卸载**：选 `2`。服务、二进制、台账都清掉；`sol.yaml` / `install.yaml` 留不留由你答。
+- **每一步都有台账**：`install.log` 记着每个动作和它的等价命令（想手工复核就照抄那行）。
+
+#### 读不懂的现象怎么查
+
+- **`服务 没有（计划任务 X 不存在）`，可台账说装过**：任务被删过、或被"优化/清理"工具动过。重跑选 `1` 会再建（脚本现在会在建完任务后复核一次，建不上就记成"没装完"并在报告里说）。
+- **Windows 上 `服务 … 看不清`**：没管理员权限读任务列表。以管理员身份重跑一次就能看清。
+- **`预检 被拒绝`**：端口占不上。多半是上一份还在跑（脚本会先停掉它再试一次）；也可能是系统把这段端口**排除**了（Hyper-V / WSL / Docker / 虚拟机常见）→ 换高端口，或 `net stop winnat && net start winnat`（重启后失效）。
+- **Windows 上没有日志文件**：检查运行配置里有没有 `logging: { output: file, file: ... }`——计划任务是"无窗口"跑的，stdout 没人接，所以日志必须由 sol 自己写文件（安装脚本在你没写这一节时会补上一条，然后由 sol 写进 `C:\ProgramData\sol\sol.log`）。
+
+- Windows 上以**非管理员**跑时，"服务"行会说"读不到内容（计划任务 sol）：当前不是管理员，要管理员才看得到"。这不是故障：计划任务是以 SYSTEM 身份注册的，任务定义只有管理员读得到，非管理员连枚举都会跳过它。想看清就右键 `install.cmd` →「以管理员身份运行」。
+#### 想装到别处试（不改本机）
+
+设 `SOL_INSTALL_ROOT=<目录>` 再跑脚本：落点全在那个目录里，**永不升权**，也**绝不碰**本机的服务管理器/计划任务/防火墙——测试和 CI 都靠它。
+
+> 装了 Hermes 的话，这些规矩（含三平台真机踩过的坑）也在 `sol-install` 技能里：直接打 `/sol-install` 就行。
+
+### Verify Installation
+
+```bash
+sol --version
+sol --help
+sol listen --help
+sol ifaces
+```
 
 ## Run the service
 
@@ -450,321 +724,6 @@ started or woke up` / `already running`，有重试时间就带上），计入 `
 启动日志会打印生效的窗口（`action cooldown`、`settle window`）；配了限流时 `GET /v1/status`
 也会回显当前的 `rate_limit`。
 
-## Ports and privileges
-
-- 端口 **7、9 以及所有 1024 以下**的端口都是特权端口：非 root 时 bind 会 `permission denied`。
-  要么以 root 跑，要么给能力——下面的 systemd 单元演示了专用用户 +
-  `AmbientCapabilities=CAP_NET_BIND_SERVICE`。
-- 只用高位端口（≥1024）则不需要任何特权。**推荐用高位端口**：它让保留的 WOL 端口保持有意义，
-  也不需要额外能力。
-- 带 `user`/`group` 的 `exec` 要求 sol 以 root 运行，否则启动即 `ErrNotRoot`——降权绝不会被静默
-  跳过。**只接受 root**：判定就是 `geteuid() == 0`，所以给非 root 进程只授
-  `CAP_SETUID`/`CAP_SETGID` 会被拒绝，而不是做一半。命令随后以目标账号的组运行，绝不继承 sol
-  自己的附加组。
-- 除非配了 TLS 与 mTLS，控制面应保持只听 `127.0.0.1`。
-
-## Choosing interfaces
-
-`sol ifaces` 列出每张网卡的 MAC/IPv4 以及自动模式是否会选它——在信任一个不带 `--iface` 的启动前
-很有用：
-
-```
-NAME             TYPE      STATUS  MAC                IPV4           AUTO
-lo               loopback  up                         127.0.0.1      no
-enp6s0           physical  up      00:11:22:33:44:55  192.168.0.120  yes
-wlp5s0           physical  down    0a:e8:9e:0f:d3:8d  -              yes
-docker0          virtual   up      02:42:4e:d9:8c:14  172.17.0.1     no
-```
-
-`sol ifaces --json` 输出同样的列表，供脚本使用。
-
-AUTO 列说的是**身份，不是当下可用性**：现在 down 的网卡仍然是这台机器的一部分（上表的 `wlp5s0`），
-因为它随时可能起来——而且起来时 MAC 还可能变（无线网卡在 down 时内核可能报一个随机占位地址，
-起来后才换成真地址）。所以监听进程会在运行期重读网卡列表：一个没命中任何规则的包会触发一次重读
-（最多每秒一次），外加一个 30 秒的轮询，覆盖"一直没收到包"的机器。变化会以 `interface set changed`
-记进审计日志，点名新增/消失的网卡。**新增** 会在下一个包到达后一秒内生效；**消失** 的网卡会一直
-匹配到"下一个未命中的包"或"下一次轮询"为止，也就是最多 30 秒——想立刻生效就 `SIGHUP`（或
-`--watch`）。显式写出的 `interfaces: [x]` 仍在启动期校验：名字不存在就是拼错了，直接报错。
-
-## Installation
-
-### Quick Install（零参数安装脚本）
-
-一条命令，没有任何参数。它先认出现状、把它准备做什么打印出来，动手之前先问你。
-
-**Linux / macOS：**
-```console
-curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh -o install.sh && sh install.sh
-```
-
-**Windows**（PowerShell；也可以直接双击随附的 `install.cmd`）：
-```console
-irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。它在**你执行
-脚本的那个目录**里写 `install.yaml`，内容只有"sol 怎么跑"；同时保证有一份能跑的运行配置：纯包 → 关机
-（端口 11）、magic+"reboot" → 重启（12）、magic+"sleep" → 睡眠（10）。服务没有规则会拒绝启动，所以
-脚本直接写一份能跑的。它还把两个"重复包护栏"**写在文件里**——`security.settle` 与三个电源动作各 5s 的
-冷却：默认值一眼看得见，也一眼知道怎么关掉。**这份配置放哪，平台不同**：Linux/macOS 就是执行目录里的 `sol.yaml`；Windows 放在
-**安装目录**（`C:\ProgramData\sol\sol.yaml`，跟 `sol.exe` 做伴）——计划任务以 SYSTEM 开机就跑，配置不该
-依赖一个可能被挪走的项目目录；你在执行目录里改过的那份会被**原样拷过去**，不会丢。改配置就编辑它、再
-重跑一遍脚本。
-**端口 <1024 在 Linux/macOS 上要 root**：脚本动手前会升权，正常安装不用管；但如果是不要 root 的
-用户级安装，要把端口改成 ≥1024。
-它把现状、配置在哪都打印出来，再问两个问题：要不要装成服务、是否继续。你说"是"之前什么都不改。
-
-**权限**：它不会一开始就以 root 跑。轮到需要权限的步骤（写 `/usr/local/bin`、注册服务）时，Linux/macOS
-上它用 `sudo` **重跑一遍自己**，Windows 上弹 **UAC** 以管理员身份重跑，并把你刚才的答案带过去——不会
-再问第二遍。你要是拒绝了，它就停下来说明原因，而不是装到一半。
-
-**重跑脚本**就是看现状、改 sol 的跑法（改文件再跑一遍）、或卸载（选 `2`；它会先把还在跑的 sol 停掉，删配置前还会再问一次）。
-它做的每一件事都追加写进 `install.log`（带等价命令），和台账 `install.json` 放在一起。
-
-东西落在哪：二进制 `/usr/local/bin/sol`（Windows `C:\ProgramData\sol\sol.exe`），台账与历史
-`/usr/local/share/sol/`（Windows `C:\ProgramData\sol\`），运行配置 `sol.yaml` 在执行脚本的那个目录
-（Windows `C:\ProgramData\sol\sol.yaml`——跟二进制做伴，计划任务读的就是它）；只有你选了装服务才会多一个
-systemd 单元 / launchd plist / 计划任务。你自己已有的配置与日志一个都不碰（没有才写一份）。
-
-这份脚本三平台通用，但目前只在 Linux 上真机跑过；macOS 与 Windows 分支的证据强度记在
-[docs/install-design.md](docs/install-design.md)（等 CI 覆盖）。
-
-### Download the release directly（自己下 release）
-
-**Linux AMD64:**
-```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
-```
-
-**Linux ARM64:**
-```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
-```
-
-**macOS Intel:**
-```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
-```
-
-**macOS Apple Silicon:**
-```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
-```
-
-**Windows (PowerShell):**
-```powershell
-Invoke-WebRequest -Uri "https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-windows-amd64.zip" -OutFile "sol.zip"
-Expand-Archive -Path "sol.zip" -DestinationPath "." -Force
-```
-
-> 上游最后一个 tag 是 v0.0.2，配置文件、额外动作与端口 9 的变更都在它之后；升级既有安装前请先读
-> [CHANGELOG](CHANGELOG.md)。
-
-**自己出发布包**：一条命令，Linux / macOS / Windows（Git Bash）上完全一样，见下面的
-[自己生成 dist 发布包](#自己生成-dist-发布包)。Go 交叉编译，一台机器就能出全六份；CI 用 goreleaser 出同一套（名字、内容一致）。
-
-### 自己生成 dist 发布包
-
-`scripts/release.sh` 把 CI 发的那套包写进 `dist/`。三个平台**任选一台**都能跑——Go 交叉编译，
-不需要为每个目标平台各准备一台机器：
-
-```bash
-sh scripts/release.sh v0.1.0
-```
-
-```text
-dist/sol-v0.1.0-linux-amd64.tar.gz      dist/sol-v0.1.0-windows-amd64.zip
-dist/sol-v0.1.0-linux-arm64.tar.gz      dist/sol-v0.1.0-windows-arm64.zip
-dist/sol-v0.1.0-darwin-amd64.tar.gz     dist/checksums.txt
-dist/sol-v0.1.0-darwin-arm64.tar.gz     dist/install.sh  dist/install.ps1  dist/install.cmd
-```
-
-各平台怎么跑——命令完全一样，只是**在哪个 shell 里敲**不同：
-
-| 平台 | 这样跑 | 说明 |
-| --- | --- | --- |
-| Linux | `sh scripts/release.sh v0.1.0` | 需要 `git` 和 `go`；只有要出 Windows 包时才需要 `zip` |
-| macOS | `sh scripts/release.sh v0.1.0` | 同上；有 `file` 的话会多做一遍格式/架构核对（可选） |
-| Windows | 开 **Git Bash**：`cd /e/Common/Project/GolandProjects/sol && sh scripts/release.sh v0.1.0` | 原装的 Git for Windows 就够，不用装 WSL |
-
-Windows 上没有 `zip` 时，`.zip` 会走 PowerShell 的 `Compress-Archive` 生成；没有 `file` 时，格式/架构
-核对会跳过并说明。两样都不影响出包。`make` 里**故意没有**这个目标——打包和构建是两件事。
-
-每个包解出来就是一个目录，也就是"执行目录"：二进制、三个安装脚本、中英 README、CHANGELOG、
-LICENSE、`sol-example.yaml`、`sol.schema.json`，以及 `skills/`（Hermes 的 `sol-install` 技能）。
-解包进去跑安装脚本即可，没有别的要配。
-
-选项：
-
-- `sh scripts/release.sh` 不带版本号时取 `git describe --tags --always`，并且**拒绝脏树**——只算已跟踪
-  文件的改动，未跟踪的 `dist/`、`.idea/` 不算；`--allow-dirty` 可以明确接受。
-- `--platforms "windows/amd64 linux/arm64"` 只出其中几个平台。
-- `-h` 看用法。
-
-它拒绝发出坏东西：每条二进制都核对格式与架构，包里的安装脚本必须与仓库里**逐字节一致**，技能目录
-必须完整，最后还会在宿主平台上真跑一遍刚编出来的二进制（`--version`）。
-
-CI 那边：在 GitHub 上**创建 release** 时，`.github/workflows/release.yaml` 用 goreleaser 出同一套包：
-
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-gh release create v0.1.0 dist/sol-* dist/checksums.txt dist/install.* --title v0.1.0
-# (not dist/*: that would include the directory dist/stage/ and gh would try to upload it,
-#  failing with "read dist/stage: is a directory")
-```
-
-### Build from source
-
-```bash
-make build          # or: go build .
-make test
-make lint
-```
-
-`make build` 用 `git describe` 打上版本号，`make build-static` 产出发布流水线那种形态（静态、
-strip）。两个目标还会盖上"树脏不脏"的章，口径只算**已跟踪**改动——工具链自带的那个标记连未跟踪
-文件也算，而出包过程本身就会写 `dist/stage/...`，于是干净的树也会被说成 `-dirty`。裸 `go build` 不需要打标：工具链自己会嵌入一个点明源码树的伪版本
-（`v0.0.0-<时间戳>-<提交>`）以及提交号，`go install ...@v1.2.3` 则嵌入那个 tag。这些信息在
-`-s -w -trimpath` 之后依然在，所以发布的二进制仍然说得出自己是谁。
-
-### 安装脚本怎么用（零参数 · 编号菜单）
-
-这些行为背后的真机踩坑记录集中在 [docs/install-pitfalls.md](docs/install-pitfalls.md)。
-
-装完/升级/看现状/卸载，都用**同一个脚本、同一个入口**，不给它传任何参数：
-
-| 平台 | 怎么跑 |
-| --- | --- |
-| Linux / macOS | `./install.sh`（或 `sh install.sh`） |
-| Windows | 双击随附的 `install.cmd`，或 `powershell -ExecutionPolicy Bypass -File .\install.ps1` |
-
-它**先报现状、再问你要做什么**，在你回答之前不改动任何东西。
-
-#### 现状块每行是什么意思
-
-- `二进制` / `版本`：你执行目录里那份；`PATH 上的 sol` 是系统里已有的那份。
-- `已安装` / `台账`：脚本自己装的记录（`/usr/local/share/sol/install.json`；Windows `C:\ProgramData\sol\install.json`）。说"上次没装完"就再跑一次补上。
-- `服务`：systemd 单元 / launchd 任务 / 计划任务在不在。Windows 还会多一行 `启动`，写的就是任务真正跑的命令行（可执行文件 + 参数），不用去任务计划里猜。
-- `日志`：服务日志在哪看——Linux `journalctl -u sol.service -f`，macOS `/usr/local/var/log/sol.log`，Windows `C:\ProgramData\sol\sol.log`。
-- `进程`：有没有 sol 在跑（按**可执行文件路径**认，不是按进程名）。没升权时只能按名字识别，它会说清楚"认不出是不是安装目录那份"。
-- `权限`：当前不是管理员时，说明什么时候会要权限（Unix 用 sudo 重跑一遍自己；Windows 一次 UAC）。
-- `运行配置`：服务真正读的那份配置。改它才是改行为；执行目录里那份只是"输入"。
-
-#### 选项（回车 = 1）
-
-    1  按配置应用（按 install.yaml 里的 run.args 装或升级）
-    2  卸载（摘掉服务，按台账删掉自己建的东西）
-    3  重新生成 install.yaml
-    4  退出，什么都不改
-
-#### 装完之后
-
-- **改行为**：编辑运行配置 `sol.yaml`（听哪些端口、匹配什么、干什么），或者编辑 `install.yaml` 的 `run.args`（怎么起）。改完重跑脚本选 `1`。
-- **升级**：把新的 `sol` / `sol.exe` 放到执行目录（跟脚本同一个目录），重跑选 `1`。它会先停掉自己那份服务再换二进制，换完再起——不会撞"端口占用"。
-- **卸载**：选 `2`。服务、二进制、台账都清掉；`sol.yaml` / `install.yaml` 留不留由你答。
-- **每一步都有台账**：`install.log` 记着每个动作和它的等价命令（想手工复核就照抄那行）。
-
-#### 读不懂的现象怎么查
-
-- **`服务 没有（计划任务 X 不存在）`，可台账说装过**：任务被删过、或被"优化/清理"工具动过。重跑选 `1` 会再建（脚本现在会在建完任务后复核一次，建不上就记成"没装完"并在报告里说）。
-- **Windows 上 `服务 … 看不清`**：没管理员权限读任务列表。以管理员身份重跑一次就能看清。
-- **`预检 被拒绝`**：端口占不上。多半是上一份还在跑（脚本会先停掉它再试一次）；也可能是系统把这段端口**排除**了（Hyper-V / WSL / Docker / 虚拟机常见）→ 换高端口，或 `net stop winnat && net start winnat`（重启后失效）。
-- **Windows 上没有日志文件**：检查运行配置里有没有 `logging: { output: file, file: ... }`——计划任务是"无窗口"跑的，stdout 没人接，所以日志必须由 sol 自己写文件（安装脚本在你没写这一节时会补上一条，然后由 sol 写进 `C:\ProgramData\sol\sol.log`）。
-
-- Windows 上以**非管理员**跑时，"服务"行会说"读不到内容（计划任务 sol）：当前不是管理员，要管理员才看得到"。这不是故障：计划任务是以 SYSTEM 身份注册的，任务定义只有管理员读得到，非管理员连枚举都会跳过它。想看清就右键 `install.cmd` →「以管理员身份运行」。
-#### 想装到别处试（不改本机）
-
-设 `SOL_INSTALL_ROOT=<目录>` 再跑脚本：落点全在那个目录里，**永不升权**，也**绝不碰**本机的服务管理器/计划任务/防火墙——测试和 CI 都靠它。
-
-> 装了 Hermes 的话，这些规矩（含三平台真机踩过的坑）也在 `sol-install` 技能里：直接打 `/sol-install` 就行。
-
-### Verify Installation
-
-```bash
-sol --version
-sol --help
-sol listen --help
-sol ifaces
-```
-
-## Quick start
-
-1. **先看哪几张网卡会应答。** `sol ifaces` 里标 `AUTO yes` 的就是：这是这台机器的**身份**（它真实的
-   网卡），不是"此刻恰好 up 的网卡"的快照。
-
-2. **写一份配置。** sol 先看 `/etc/sol/sol.yaml`，再看 `~/.config/sol/sol.yaml`——三个平台都是这两个
-   位置，`~` 就是你的主目录。要放别处用 `--config`（或 `$SOL_CONFIG`）指过去；显式给的路径不存在
-   会**报错**，不会静默回退。一个都没有时它**拒绝启动**（`no rules configured`），而不是假装在监听。
-
-   ```yaml
-   version: 1
-   rules:
-     - match: { ports: [10010] }
-       action: power.shutdown
-   ```
-
-3. **先无副作用地试一遍。** `--dry-run` 只把"本来会发生什么"写进日志、什么都不做；它同时也是确认
-   "包到底有没有被匹配上"的最快办法。
-
-   ```bash
-   sol listen --config /etc/sol/sol.yaml --dry-run
-   ```
-
-4. **从另一台机器发一个魔法包**，然后看日志里有没有
-   `magic packet matched ... action=power.shutdown`——见 [Testing your setup](#testing-your-setup)。
-
-5. **装成服务**，这样重启后还在、没人登录时也跑——见 [Running as a service](#running-as-a-service)。
-
-6. **确认跑起来的是什么**：`sol --version`、`journalctl -u sol.service -f`（Linux）、
-   `tail -f /usr/local/var/log/sol.log`（macOS）、`Get-Content -Wait C:\ProgramData\sol\sol.log`
-   （Windows；计划任务直接跑 `sol.exe`，日志由 sol 自己写进这个文件——运行配置里的 `logging` 那一节），
-   或者控制面开着时的 `GET /v1/status`。安装脚本的"现状"和完成报告里也各有一行告诉你日志在哪。
-
-密钥绝不进 YAML：放进环境变量（`SOL_TOKEN`、`SOL_CMD_KEY`、`SOL_PACKET_KEY`），或放进只有服务账号
-能读的文件里，再由配置引用它。
-
-## Testing your setup
-
-在"应该做出反应"的那台机器上，前台带 `--dry-run` 起 sol：
-
-```bash
-sol listen --config /etc/sol/sol.yaml --dry-run
-```
-
-再从同一网络里的另一台机器发**一个**魔法包：6 个 `0xff` 字节后面跟目标 MAC 重复 16 次，一共 102
-字节，而且必须从偏移 0 开始。MAC 用 `sol ifaces` 打出来的那个，把下面的 `00:11:22:33:44:55`、
-`192.168.0.120` 和端口 `10010` 换成你自己的。
-
-Linux 与 macOS，用 `wakeonlan`：
-
-```bash
-wakeonlan -i 192.168.0.120 -p 10010 00:11:22:33:44:55
-```
-
-任何有 Python 3 的地方——不用装工具：
-
-```bash
-python3 -c "import socket; mac=bytes.fromhex('001122334455'); socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b'\xff'*6+mac*16, ('192.168.0.120', 10010))"
-```
-
-Windows，PowerShell：
-
-```powershell
-$mac = 0x00,0x11,0x22,0x33,0x44,0x55
-$packet = [byte[]]((1..6 | ForEach-Object { 0xff }) + (1..16 | ForEach-Object { $mac }))
-$udp = New-Object Net.Sockets.UdpClient
-$null = $udp.Send($packet, $packet.Length, "192.168.0.120", 10010)
-$udp.Close()
-```
-
-该看什么：
-
-- 日志里：`magic packet matched`，带端口、网卡和动作；或者 `non-matching packet` 带长度——长度不是
-  102（配了 `secure_on` 是 108，再加 `auth: hmac` 再多 8 字节）就说明这不是一个纯魔法包；
-- 控制面开着时看 `/v1/status`：`packets`、`matched` 以及各动作的计数；
-- 带 `--dry-run` 时动作行会记日志但不会执行——测试就安全地停在这里。确认规则可信之后，去掉
-  `--dry-run` 再跑一次。
-
 ## Running as a service
 
 ### Linux (systemd)
@@ -918,6 +877,84 @@ $udp.Close()
 - 控制台输出就是审计日志：配 `logging.output: file` 时改写到 `logging.file`，而且**不做轮转**——
   Linux 上配 `logrotate`、macOS 上配 `newsyslog`、Windows 上配一个限大小的任务。
 
+## Ports and privileges
+
+- 端口 **7、9 以及所有 1024 以下**的端口都是特权端口：非 root 时 bind 会 `permission denied`。
+  要么以 root 跑，要么给能力——下面的 systemd 单元演示了专用用户 +
+  `AmbientCapabilities=CAP_NET_BIND_SERVICE`。
+- 只用高位端口（≥1024）则不需要任何特权。**推荐用高位端口**：它让保留的 WOL 端口保持有意义，
+  也不需要额外能力。
+- 带 `user`/`group` 的 `exec` 要求 sol 以 root 运行，否则启动即 `ErrNotRoot`——降权绝不会被静默
+  跳过。**只接受 root**：判定就是 `geteuid() == 0`，所以给非 root 进程只授
+  `CAP_SETUID`/`CAP_SETGID` 会被拒绝，而不是做一半。命令随后以目标账号的组运行，绝不继承 sol
+  自己的附加组。
+- 除非配了 TLS 与 mTLS，控制面应保持只听 `127.0.0.1`。
+
+## Choosing interfaces
+
+`sol ifaces` 列出每张网卡的 MAC/IPv4 以及自动模式是否会选它——在信任一个不带 `--iface` 的启动前
+很有用：
+
+```
+NAME             TYPE      STATUS  MAC                IPV4           AUTO
+lo               loopback  up                         127.0.0.1      no
+enp6s0           physical  up      00:11:22:33:44:55  192.168.0.120  yes
+wlp5s0           physical  down    0a:e8:9e:0f:d3:8d  -              yes
+docker0          virtual   up      02:42:4e:d9:8c:14  172.17.0.1     no
+```
+
+`sol ifaces --json` 输出同样的列表，供脚本使用。
+
+AUTO 列说的是**身份，不是当下可用性**：现在 down 的网卡仍然是这台机器的一部分（上表的 `wlp5s0`），
+因为它随时可能起来——而且起来时 MAC 还可能变（无线网卡在 down 时内核可能报一个随机占位地址，
+起来后才换成真地址）。所以监听进程会在运行期重读网卡列表：一个没命中任何规则的包会触发一次重读
+（最多每秒一次），外加一个 30 秒的轮询，覆盖"一直没收到包"的机器。变化会以 `interface set changed`
+记进审计日志，点名新增/消失的网卡。**新增** 会在下一个包到达后一秒内生效；**消失** 的网卡会一直
+匹配到"下一个未命中的包"或"下一次轮询"为止，也就是最多 30 秒——想立刻生效就 `SIGHUP`（或
+`--watch`）。显式写出的 `interfaces: [x]` 仍在启动期校验：名字不存在就是拼错了，直接报错。
+
+## Testing your setup
+
+在"应该做出反应"的那台机器上，前台带 `--dry-run` 起 sol：
+
+```bash
+sol listen --config /etc/sol/sol.yaml --dry-run
+```
+
+再从同一网络里的另一台机器发**一个**魔法包：6 个 `0xff` 字节后面跟目标 MAC 重复 16 次，一共 102
+字节，而且必须从偏移 0 开始。MAC 用 `sol ifaces` 打出来的那个，把下面的 `00:11:22:33:44:55`、
+`192.168.0.120` 和端口 `10010` 换成你自己的。
+
+Linux 与 macOS，用 `wakeonlan`：
+
+```bash
+wakeonlan -i 192.168.0.120 -p 10010 00:11:22:33:44:55
+```
+
+任何有 Python 3 的地方——不用装工具：
+
+```bash
+python3 -c "import socket; mac=bytes.fromhex('001122334455'); socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b'\xff'*6+mac*16, ('192.168.0.120', 10010))"
+```
+
+Windows，PowerShell：
+
+```powershell
+$mac = 0x00,0x11,0x22,0x33,0x44,0x55
+$packet = [byte[]]((1..6 | ForEach-Object { 0xff }) + (1..16 | ForEach-Object { $mac }))
+$udp = New-Object Net.Sockets.UdpClient
+$null = $udp.Send($packet, $packet.Length, "192.168.0.120", 10010)
+$udp.Close()
+```
+
+该看什么：
+
+- 日志里：`magic packet matched`，带端口、网卡和动作；或者 `non-matching packet` 带长度——长度不是
+  102（配了 `secure_on` 是 108，再加 `auth: hmac` 再多 8 字节）就说明这不是一个纯魔法包；
+- 控制面开着时看 `/v1/status`：`packets`、`matched` 以及各动作的计数；
+- 带 `--dry-run` 时动作行会记日志但不会执行——测试就安全地停在这里。确认规则可信之后，去掉
+  `--dry-run` 再跑一次。
+
 ## Troubleshooting
 
 | 现象 | 该查什么 |
@@ -955,6 +992,11 @@ Wake-on-LAN 是无认证广播：任何能摸到监听端口的人都能发出�
 - **`--port 9` 不再关机。** 端口 7 和 9 保留给纯 WOL，现在恒为 `noop`。把动作挪到高位端口
   （推荐），或加 `--allow-reserved-actions` 保留旧行为。
 - **`--iface` 不再必填。** 不写它时，每张合格网卡都参与匹配；用 `sol ifaces` 确认具体是哪几张。
+
+## Inspiration
+
+项目的灵感来自 Habr 上的文章 ["Выключаем компьютер через Wake-on-Lan"](https://habr.com/ru/articles/816765/)：
+它演示了如何把 Wake-on-LAN 包改造成"关机"而不是"唤醒"。
 
 ## Attribution
 
