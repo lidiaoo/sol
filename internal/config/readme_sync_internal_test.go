@@ -10,12 +10,14 @@ import (
 )
 
 // The published READMEs are claims about the implementation: the smoke scripts extract their yaml
-// and bash blocks and run them against the real binary. README.zh-CN.md is a translation of the
+// and bash blocks and run them against the real binary. README.md is the Chinese document and
+// README.en.md its English translation, so their code blocks have to stay byte-identical: a key
+// fixed in one file and
 // same document, so its code blocks have to stay byte-identical - a key fixed in one file and
 // forgotten in the other leaves a reader with an example the loader refuses.
 const (
-	readmeEnglish = "../../README.md"
-	readmeChinese = "../../README.zh-CN.md"
+	readmeEnglish = "../../README.en.md"
+	readmeChinese = "../../README.md"
 )
 
 // fencedBlock matches a fenced code block at the start of a line and captures its language tag
@@ -54,6 +56,6 @@ func TestReadmeTranslationsAgree(t *testing.T) {
 	for i := range english {
 		require.Equal(t, english[i][0], chinese[i][0], "block %d carries a different language tag", i+1)
 		require.Equal(t, english[i][1], chinese[i][1],
-			"block %d differs between README.md and README.zh-CN.md", i+1)
+			"block %d differs between README.md and README.en.md", i+1)
 	}
 }

@@ -14,7 +14,7 @@
 # 包里的布局（解包后一个目录，进目录直接跑安装脚本，它就是"执行目录"）：
 #   sol 或 sol.exe          该平台的二进制
 #   install.sh / install.ps1 / install.cmd   零参数安装脚本
-#   README.md / README.zh-CN.md / CHANGELOG.md / LICENSE
+#   README.md（中文，默认）/ README.en.md / CHANGELOG.md / LICENSE
 #   sol-example.yaml        示例配置（安装脚本没配置时会自己生成一份，这份是给人读的）
 #   sol.schema.json         配置 schema（编辑器补全用）
 set -eu
@@ -100,7 +100,7 @@ for p in $PLATFORMS; do
 	# 跟二进制放进同一个目录：解包后这个目录就是"执行目录"，安装脚本零参数跑起来就知道该干什么。
 	cp scripts/install.sh scripts/install.ps1 scripts/install.cmd "$dir/"
 	chmod +x "$dir/install.sh"
-	cp README.md README.zh-CN.md LICENSE "$dir/"
+	cp README.md README.en.md LICENSE "$dir/"
 	[ -f CHANGELOG.md ] && cp CHANGELOG.md "$dir/"
 	[ -f example/sol-example.yaml ] && cp example/sol-example.yaml "$dir/"
 	[ -f schema/sol.schema.json ] && cp schema/sol.schema.json "$dir/"

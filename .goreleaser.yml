@@ -32,7 +32,7 @@ archives:
     # 包里要有 README 和安装脚本：解包出来的目录就是"执行目录"，零参数跑 install.sh/install.cmd 就能装。
     files:
       - README.md
-      - README.zh-CN.md
+      - README.en.md
       - CHANGELOG.md
       - LICENSE
       - scripts/install.sh
