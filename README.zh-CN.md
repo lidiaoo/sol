@@ -457,6 +457,171 @@ rules:
 Schema 与加载器严格一致——未知字段、类型不对、枚举值超出范围都会被拒；只要配置字段和 schema
 对不上，测试就会失败。
 
+### 每种动作，配一个能跑的例子
+
+[Supported actions](#supported-actions) 那张表讲每个动作做什么，这里讲它怎么用。下面每个例子都是一份
+**完整的配置**——原样就能加载，规则里写的端口就是你要发包过去的口。把它存成服务读的那份文件（或用
+`--config` 指过去），起 sol，然后往那个端口发一个魔法包：[Testing your setup](#testing-your-setup) 里有
+Linux、macOS、Windows 和 PowerShell 现成的发送命令。
+
+| 动作 | 往哪个端口发什么 | 结果 |
+| --- | --- | --- |
+| `noop` | 10140 | 日志里一行，别的什么都不做 |
+| `power.sleep` / `power.reboot` / `power.shutdown` | 10141 / 10142 + `reboot` / 10143 + `off` | 本机睡眠 / 重启 / 关机 |
+| `exec` | 10144 + `lock` | 跑你配的命令 |
+| `http` | 10145 | 调用你的 webhook |
+| `sequence` | 10146 + `wake-nas` | 每一步按顺序跑 |
+| `wol.send` | 10147 + `wake-nas` | 给另一台机器发魔法包 |
+| `remote:<id>` | 10149（magic + `lock` + HMAC 标签）或 `POST /v1/commands/lock` | 跑白名单里的那条命令 |
+
+#### noop
+
+
+```yaml
+version: 1
+rules:
+  - match: { ports: [10140], content: { kind: none } }
+    action: noop
+```
+
+最安全的动作，也是保留端口唯一允许的动作。用它先确认规则能匹配上，再挂真正会动手的动作；或者用
+`--dry-run` 起整个守护进程，效果相同。
+
+#### power.sleep、power.reboot、power.shutdown
+
+
+```yaml
+version: 1
+rules:
+  - match: { ports: [10141], content: { kind: none } }
+    action: power.sleep                 # suspend
+  - match: { ports: [10142], content: { kind: suffix, value: "reboot" } }
+    action: power.reboot
+  - match: { ports: [10143], content: { kind: suffix, value: "off" } }
+    action: power.shutdown
+security:
+  cooldowns: { power.sleep: 5s, power.shutdown: 5s, power.reboot: 5s }
+```
+
+它们作用在**运行 sol 的这台机器**上——它就是被关机的那台。需要 root（或 `SYSTEM`），安装脚本已经安排
+好了。那三个 5s 冷却是防止一串唤醒包把刚睡下去的机器又按醒的关键：见 [Guards](#guards)。
+
+#### exec
+
+
+```yaml
+version: 1
+actions:
+  - name: lock-screen
+    type: exec
+    command: [/usr/bin/loginctl, lock-session]   # argv, no shell unless shell: true
+    timeout: 10s
+rules:
+  - match: { ports: [10144], content: { kind: suffix, value: "lock" } }
+    action: lock-screen
+security:
+  exec_allowlist: [/usr/bin]
+```
+
+`command` 是 argv 列表，不是 shell 字符串，所以没写过的内容永远不会被解释执行。`shell: true` 是逃生口，
+默认被"raw shell"开关禁着：见 [Raw shell (off by default)](#raw-shell-off-by-default)。
+`exec_allowlist` 钉住绝对路径只能落在哪些目录。Linux/macOS 上可用 `user:`/`group:` 给命令降权（需要
+root，Windows 不支持）。
+
+#### http
+
+
+```yaml
+version: 1
+actions:
+  - name: tell-home-assistant
+    type: http
+    method: POST
+    url: "http://homeassistant.local:8123/api/webhook/{{.Action}}"
+    headers: { Content-Type: application/json }
+    body: '{"who":"{{.SrcIP}}","port":{{.DstPort}}}'
+    timeout: 5s
+    retries: 2
+rules:
+  - match: { ports: [10145], content: { kind: none } }
+    action: tell-home-assistant
+security:
+  url_allowlist: ["http://homeassistant.local:8123"]
+```
+
+webhook 方向：sol 把发生了什么告诉别人。`url_allowlist` 里要写**完整 URL**——不在名单里的目标是被拒绝，
+不只是警告。`{{.Action}}`、`{{.SrcIP}}`、`{{.DstPort}}`、`{{.Arg.x}}` 可以插进查询串和路径里；scheme 和
+host 必须是字面量，所以一个包永远无法把这次调用重定向到别处。
+
+#### sequence
+
+
+```yaml
+version: 1
+actions:
+  - { name: nas-wake-lan, type: wol.send, mac: "AA:BB:CC:00:00:01", broadcast: 192.168.0.255 }
+  - { name: tell-home-assistant, type: http, url: "http://homeassistant.local:8123/api/webhook/woke" }
+  - { name: wake-and-tell, type: sequence, steps: [nas-wake-lan, tell-home-assistant] }
+rules:
+  - match: { ports: [10146], content: { kind: suffix, value: "wake-nas" } }
+    action: wake-and-tell
+security:
+  url_allowlist: ["http://homeassistant.local:8123"]
+```
+
+把其它动作按顺序串成一个动作。steps 里放的是动作名。某一步失败会被记下来，但**不会跳过它后面的步骤**，
+所以一个挂掉的 webhook 拦不住唤醒。
+
+#### wol.send
+
+
+```yaml
+version: 1
+actions:
+  - name: wake-nas
+    type: wol.send
+    mac: "AA:BB:CC:00:00:01"     # required; the target never comes from the triggering packet
+    broadcast: 192.168.0.255     # default 255.255.255.255
+    port: 9                      # default 9
+    repeat: 3                    # default 1
+    interval: 100ms              # default 100ms
+rules:
+  - match: { ports: [10147], mac: self, content: { kind: suffix, value: "wake-nas" } }
+    action: wake-nas
+```
+
+把别人叫醒。目标 MAC **只从配置里来**，绝不从触发它的那个包里取——这正是 `wol.send` 能放心暴露的原因。
+默认值：broadcast `255.255.255.255`、端口 9、每个包发 1 次、间隔 100ms。
+
+#### remote:<id>
+
+
+```yaml
+version: 1
+security:
+  allow_remote_commands: true
+  remote_command_auth: { type: hmac, key_env: SOL_CMD_KEY, window: 60s }
+  remote_command_ports: [10149]
+commands:
+  - id: lock
+    type: exec
+    command: [/usr/bin/loginctl, lock-session]
+rules:
+  # sol needs at least one rule to start; the remote command channel has its own listener
+  - match: { ports: [10150], content: { kind: none } }
+    action: noop
+```
+
+远程命令通道：白名单里的命令，可以走 UDP（魔法包 + `<id>[:k=v,...]` + HMAC 标签）或走 HTTP
+（`POST /v1/commands/lock`）。它需要 `allow_remote_commands: true` 和一个 HMAC 密钥，密钥来自环境变量
+（`key_env`）或 0600 文件——绝不写进 YAML。每条命令同时会变成一个普通动作，这里是 `remote:lock`，所以它
+会出现在 `/v1/actions`、冷却和审计日志里。但**规则不能指向它**：`match` 里写 `action: remote:<id>` 会在
+启动时被拒（`unknown action reference`），因为这个通道是唯一的入口。
+
+#### raw:shell
+
+它没有可配置的动作：它是 `exec` 加 `shell: true` 背后那道护栏的名字，默认关着——见
+[Raw shell (off by default)](#raw-shell-off-by-default)。
 ### Remote commands (off by default)
 
 远端命令通道让经过认证的发送方通过 UDP（魔法包 + `<id>[:k=v,...]` + HMAC-SHA256 tag）或 HTTP

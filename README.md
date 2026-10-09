@@ -494,6 +494,179 @@ Schema. Either point the editor at the local `schema/sol.schema.json`, or start 
 The schema mirrors the loader exactly — unknown keys, wrong types and the allowed enum values
 are all rejected, and a test fails whenever a configuration field and the schema disagree.
 
+### Every action, with a working example
+
+[Supported actions](#supported-actions) says what each one does; this is how you actually use it. Every
+example below is a complete configuration file - it loads as it stands, and the port written in the rule
+is the port you send to. Save it as the file the service reads (or point `--config` at it), start sol,
+then send a magic packet at that port: [Testing your setup](#testing-your-setup) has ready-made senders
+for Linux, macOS, Windows and PowerShell.
+
+| Action | Send a packet to | What you get |
+| --- | --- | --- |
+| `noop` | 10140 | a log line and nothing else |
+| `power.sleep` / `power.reboot` / `power.shutdown` | 10141 / 10142 + `reboot` / 10143 + `off` | this machine suspends / reboots / powers down |
+| `exec` | 10144 + `lock` | your command runs |
+| `http` | 10145 | your webhook is called |
+| `sequence` | 10146 + `wake-nas` | every step runs, in order |
+| `wol.send` | 10147 + `wake-nas` | another machine gets a magic packet |
+| `remote:<id>` | 10149 (magic + `lock` + HMAC tag) or `POST /v1/commands/lock` | the whitelisted command runs |
+
+#### noop
+
+
+```yaml
+version: 1
+rules:
+  - match: { ports: [10140], content: { kind: none } }
+    action: noop
+```
+
+The safest action, and the only one the reserved ports accept. Use it to check that a rule matches
+before you attach something that acts, or run the whole daemon with `--dry-run` for the same effect.
+
+#### power.sleep, power.reboot, power.shutdown
+
+
+```yaml
+version: 1
+rules:
+  - match: { ports: [10141], content: { kind: none } }
+    action: power.sleep                 # suspend
+  - match: { ports: [10142], content: { kind: suffix, value: "reboot" } }
+    action: power.reboot
+  - match: { ports: [10143], content: { kind: suffix, value: "off" } }
+    action: power.shutdown
+security:
+  cooldowns: { power.sleep: 5s, power.shutdown: 5s, power.reboot: 5s }
+```
+
+These act on the machine that runs sol - it is the machine being powered down. They need root (or
+`SYSTEM`), which the installer arranges. The 5s cooldowns are what stop a burst of wake-up packets from
+undoing a suspend: see [Guards](#guards).
+
+#### exec
+
+
+```yaml
+version: 1
+actions:
+  - name: lock-screen
+    type: exec
+    command: [/usr/bin/loginctl, lock-session]   # argv, no shell unless shell: true
+    timeout: 10s
+rules:
+  - match: { ports: [10144], content: { kind: suffix, value: "lock" } }
+    action: lock-screen
+security:
+  exec_allowlist: [/usr/bin]
+```
+
+`command` is an argv list, not a shell string, so nothing you did not write is ever interpreted.
+`shell: true` is the escape hatch and is off unless you allow raw shell: see
+[Raw shell (off by default)](#raw-shell-off-by-default). `exec_allowlist` pins which directories an
+absolute path may live under. On Linux and macOS `user:`/`group:` drop privileges for the command
+(requires root; not supported on Windows).
+
+#### http
+
+
+```yaml
+version: 1
+actions:
+  - name: tell-home-assistant
+    type: http
+    method: POST
+    url: "http://homeassistant.local:8123/api/webhook/{{.Action}}"
+    headers: { Content-Type: application/json }
+    body: '{"who":"{{.SrcIP}}","port":{{.DstPort}}}'
+    timeout: 5s
+    retries: 2
+rules:
+  - match: { ports: [10145], content: { kind: none } }
+    action: tell-home-assistant
+security:
+  url_allowlist: ["http://homeassistant.local:8123"]
+```
+
+The webhook direction: sol tells somebody else what happened. `url_allowlist` takes full URLs - a
+destination outside it is refused, not merely warned about. `{{.Action}}`, `{{.SrcIP}}`, `{{.DstPort}}`
+and `{{.Arg.x}}` interpolate into the query and the path; the scheme and the host stay literal, so a
+packet can never redirect the call.
+
+#### sequence
+
+
+```yaml
+version: 1
+actions:
+  - { name: nas-wake-lan, type: wol.send, mac: "AA:BB:CC:00:00:01", broadcast: 192.168.0.255 }
+  - { name: tell-home-assistant, type: http, url: "http://homeassistant.local:8123/api/webhook/woke" }
+  - { name: wake-and-tell, type: sequence, steps: [nas-wake-lan, tell-home-assistant] }
+rules:
+  - match: { ports: [10146], content: { kind: suffix, value: "wake-nas" } }
+    action: wake-and-tell
+security:
+  url_allowlist: ["http://homeassistant.local:8123"]
+```
+
+An ordered list of the other actions, run as one action. Steps are action names. A failing step is
+reported but never skips the ones behind it, so a webhook that is down cannot stop the wake-up.
+
+#### wol.send
+
+
+```yaml
+version: 1
+actions:
+  - name: wake-nas
+    type: wol.send
+    mac: "AA:BB:CC:00:00:01"     # required; the target never comes from the triggering packet
+    broadcast: 192.168.0.255     # default 255.255.255.255
+    port: 9                      # default 9
+    repeat: 3                    # default 1
+    interval: 100ms              # default 100ms
+rules:
+  - match: { ports: [10147], mac: self, content: { kind: suffix, value: "wake-nas" } }
+    action: wake-nas
+```
+
+Wake somebody else up. The target MAC comes from the configuration only - never from the packet that
+triggered the action - which is what makes `wol.send` safe to expose. Defaults: broadcast
+`255.255.255.255`, port 9, each packet once, 100ms apart.
+
+#### remote:<id>
+
+
+```yaml
+version: 1
+security:
+  allow_remote_commands: true
+  remote_command_auth: { type: hmac, key_env: SOL_CMD_KEY, window: 60s }
+  remote_command_ports: [10149]
+commands:
+  - id: lock
+    type: exec
+    command: [/usr/bin/loginctl, lock-session]
+rules:
+  # sol needs at least one rule to start; the remote command channel has its own listener
+  - match: { ports: [10150], content: { kind: none } }
+    action: noop
+```
+
+The remote command channel: a whitelisted command invoked over UDP (a magic packet, then `<id>[:k=v,...]`,
+then an HMAC tag) or over HTTP (`POST /v1/commands/lock`). It needs `allow_remote_commands: true` and an
+HMAC key, which comes from the environment (`key_env`) or a 0600 file - never from the YAML. Every
+command also becomes an ordinary action, `remote:lock` here, so it shows up in `/v1/actions`, in the
+cooldowns and in the audit log. A rule cannot point at it, though: a `match` whose `action` is
+`remote:<id>` is rejected at start-up with `unknown action reference`, because the channel is the only
+way in.
+
+#### raw:shell
+
+There is no action to configure for it: it is the name of the guardrail behind `exec` with
+`shell: true`, and it stays off unless you turn it on - see
+[Raw shell (off by default)](#raw-shell-off-by-default).
 ### Remote commands (off by default)
 
 The remote command channel lets an authenticated sender invoke a whitelisted command over
