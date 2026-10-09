@@ -376,6 +376,50 @@ had uncommitted changes) - and `/metrics` exposes the same pair as
 `sol_build_info{version="...",revision="..."} 1`. Two processes with different configs are then
 distinguishable from a bug report alone.
 
+#### Turning it on and calling it
+
+```yaml
+version: 1
+server:
+  http:
+    enabled: true
+    listen: 127.0.0.1:8080
+    auth: { type: bearer, token_env: SOL_TOKEN }   # the variable's NAME, never the token itself
+rules:
+  - match: { ports: [10], content: { kind: none } }
+    action: power.sleep
+```
+
+`token_env` names an environment variable, not the secret: a token written straight into the YAML
+(or `token_env: mytoken`) is the mistake that stops the start-up. A service that runs as
+`SYSTEM`/root reads machine-wide variables, so set it there and restart sol:
+
+```bash
+setx SOL_TOKEN "<a long random string>" /M     # Windows: machine-wide, run as administrator
+schtasks /End /TN sol && schtasks /Run /TN sol # then restart the task (a reload does not restart it)
+```
+
+On Windows use `token_env`. `token_file` is checked for 0600 permissions through POSIX mode bits,
+which Windows does not have, so that route is refused there.
+
+Call it from the same machine (Windows 10 ships `curl.exe`; write `curl.exe` in PowerShell, where
+`curl` is an alias for `Invoke-WebRequest`). In `cmd` the variable is `%SOL_TOKEN%`, in PowerShell
+`$env:SOL_TOKEN`:
+
+```bash
+curl.exe -s http://127.0.0.1:8080/healthz                  # the only endpoint that needs no token
+curl.exe -s -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/status
+curl.exe -s -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/rules
+curl.exe -s -X POST -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/actions/power.sleep
+curl.exe -s -X POST -H "Authorization: Bearer $SOL_TOKEN" http://127.0.0.1:8080/v1/reload
+```
+
+`{"status":"ok"}` from `/healthz` means the control plane is up; it never checks the token, so it
+cannot tell you whether the token is right. Any `/v1/...` answer of `401` with
+`{"error":"unauthorized"}` means the token is wrong or missing, and the same rejection is written to
+the audit log. A connection failure (`curl: (7)`) means nothing is listening at all: sol is not
+running, `enabled` is not true - or it refused to start, which a missing token variable causes.
+
 ### Audit log destination
 
 The audit trail goes to stderr by default, so a service manager owns it (`journalctl -u sol`).
@@ -385,7 +429,6 @@ append-only with mode 0600 — it names source addresses, the action that ran an
 raw shell, the command line — and it is never rotated: pair it with `logrotate`, or leave the
 default and let journald do it. The destination is read at start-up only; `logging.level` is the
 part that reloads. `SOL_LOG_OUTPUT` and `SOL_LOG_FILE` override both fields.
-
 ### Reloading
 
 Three paths, one implementation: `SIGHUP`, `POST /v1/reload`, and `server.watch` / `--watch`
