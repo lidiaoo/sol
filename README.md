@@ -859,6 +859,143 @@ had uncommitted changes) - and `/metrics` exposes the same pair as
 `sol_build_info{version="...",revision="..."} 1`. Two processes with different configs are then
 distinguishable from a bug report alone.
 
+#### Every endpoint, and what it answers
+
+
+Every payload below was taken from a running instance (started with `--dry-run`, so nothing acted).
+Two rules cover the rest: a wrong or missing token answers **`401`** with `{"error":"unauthorized"}` on
+every authenticated endpoint, and an unknown path answers `404 page not found` as plain text, not JSON.
+All of them except `/healthz` need the `Authorization` header.
+
+##### `GET /healthz` - is it up?
+
+The only endpoint without authentication, and it **ignores the token entirely**: a wrong token still gets
+`200`, so it can tell you whether the control plane is alive, never whether your token is right.
+
+```json
+{"status":"ok"}
+```
+
+##### `GET /v1/status` - one snapshot of the process
+
+```json
+{
+  "version": "v0.1.0-21-g7c3dd97",
+  "revision": "7c3dd97b2ad5",
+  "uptime": "2s",
+  "uptime_seconds": 2.9637342,
+  "packets": 0,
+  "matched": 0,
+  "suppressed": 0,
+  "rate_limited": 0,
+  "inflight": 0,
+  "settle_skipped": 0,
+  "replayed": 0,
+  "actions": {},
+  "rules": 1,
+  "interfaces": ["eth0", "wlan0"],
+  "dry_run": true,
+  "auth_type": "bearer",
+  "http_listen": "127.0.0.1:18080"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `version`, `revision` | the build answering: the stamp (or the toolchain's pseudo-version) and the commit, `-dirty` when the tree had uncommitted changes |
+| `uptime`, `uptime_seconds` | the same span twice: human-readable, and as a float for scripts |
+| `packets` | magic packets received since the start |
+| `matched` | how many of them matched a rule |
+| `suppressed` | matches not executed: cooldown, rate limit, or the settle window |
+| `rate_limited`, `settle_skipped`, `replayed` | the counters behind `suppressed`, broken out |
+| `inflight` | actions running right now |
+| `actions` | per-action execution counts, keyed by name; stays `{}` under `--dry-run` because nothing really runs |
+| `rules`, `interfaces` | how many rules are loaded, and the interface names being listened on |
+| `dry_run`, `auth_type`, `http_listen` | the guards and the address in effect, so a bug report can be read without asking |
+
+##### `GET /v1/rules` - the loaded rules, as they were compiled
+
+```json
+{"rules":[{"ports":[10160],"mac":"self","content":"none","action":"noop","dry_run":false}]}
+```
+
+One entry per rule, in the order they are evaluated: the ports, the MAC selector (`self`, `any` or an
+address), how the payload is compared, the action name it resolved to, and whether that rule is itself
+in dry-run.
+
+##### `GET /v1/interfaces` - the NICs it is listening on
+
+```json
+{"interfaces":[{"name":"eth0","mac":"58:11:22:bc:78:66","ipv4":"192.168.0.120"},{"name":"wlan0","mac":"f0:d4:15:57:9c:c5","ipv4":"192.168.0.121"}]}
+```
+
+The same list `sol ifaces --json` prints, and the one the log reports at start-up. Address-free NICs
+show up here too - they can still receive a magic packet.
+
+##### `GET /metrics` - the same counters, in Prometheus form
+
+```text
+# TYPE sol_packets_total counter
+sol_packets_total 0
+# TYPE sol_matched_total counter
+sol_matched_total 0
+# TYPE sol_suppressed_total counter
+sol_suppressed_total 0
+# TYPE sol_settle_skipped_total counter
+sol_settle_skipped_total 0
+# TYPE sol_replayed_total counter
+sol_replayed_total 0
+# TYPE sol_rules gauge
+sol_rules 1
+# TYPE sol_uptime_seconds gauge
+sol_uptime_seconds 3.225
+# TYPE sol_build_info gauge
+sol_build_info{version="v0.1.0-21-g7c3dd97",revision="7c3dd97b2ad5"} 1
+```
+
+Counters: `sol_packets_total`, `sol_matched_total`, `sol_suppressed_total`, `sol_settle_skipped_total`,
+`sol_replayed_total`, `sol_rate_limited_total`, `sol_inflight_total`, and `sol_actions_total` per action.
+Gauges: `sol_rules`, `sol_uptime_seconds`, and `sol_build_info{version,revision}`.
+
+##### `POST /v1/actions/{name}` - run a configured action
+
+```json
+{"action":"noop","status":"triggered"}
+```
+
+`202` means **accepted**, not "matched": the name is not checked against the configured actions, so a
+typo answers exactly like a real one (`{"action":"nope","status":"triggered"}`). Watch the log, or
+`actions` in `/v1/status`, to see what actually happened. An optional JSON body carries the arguments
+(`{"args":{"k":"v"}}`) that `{{.Arg.k}}` interpolates.
+
+##### `POST /v1/commands/{id}` - the remote command channel
+
+```json
+{"command":"hi","status":"triggered"}
+```
+
+`202` with the command's id when the channel is on. It is off unless
+`security.allow_remote_commands: true` and an HMAC key are configured, and then it answers
+**`403 {"error":"remote command forbidden: remote commands are disabled"}`**; an id that is not in
+`commands` answers **`404 {"error":"unknown remote command: nope"}`**.
+
+##### `POST /v1/exec` - a shell line, on the raw-shell path
+
+The body is `{"cmd":"<a shell line>"}` - a **string**, not an argv list, which is why it is the guarded
+path ([Raw shell (off by default)](#raw-shell-off-by-default)). A missing field answers
+`400 {"error":"cmd is required"}`; a malformed body answers
+`400 {"error":"invalid request body: ..."}`.
+
+##### `POST /v1/reload` - re-read the configuration file
+
+```json
+{"reloaded":true}
+```
+
+`200 {"reloaded":true}` when the new file was applied. A file that does not load is answered with the
+loader's error and the running configuration stays in place - a reload never leaves a half-applied
+state.
+
 #### Turning it on and calling it
 
 Add the block below to the configuration the service reads (`/etc/sol/sol.yaml`, `~/.config/sol/sol.yaml`,

@@ -798,6 +798,137 @@ token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文�
 `sol_build_info{version="...",revision="..."} 1`。这样两份配置不同的进程，光凭一份 bug 报告就能
 区分开。
 
+#### 每个端点，以及它返回什么
+
+
+下面每个返回都是从**跑起来的实例**上抓的（用 `--dry-run` 起，所以什么都没真的执行）。剩下两种情况一条
+规矩：令牌错或没带上，所有需要认证的端点一律回 **`401`** + `{"error":"unauthorized"}`；路径不存在回
+`404 page not found`（纯文本，不是 JSON）。除 `/healthz` 外都需要 `Authorization` 头。
+
+##### `GET /healthz` —— 它活着吗？
+
+唯一不需要认证的端点，而且**完全不看令牌**：令牌错了也回 `200`。所以它只能告诉你控制面活着，永远回答
+不了"令牌对不对"。
+
+```json
+{"status":"ok"}
+```
+
+##### `GET /v1/status` —— 进程的一张快照
+
+```json
+{
+  "version": "v0.1.0-21-g7c3dd97",
+  "revision": "7c3dd97b2ad5",
+  "uptime": "2s",
+  "uptime_seconds": 2.9637342,
+  "packets": 0,
+  "matched": 0,
+  "suppressed": 0,
+  "rate_limited": 0,
+  "inflight": 0,
+  "settle_skipped": 0,
+  "replayed": 0,
+  "actions": {},
+  "rules": 1,
+  "interfaces": ["eth0", "wlan0"],
+  "dry_run": true,
+  "auth_type": "bearer",
+  "http_listen": "127.0.0.1:18080"
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `version`、`revision` | 应答的这个构建：版本戳（或工具链的伪版本）与提交号；工作区有未提交改动时带 `-dirty` |
+| `uptime`、`uptime_seconds` | 同一个时长的两种写法：给人看的、和给脚本用的浮点数 |
+| `packets` | 启动以来收到的魔法包数 |
+| `matched` | 其中命中规则的个数 |
+| `suppressed` | 命中了但没执行：冷却、限流或 settle 窗口 |
+| `rate_limited`、`settle_skipped`、`replayed` | `suppressed` 拆开后的各项计数 |
+| `inflight` | 此刻正在执行的动作数 |
+| `actions` | 每个动作的执行次数（按名字）；`--dry-run` 下一直是 `{}`，因为什么都没真跑 |
+| `rules`、`interfaces` | 装了几条规则，以及正在监听的网卡名 |
+| `dry_run`、`auth_type`、`http_listen` | 生效中的护栏与地址——拿到一份 bug 报告就能直接读，不用来回问 |
+
+##### `GET /v1/rules` —— 编译后的规则，一条一条
+
+```json
+{"rules":[{"ports":[10160],"mac":"self","content":"none","action":"noop","dry_run":false}]}
+```
+
+每条规则一项，顺序就是求值顺序：端口、MAC 选择器（`self`、`any` 或具体地址）、载荷怎么比、解析到的动作
+名，以及这条规则自己是否处于 dry-run。
+
+##### `GET /v1/interfaces` —— 它在听哪些网卡
+
+```json
+{"interfaces":[{"name":"eth0","mac":"58:11:22:bc:78:66","ipv4":"192.168.0.120"},{"name":"wlan0","mac":"f0:d4:15:57:9c:c5","ipv4":"192.168.0.121"}]}
+```
+
+和 `sol ifaces --json` 打印的是同一份，也是启动日志里报的那份。没有地址的网卡也会出现在这里——它们照样
+能收到魔法包。
+
+##### `GET /metrics` —— 同一批计数，Prometheus 形式
+
+```text
+# TYPE sol_packets_total counter
+sol_packets_total 0
+# TYPE sol_matched_total counter
+sol_matched_total 0
+# TYPE sol_suppressed_total counter
+sol_suppressed_total 0
+# TYPE sol_settle_skipped_total counter
+sol_settle_skipped_total 0
+# TYPE sol_replayed_total counter
+sol_replayed_total 0
+# TYPE sol_rules gauge
+sol_rules 1
+# TYPE sol_uptime_seconds gauge
+sol_uptime_seconds 3.225
+# TYPE sol_build_info gauge
+sol_build_info{version="v0.1.0-21-g7c3dd97",revision="7c3dd97b2ad5"} 1
+```
+
+计数器：`sol_packets_total`、`sol_matched_total`、`sol_suppressed_total`、`sol_settle_skipped_total`、
+`sol_replayed_total`、`sol_rate_limited_total`、`sol_inflight_total`，以及每个动作一个的
+`sol_actions_total`。仪表：`sol_rules`、`sol_uptime_seconds`、`sol_build_info{version,revision}`。
+
+##### `POST /v1/actions/{name}` —— 执行一个配置好的动作
+
+```json
+{"action":"noop","status":"triggered"}
+```
+
+`202` 的意思是**已受理**，不是"命中"：名字**不做校验**，所以打错了和真名字的返回一模一样
+（`{"action":"nope","status":"triggered"}`）。到底发生了什么，看日志，或者看 `/v1/status` 里的
+`actions`。可选的 JSON body 用来带参数（`{"args":{"k":"v"}}`），供 `{{.Arg.k}}` 插值。
+
+##### `POST /v1/commands/{id}` —— 远程命令通道
+
+```json
+{"command":"hi","status":"triggered"}
+```
+
+通道开着时回 `202` 和命令 id。它默认关着——需要 `security.allow_remote_commands: true` 加上一个 HMAC
+密钥，关着的时候回 **`403 {"error":"remote command forbidden: remote commands are disabled"}`**；id 不在
+`commands` 里则回 **`404 {"error":"unknown remote command: nope"}`**。
+
+##### `POST /v1/exec` —— 一条 shell 行，走 raw shell 那条路
+
+body 是 `{"cmd":"<一条 shell 行>"}`——**字符串**，不是 argv 列表，所以它属于受管的那条路（见
+[Raw shell (off by default)](#raw-shell-off-by-default)）。缺字段回 `400 {"error":"cmd is required"}`；
+body 格式不对回 `400 {"error":"invalid request body: ..."}`。
+
+##### `POST /v1/reload` —— 重新读配置文件
+
+```json
+{"reloaded":true}
+```
+
+新文件应用成功回 `200 {"reloaded":true}`。加载失败则把加载器的错误回给你，而**正在跑的配置保持不变**——
+重载不会留下半应用的状态。
+
 #### 打开它并用 curl 调用
 
 把下面这段加进**服务实际读的那份配置**（`/etc/sol/sol.yaml`、`~/.config/sol/sol.yaml`，或 `--config`
