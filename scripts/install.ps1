@@ -355,6 +355,8 @@ function Ensure-RuntimeConfig {
 				'version: 1',
 				'server:',
 				'  interfaces: []',
+				'  # 改这份文件后秒级自动生效（改坏了也不会顶掉正在跑的那份）。',
+				'  watch: 5s',
 				'  # HTTP 控制面（默认关闭）：要用就把 enabled 改成 true，并给它一个令牌——令牌来自环境变量或',
 				'  # 0600 文件，绝不写进这个文件。三端的设置办法与 curl 用法见 README 的 Control plane 一节。',
 				'  http:',
@@ -840,6 +842,22 @@ function Add-FileLoggingToConfig {
 	Act 'user' "运行配置补上 logging（sol 的日志落到 $LogFile）" "（往 $RunConfig 追加 logging: { output: file, file: '$LogFile' }）"
 }
 
+function Open-ConfigDir($dir, $file) {
+	# 呼出文件管理器跳到运行配置所在目录：先问、问过才开；沙箱、子进程、无人能答时只报路径。
+	# 绝不 -Wait：一个等着人点一下的窗口就是"脚本卡死"的老剧本。
+	Say ''
+	Say "  配置文件    $file"
+	Say '     刚生成的这份就是 sol 的跑法：端口、动作、允许的来源网段都在里面。默认是'
+	Say '     纯包关机 / magic+reboot 重启 / magic+sleep 睡眠，按需改。'
+	Say '     改完不用重装：配置里有 watch，秒级自动生效；改坏了也不会顶掉正在跑的那份。'
+	if ($env:SOL_INSTALL_NO_OPEN -or $env:SOL_INSTALL_ROOT -or $script:Child) { Say "     目录：$dir"; return }
+	if (-not (Test-Path $dir)) { return }
+	if (Ask-Yes '要现在打开文件夹，去改这份配置吗？' 'y') {
+		try { Start-Process -FilePath explorer.exe -ArgumentList $dir -ErrorAction Stop; Say "     已打开：$dir" }
+		catch { Say "     打开失败，自己开这个目录：$dir" }
+	} else { Say "     目录：$dir" }
+}
+
 function Invoke-Install {
 	if (-not $LocalBin) { Die '没有可用的 sol.exe：把它放在脚本旁边或 PATH 里，再运行一次' }
 	# 升权后的那一次才写得进安装目录，所以配置的生成/拷贝放这儿，紧挨着预检。
@@ -1199,6 +1217,7 @@ if ($LedgerExists) {
 			if (-not $script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT -and (Task-State) -ne 'installed') {
 				$script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
 			}
+			Open-ConfigDir (Split-Path -Parent $RunConfig) $RunConfig
 			Escalate-IfNeeded 'install'
 			Invoke-Install
 			if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 3 重新生成配置，或先卸载。）' }
@@ -1217,6 +1236,8 @@ if ($script:NoAnswer) {
 $script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
 if (-not (Ask-Yes '执行吗？' 'y')) { Show-Report 'none'; exit 0 }
 
+
+Open-ConfigDir (Split-Path -Parent $RunConfig) $RunConfig
 Escalate-IfNeeded 'install'
 Invoke-Install
 if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 3 重新生成配置，或先卸载。）' }

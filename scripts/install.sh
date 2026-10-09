@@ -514,6 +514,8 @@ ensure_runtime_config() {
 version: 1
 server:
   interfaces: []
+  # 改这份文件后秒级自动生效（改坏了也不会顶掉正在跑的那份）。
+  watch: 5s
   # HTTP 控制面（默认关闭）：要用就把 enabled 改成 true，并给它一个令牌——令牌来自环境变量或
   # 0600 文件，绝不写进这个文件。三端的设置办法与 curl 用法见 README 的 Control plane 一节。
   http:
@@ -930,6 +932,41 @@ render_unit() {
 	esac
 }
 
+# 呼出文件管理器，跳到运行配置所在目录——先问，问过才开；没有图形界面、SSH 里、管道执行、
+# 沙箱或无人回答时只报路径，绝不在这里等人（这里的任何阻塞都会变成"脚本卡死"）。
+open_config_dir() { # open_config_dir <目录> <文件>
+	dir=$1
+	file=$2
+	say ""
+	say "  配置文件    $file"
+	say "     刚生成的这份就是 sol 的跑法：端口、动作、允许的来源网段都在里面。默认是"
+	say "     纯包关机 / magic+reboot 重启 / magic+sleep 睡眠，按需改。"
+	say "     改完不用重装：配置里有 watch，秒级自动生效；改坏了也不会顶掉正在跑的那份。"
+	if [ -n "${SOL_INSTALL_NO_OPEN:-}" ] || [ -n "$ROOT" ] || [ ! -t 0 ]; then
+		say "     目录：$dir"
+		return 0
+	fi
+	sys=$(uname -s 2>/dev/null || echo unknown)
+	opener=""
+	case "$sys" in
+	Darwin) opener=open ;;
+	*) for c in xdg-open nautilus dolphin thunar nemo caja pcmanfm; do
+		if command -v "$c" >/dev/null 2>&1; then opener=$c; break; fi
+	done ;;
+	esac
+	if [ -z "$opener" ] || [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] ||
+		{ [ "$sys" != Darwin ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; }; then
+		say "     （这里没有图形界面：自己开 $dir 改它）"
+		return 0
+	fi
+	if ask "要现在打开文件夹，去改这份配置吗？" y; then
+		"$opener" "$dir" >/dev/null 2>&1 &
+		say "     已打开：$dir"
+	else
+		say "     目录：$dir"
+	fi
+}
+
 do_install() {
 	[ -n "$LOCAL_BIN" ] || die "没有可用的 sol 二进制：把 sol（或 sol.exe）放在脚本旁边或 \$PATH 里，再跑一次"
 
@@ -1316,6 +1353,7 @@ if [ "$LEDGER_EXISTS" = yes ]; then
 			SERVICE_WANTED=false
 			if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
 		fi
+		open_config_dir "$(dirname "$RUN_CONFIG")" "$RUN_CONFIG"
 		escalate install
 		do_install
 		if [ "$NOOP" = yes ]; then
@@ -1336,6 +1374,7 @@ if ! ask "执行吗？" y; then
 	exit 0
 fi
 
+open_config_dir "$(dirname "$RUN_CONFIG")" "$RUN_CONFIG"
 escalate install
 do_install
 if [ "$NOOP" = yes ]; then

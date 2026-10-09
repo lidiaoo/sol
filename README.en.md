@@ -378,6 +378,12 @@ It **reports what it found first, then asks** — nothing is changed until you a
 
 #### Afterwards
 
+When it is done it asks whether to **open the folder that holds the configuration** (Finder, Explorer, or
+an xdg-open file manager, per platform) so you can adjust the ports, the actions or the allowed source
+networks right away; with no graphics, over SSH, when piped or in a sandbox it just prints the path. The
+configuration carries `watch: 5s`, so an edit takes effect within seconds - and a broken edit never
+replaces the running configuration.
+
 - **Change behaviour**: edit the runtime `sol.yaml` (ports, matching, actions), or `install.yaml`'s `run.args` (how it is started). Re-run and pick `1`.
 - **Upgrade**: drop the new `sol` / `sol.exe` next to the script and pick `1`. It stops our own service first, swaps the binary, then starts it again — so it never trips over "address already in use".
 - **Uninstall**: pick `2`. Service, binary and ledger go away; you are asked whether to keep `sol.yaml` / `install.yaml`.

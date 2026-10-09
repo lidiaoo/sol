@@ -85,3 +85,11 @@ Windows 安装「卡死」这件事，前后猜错了四次——UAC 框没弹�
 - 已知代价：`internal/config` 的 `TestLoadSecretErrorsFilePermissions` 在 Windows 上必然失败（同一个
   原因），**不是回归**。这是刻意的取舍——不要为了「让这个测试变绿」去改那个检查。
 
+## 11. 呼出文件管理器：只在父进程问，且只在**不会阻塞**的时候开
+
+- 那个"要不要打开配置目录"的问题必须在**父进程**问（子进程没有能被看见的窗口，问就是老剧本）。
+- 打开图形程序一律**不带等待**（`Start-Process explorer.exe` 不加 `-Wait`；Unix 侧 `xdg-open &`）——
+  任何"等人点一下才继续"的窗口都会变成"脚本卡死"。
+- 没有图形界面（Linux 无 `DISPLAY`/`WAYLAND_DISPLAY`）、在 SSH 里（`SSH_CONNECTION`/`SSH_TTY`）、
+  stdin 不是终端（`curl | sh`、管道）、或 `SOL_INSTALL_ROOT` 沙箱里，一律**只报路径**，不问也不开。
+- 失效兜底：opener 起不来就打印目录，让用户自己开——不要让"打开失败"打断安装。
