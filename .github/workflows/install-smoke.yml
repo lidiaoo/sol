@@ -45,15 +45,14 @@ jobs:
           go-version: '1.26'
           cache: true
       - name: Build
-        run: go build -o /tmp/solbuild/sol .
+        run: go build -o build/sol .
       # 执行目录 = 脚本所在目录：这是用户最可能的用法（把脚本和 sol 放一起，就地跑）。
       # 端口用 >1024 的高端口：CI 机器上 10/11/12 可能被系统服务占着，而这一步要验的是脚本本身。
       - name: Prepare the directory the user would run this from
         working-directory: scripts
         run: |
           set -euo pipefail
-          mkdir -p /tmp/solbuild
-          cp /tmp/solbuild/sol ./sol
+          cp build/sol ./sol
           cat > sol.yaml <<'YAML'
           version: 1
           rules:
@@ -139,13 +138,12 @@ jobs:
           go-version: '1.26'
           cache: true
       - name: Build
-        run: go build -o /tmp/solbuild/sol .
+        run: go build -o build/sol .
       - name: Prepare the directory the user would run this from
         working-directory: scripts
         run: |
           set -euo pipefail
-          mkdir -p /tmp/solbuild
-          cp /tmp/solbuild/sol ./sol
+          cp build/sol ./sol
           cat > sol.yaml <<'YAML'
           version: 1
           rules:
