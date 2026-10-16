@@ -774,7 +774,7 @@ actions[].sign              可选（wol.send 用，§19.14）：把认证 tag �
 （`${VAR}` / `$VAR` 插值只在**数据**上生效：注释里写 `${VAR}` 不会变成必填变量，块标量正文照常插值）
 server.http.{enabled,listen,auth,tls}        控制面（§18 / §19.5）：auth.type = bearer|basic|mtls（默认 bearer，无 none）
 server.watch                可选，配置文件的轮询间隔（如 5s；空/0 = 关闭，最小 1s）；变了就自动 reload（§19.9），CLI `--watch` 优先
-server.http.auth.token_env / token_file      bearer 密钥来源（二选一；文件必须 600 权限）
+server.http.auth.token / token_env / token_file      bearer 密钥来源三选一：明文写在配置里（生成配置用的就是这个，随机生成）、环境变量的名字、600 权限的文件；多写即报错
 server.http.auth.user + password_env / password_file   basic 认证
 server.http.tls.{cert_file,key_file,client_ca_file}    TLS / mTLS（client_ca_file 用于 mtls）
 security.allow_remote_commands / allow_raw_shell / remote_command_ports / raw_shell_ports   远端命令（§21）

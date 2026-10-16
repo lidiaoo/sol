@@ -4,12 +4,17 @@ server:
   interfaces: []
   # 改这份文件后秒级自动生效（改坏了也不会顶掉正在跑的那份）。
   watch: 5s
-  # HTTP 控制面（默认关闭）：要用就把 enabled 改成 true，并给它一个令牌——令牌来自环境变量或
-  # 0600 文件，绝不写进这个文件。三端的设置办法与 curl 用法见 README 的 Control plane 一节。
+  # HTTP 控制面（默认开启）：令牌三选一——token 就直接写在下面、token_env 指环境变量、token_file 指
+  # 一个 0600 文件。三端的设置办法与 curl 用法见 README 的 Control plane 一节；不要控制面就把
+  # enabled 改成 false。
   http:
-    enabled: false
+    enabled: true
     listen: 127.0.0.1:8080
-    # auth: { type: bearer, token_env: SOL_TOKEN }
+    # 令牌只准写一个，多写会被拒绝。安装脚本生成的配置用的是第一种：它随机生成一串填在这里，
+    # 文件权限 0600（Windows 上只留 SYSTEM 与 Administrators）。下面这行是占位符，手写时换成自己的。
+    auth: { type: bearer, token: "<一段长随机串>" }
+    # auth: { type: bearer, token_env: SOL_TOKEN }        # 环境变量的名字，不是令牌本身
+    # auth: { type: bearer, token_file: /etc/sol/token }  # 0600 文件
 rules:
   - match: { ports: [11], content: { kind: none } }
     action: power.shutdown

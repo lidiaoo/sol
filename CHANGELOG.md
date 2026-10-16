@@ -37,6 +37,12 @@ tagged release.
   with `--default-action noop` for a listen-only port.
 - **Matching is strict by default.** A rule on a non-reserved port only fires on the payload
   content it names; a plain magic packet no longer matches a content rule.
+- **The generated configuration now enables the HTTP control plane.** The installer writes
+  `enabled: true` on `127.0.0.1:8080` with `auth: { type: bearer, token: <random> }` - a token it
+  generates once, into a `sol.yaml` that is 0600 on POSIX and SYSTEM plus Administrators only on
+  Windows - so a fresh install has a working control plane with no `SOL_TOKEN` to export. Set
+  `server.http.enabled: false` to keep the socket closed. A configuration with no `http` section
+  still defaults to off; this is the template, not the loader.
 
 ### Added
 
@@ -193,6 +199,9 @@ tagged release.
   `sol ifaces [--json]` to inspect the interface selection. A guarded action is logged, counted
   (`suppressed`, plus `rate_limited` for the bucket) and refused with 429 on the control plane.
 - **Sleep action** (`power.sleep`) and the `--default-action` flag.
+- **`server.http.auth.token`**: the bearer token may be written in the configuration itself,
+  alongside `token_env` (an environment variable) and `token_file` (a 0600 file). Exactly one of the
+  three may be named; naming several is refused at start-up instead of picking one silently.
 
 ### Fixed
 
@@ -224,8 +233,11 @@ tagged release.
 ### Security
 
 - Reserved ports 7/9 accept only `noop` and only a payload-free magic packet.
-- Secrets (HTTP tokens, the remote command HMAC key) come from environment variables or 0600
-  files; they are never read from the YAML body.
+- Secrets stay out of the YAML wherever they can: the remote command and raw shell HMAC keys are
+  read from environment variables or 0600 files only. The HTTP bearer token may instead be written
+  in the configuration (`auth.token`, which is what the installer generates - a random token in a
+  file whose permissions are tightened to match), because that is what lets a fresh install work
+  with nothing to export; exactly one source is accepted, and `token_file` still checks for 0600.
 - The control plane binds localhost by default and has no unauthenticated mode.
 - Exec commands run as argv without a shell unless `shell: true` is requested explicitly.
 - The raw shell channel is the one place that runs a shell: it is off by default, needs its own

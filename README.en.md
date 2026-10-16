@@ -15,8 +15,8 @@ A packet can reach it in three ways, and you can use any of them:
 
 - **UDP** - the magic packet itself, matched by port, by NIC, by source subnet, by content and by HMAC
   (what the LAN sends).
-- **HTTP** - the control plane, off by default, bound to `127.0.0.1` with a bearer token (what a script
-  or another machine sends).
+- **HTTP** - the control plane, on by default in the configuration the installer writes, bound to
+  `127.0.0.1` with a bearer token (what a script or another machine sends).
 - **Remote commands** - one or more forwarded UDP packets, off by default (what an `action` of yours
   can send back out).
 
@@ -39,7 +39,7 @@ it - nothing here is a dead end, and every one of them ends with a working servi
 | Try it first, without touching this machine's services | [Quick start](#quick-start) and [Trying it somewhere harmless](#trying-it-somewhere-harmless) | `sol listen` running by hand; `--dry-run` prints what it would do instead of doing it |
 | Run it with flags only, no configuration file | [Simple mode](#simple-mode-command-line) - `sol listen --port 10010 --iface eth0` | The same daemon, configured entirely on the command line |
 | Drive it from Home Assistant - notifications out, buttons and automations in | [Home Assistant](#home-assistant) - a webhook each way, and the privileged half stays in sol | Events in your dashboard, and a button that suspends or wakes a machine |
-| Fire actions from HTTP - scripts, dashboards, another host | [Control plane](#control-plane) - off by default, one field to switch on; the curl calls are [here](#turning-it-on-and-calling-it) | `POST /v1/actions/<name>` and friends, bound to `127.0.0.1`, with a bearer token |
+| Fire actions from HTTP - scripts, dashboards, another host | [Control plane](#control-plane) - on by default in the configuration the installer writes, token included; the curl calls are [here](#turning-it-on-and-calling-it) | `POST /v1/actions/<name>` and friends, bound to `127.0.0.1`, with a bearer token |
 | Match packets precisely: several ports, several NICs, content, custom actions | [Configuration file mode](#configuration-file-mode) | A `sol.yaml` that matches by port, NIC, source subnet, content and HMAC, and can run your own commands |
 | Build the binary, or produce the release packages yourself | [Build from source](#build-from-source) / [Building the release packages yourself](#building-the-release-packages-yourself) | `sol` for every platform, and a `dist/` archive ready to publish |
 
@@ -857,10 +857,15 @@ uncompilable allowlist entry is refused at start-up.
 mandatory authentication (`bearer` with `${SOL_TOKEN}`, `basic`, or `mtls`). It never binds a
 public address unless you ask for one, and there is no unauthenticated mode.
 
-The token itself comes from the environment (`export SOL_TOKEN=...`) or a 0600 file; it is never
-written in the YAML, and a reference to an unset variable fails the start-up rather than running
-with an empty secret. References inside comments are ignored, so commenting out an optional
-line — like the `secure_on` above — always leaves a loadable configuration.
+The token has three sources, and **only one may be named per configuration**: `token` writes the
+token itself into the configuration (that is what the installer generates, with a random token:
+0600 on Linux / macOS, and SYSTEM plus Administrators only on Windows), `token_env` names an
+environment variable, `token_file` names a 0600 file. Naming more than one is refused, so adding a
+new source while an old one lingers cannot silently pick the wrong key. `token` may itself hold
+`${SOL_TOKEN}`: the whole YAML goes through environment expansion before it is decoded, and a
+reference to an unset variable fails the start-up rather than running with an empty secret.
+References inside comments are ignored, so commenting out an optional line — like the `secure_on`
+above — always leaves a loadable configuration.
 
 Endpoints: `GET /healthz`, `GET /v1/status`, `GET /v1/rules`, `GET /v1/interfaces`,
 `GET /metrics`, `POST /v1/actions/{name}`, `POST /v1/commands/{id}`, `POST /v1/exec`, `POST /v1/reload`.
@@ -1011,9 +1016,10 @@ state.
 #### Turning it on and calling it
 
 Add the block below to the configuration the service reads (`/etc/sol/sol.yaml`, `~/.config/sol/sol.yaml`,
-or the `--config` path). The installer generates it too, with `enabled: false`, so you only have to flip
-the switch - but the token needs a source first: `token_env` names an environment variable, and writing
-the token itself there is the mistake that stops the start-up.
+or the `--config` path). The installer generates it too, with this section already on and the `token`
+already filled in (a random string, 0600 file), so it works as shipped - the block below is the
+hand-written equivalent. Note that `token_env` names an environment variable: writing the token itself
+there is the mistake that stops the start-up.
 
 ```yaml
 server:

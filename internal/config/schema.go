@@ -103,7 +103,11 @@ type httpConfig struct {
 }
 
 type authConfig struct {
-	Type         string `yaml:"type"`
+	Type string `yaml:"type"`
+	// Token is the token itself, for a config that carries one -- the installer writes a random
+	// one so a fresh install has a working control plane. TokenEnv and TokenFile are the two
+	// alternatives; exactly one of the three may be set.
+	Token        string `yaml:"token"`
 	TokenEnv     string `yaml:"token_env"`
 	TokenFile    string `yaml:"token_file"`
 	User         string `yaml:"user"`

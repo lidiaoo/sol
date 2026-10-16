@@ -80,13 +80,17 @@
                   ],
                   "description": "Authentication scheme; empty means bearer. There is no unauthenticated mode."
                 },
+                "token": {
+                  "type": "string",
+                  "description": "The bearer token itself (bearer only). The installer writes a random one here so a fresh install works; set exactly one of token, token_env and token_file."
+                },
                 "token_env": {
                   "type": "string",
-                  "description": "Environment variable holding the bearer token (bearer only)."
+                  "description": "Environment variable holding the bearer token (bearer only; alternative to token and token_file)."
                 },
                 "token_file": {
                   "type": "string",
-                  "description": "0600 file holding the bearer token (bearer only; alternative to token_env)."
+                  "description": "0600 file holding the bearer token (bearer only; alternative to token and token_env)."
                 },
                 "user": {
                   "type": "string",

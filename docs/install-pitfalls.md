@@ -82,6 +82,10 @@ Windows 安装「卡死」这件事，前后猜错了四次——UAC 框没弹�
 - 结论：Windows 上控制面令牌走 **`token_env`**（服务以 SYSTEM 运行，读到的是机器级变量，所以要用管理员
   `setx SOL_TOKEN "…" /M` 再重启任务）。`token_file` 只在 POSIX 上有意义；两份 README 都写了这一点，
   提示保持不变。
+- 补充（`auth.token` 之后）：安装脚本生成的配置**不需要**上面这套 setx——它把随机令牌直接写在
+  `auth.token` 里，Windows 上顺手用 icacls 去掉继承、只留 SYSTEM 与 Administrators（这也是唯一一种
+  在 Windows 上开箱可用的放法：另外两条路分别要求 POSIX 权限位或一个能读到机器级变量的服务环境）。
+  `token_env` 依然是想要「令牌不进文件」时的选择。
 - 已知代价：`internal/config` 的 `TestLoadSecretErrorsFilePermissions` 在 Windows 上必然失败（同一个
   原因），**不是回归**。这是刻意的取舍——不要为了「让这个测试变绿」去改那个检查。
 

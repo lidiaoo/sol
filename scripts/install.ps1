@@ -338,6 +338,27 @@ $RuntimeConfigGenerated = $false
 $RuntimeConfigCopied = $false
 # 任务注册后复核失败（台账要据此记 incomplete，不能像上次那样报成功）
 $script:ServiceVerifyFailed = $false
+
+# 控制面令牌：32 字节随机数的十六进制（64 个字符），和 Linux 那份生成的是同一种东西。
+function New-ControlToken {
+	$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+	$bytes = New-Object byte[] 32
+	$rng.GetBytes($bytes)
+	(($bytes | ForEach-Object { '{0:x2}' -f $_ }) -join '')
+}
+
+# 那份配置里有一个明文令牌，所以权限只留 SYSTEM 与 Administrators：ProgramData 默认让 Users 能读，
+# 那就等于本机任何用户都能拿这个令牌调控制面关机。只对安装目录里那份动手——自选路径是你自己的地盘，
+# 收紧了反而可能把你自己关在门外。用 SID 而不是名字：中文 Windows 上 "Administrators" 不叫这个名。
+function Set-RuntimeConfigAcl([string]$Path) {
+	if ($RunConfig -ne $ServiceConfig) { return }
+	if (-not $IsAdmin) { return }
+	$out = & icacls $Path /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' 2>&1
+	if ($LASTEXITCODE -ne 0) {
+		Warn2 "没能收紧 $Path 的权限：$($out -join ' ')（里面有明文令牌，建议手动只留 SYSTEM 与 Administrators）"
+	}
+}
+
 function Ensure-RuntimeConfig {
 	if (Test-Path $RunConfig) { return }
 	# 目标在安装目录里（ProgramData 要管理员）：没升权的这次别抢着建目录、也别谎报已生成，
@@ -350,6 +371,7 @@ function Ensure-RuntimeConfig {
 			Copy-Item -Path $DesktopConfig -Destination $RunConfig -Force -ErrorAction Stop
 			$script:RuntimeConfigCopied = $true
 		} else {
+			$token = New-ControlToken
 			$lines = @(
 				'# 纯包 -> 关机；magic+"reboot" -> 重启；magic+"sleep" -> 睡眠',
 				'version: 1',
@@ -357,12 +379,13 @@ function Ensure-RuntimeConfig {
 				'  interfaces: []',
 				'  # 改这份文件后秒级自动生效（改坏了也不会顶掉正在跑的那份）。',
 				'  watch: 5s',
-				'  # HTTP 控制面（默认关闭）：要用就把 enabled 改成 true，并给它一个令牌——令牌来自环境变量或',
-				'  # 0600 文件，绝不写进这个文件。三端的设置办法与 curl 用法见 README 的 Control plane 一节。',
+				'  # HTTP 控制面（默认开启）：令牌三选一——token 就直接写在下面（这里已经是随机生成的一串）、',
+				'  # token_env 指环境变量、token_file 指一个 0600 文件。三端的设置办法与 curl 用法见 README 的',
+				'  # Control plane 一节；不要控制面就把 enabled 改成 false。',
 				'  http:',
-				'    enabled: false',
+				'    enabled: true',
 				'    listen: 127.0.0.1:8080',
-				'    # auth: { type: bearer, token_env: SOL_TOKEN }',
+				"    auth: { type: bearer, token: $token }",
 				'rules:',
 				'  - match: { ports: [11], content: { kind: none } }',
 				'    action: power.shutdown',
@@ -378,6 +401,7 @@ function Ensure-RuntimeConfig {
 			)
 			Write-Utf8NoBom $RunConfig $lines
 		}
+		Set-RuntimeConfigAcl $RunConfig
 		$script:RuntimeConfigGenerated = $true
 	} catch {
 		Warn2 "没能把运行配置写到 $RunConfig：$_（升权后的那一步会再试一次）"

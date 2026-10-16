@@ -853,7 +853,7 @@ func buildPacketAuth(cfg packetAuthConfig) ([]byte, error) {
 		return nil, fmt.Errorf("%w: packet_auth.type must be %q", ErrPacketAuth, authTypeHMAC)
 	}
 
-	key, err := resolveSecret(cfg.KeyEnv, cfg.KeyFile, "packet_auth.key")
+	key, err := resolveSecret("", cfg.KeyEnv, cfg.KeyFile, "packet_auth.key")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrPacketAuth, err)
 	}
@@ -957,7 +957,7 @@ func buildRawShell(cfg securityConfig, remote RemoteCommands) (RawShell, error) 
 		return RawShell{}, fmt.Errorf("%w: raw_shell_auth.type must be %q", ErrRawShell, authTypeHMAC)
 	}
 
-	key, err := resolveSecret(cfg.RawShellAuth.KeyEnv, cfg.RawShellAuth.KeyFile, "raw_shell_auth.key")
+	key, err := resolveSecret("", cfg.RawShellAuth.KeyEnv, cfg.RawShellAuth.KeyFile, "raw_shell_auth.key")
 	if err != nil {
 		return RawShell{}, fmt.Errorf("%w: %w", ErrRawShell, err)
 	}
@@ -1079,7 +1079,7 @@ func buildRawShellExec(cfg securityConfig) (wol.ExecParams, error) {
 // remoteChannelKey resolves the command channel's HMAC key and its optional replay window. They
 // are read together because a window is meaningless without the key it binds (§21.3).
 func remoteChannelKey(cfg securityConfig) (string, time.Duration, error) {
-	key, err := resolveSecret(cfg.RemoteCommandAuth.KeyEnv, cfg.RemoteCommandAuth.KeyFile, "remote_command_auth.key")
+	key, err := resolveSecret("", cfg.RemoteCommandAuth.KeyEnv, cfg.RemoteCommandAuth.KeyFile, "remote_command_auth.key")
 	if err != nil {
 		return "", 0, fmt.Errorf("%w: %w", ErrRemoteAuth, err)
 	}
@@ -1558,7 +1558,7 @@ func buildHTTP(cfg httpConfig) (HTTP, error) {
 func resolveHTTPAuth(out *HTTP, cfg authConfig) error {
 	switch out.AuthType {
 	case authTypeBearer:
-		token, err := resolveSecret(cfg.TokenEnv, cfg.TokenFile, "token")
+		token, err := resolveSecret(cfg.Token, cfg.TokenEnv, cfg.TokenFile, "token")
 		if err != nil {
 			return err
 		}
@@ -1569,7 +1569,7 @@ func resolveHTTPAuth(out *HTTP, cfg authConfig) error {
 			return ErrHTTPUser
 		}
 
-		password, err := resolveSecret(cfg.PasswordEnv, cfg.PasswordFile, "password")
+		password, err := resolveSecret("", cfg.PasswordEnv, cfg.PasswordFile, "password")
 		if err != nil {
 			return err
 		}
@@ -1586,22 +1586,45 @@ func resolveHTTPAuth(out *HTTP, cfg authConfig) error {
 	return nil
 }
 
-// resolveSecret reads a secret from an environment variable or a 0600 file; never from YAML.
-func resolveSecret(envName string, fileName string, label string) (string, error) {
+// resolveSecret reads a secret from exactly one of three sources: the value written in the
+// configuration file itself, an environment variable, or a 0600 file. The first is what a
+// generated configuration uses; the other two are how a secret stays out of the file. Naming
+// more than one is an error rather than a precedence order, so a source left behind while
+// another is added cannot win silently.
+func resolveSecret(value string, envName string, fileName string, label string) (string, error) {
+	sources := make([]string, 0, 3)
+
+	if value != "" {
+		sources = append(sources, "the value")
+	}
+
+	if envName != "" {
+		sources = append(sources, "the environment variable")
+	}
+
+	if fileName != "" {
+		sources = append(sources, "the file")
+	}
+
+	if len(sources) > 1 {
+		return "", fmt.Errorf("%w: %s: more than one source is configured (%s), keep exactly one",
+			ErrSecret, label, strings.Join(sources, ", "))
+	}
+
 	switch {
-	case envName != "" && fileName != "":
-		return "", fmt.Errorf("%w: %s: set the env variable or the file, not both", ErrSecret, label)
+	case value != "":
+		return value, nil
 	case envName != "":
-		value := os.Getenv(envName)
-		if value == "" {
+		fromEnv := os.Getenv(envName)
+		if fromEnv == "" {
 			return "", fmt.Errorf("%w: %s: environment variable %s is empty", ErrSecret, label, envName)
 		}
 
-		return value, nil
+		return fromEnv, nil
 	case fileName != "":
 		return readSecretFile(fileName, label)
 	default:
-		return "", fmt.Errorf("%w: %s: no environment variable or file configured", ErrSecret, label)
+		return "", fmt.Errorf("%w: %s: no value, environment variable or file configured", ErrSecret, label)
 	}
 }
 

@@ -506,22 +506,40 @@ done
 # sol.yaml：一份开箱即用的配置（纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠）。
 # 没有才写，绝不覆盖。
 RUNTIME_CONFIG_GENERATED=no
+
+# 控制面令牌：32 字节随机数的十六进制（64 个字符）。openssl 最省事，没有就退回 /dev/urandom。
+# 两条路都得真拿到随机数——都失败时宁可在这里停下来，也不写一份空令牌的配置让服务起不来。
+new_control_token() {
+	token=""
+	if command -v openssl >/dev/null 2>&1; then
+		token=$(openssl rand -hex 32)
+	elif [ -r /dev/urandom ] && command -v od >/dev/null 2>&1; then
+		token=$(od -An -tx1 -N 32 /dev/urandom | tr -d ' \n')
+	fi
+	[ -n "$token" ] || die "生成控制面令牌失败：这台机器上既没有 openssl，也读不到 /dev/urandom。"
+	printf '%s' "$token"
+}
+
 ensure_runtime_config() {
 	[ -f "$RUN_CONFIG" ] && return 0
+	# 这份配置里有一个**明文令牌**（下面随机生成，服务拿它守住控制面），所以文件写完就是
+	# 0600：别的本地用户读不到它，也就调不动这里的关机/重启。
+	CONTROL_TOKEN=$(new_control_token)
 	runtime_tmp=$(mktemp)
-	cat >"$runtime_tmp" <<'YAML'
+	cat >"$runtime_tmp" <<YAML
 # 纯包 -> 关机；magic+"reboot" -> 重启；magic+"sleep" -> 睡眠
 version: 1
 server:
   interfaces: []
   # 改这份文件后秒级自动生效（改坏了也不会顶掉正在跑的那份）。
   watch: 5s
-  # HTTP 控制面（默认关闭）：要用就把 enabled 改成 true，并给它一个令牌——令牌来自环境变量或
-  # 0600 文件，绝不写进这个文件。三端的设置办法与 curl 用法见 README 的 Control plane 一节。
+  # HTTP 控制面（默认开启）：令牌三选一——token 就直接写在下面（这里已经是随机生成的一串）、
+  # token_env 指环境变量、token_file 指一个 0600 文件。三端的设置办法与 curl 用法见 README 的
+  # Control plane 一节；不要控制面就把 enabled 改成 false。
   http:
-    enabled: false
+    enabled: true
     listen: 127.0.0.1:8080
-    # auth: { type: bearer, token_env: SOL_TOKEN }
+    auth: { type: bearer, token: ${CONTROL_TOKEN} }
 rules:
   - match: { ports: [11], content: { kind: none } }
     action: power.shutdown
@@ -536,7 +554,7 @@ security:
   cooldowns: { power.sleep: 5s, power.shutdown: 5s, power.reboot: 5s }
 YAML
 	mkdir_root "$(dirname "$RUN_CONFIG")"
-	put_root "$runtime_tmp" "$RUN_CONFIG" 0644
+	put_root "$runtime_tmp" "$RUN_CONFIG" 0600
 	rm -f "$runtime_tmp"
 	RUNTIME_CONFIG_GENERATED=yes
 }

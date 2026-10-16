@@ -12,7 +12,7 @@ SoL 是一个监听 Wake-on-LAN 魔法包的服务：当收到的包命中配置
 包可以用三种方式找到它，任选其一都能用：
 
 - **UDP** —— 魔法包本身：按端口、按网卡、按来源网段、按包内容、按 HMAC 匹配（局域网里发过来的那种）。
-- **HTTP** —— 控制面，默认关闭，只绑 `127.0.0.1` 并强制令牌（脚本或另一台机器发过来的那种）。
+- **HTTP** —— 控制面，安装脚本生成的配置里默认就开着，只绑 `127.0.0.1` 并强制令牌（脚本或另一台机器发过来的那种）。
 - **远程命令** —— 转发一个或多个 UDP 包，默认关闭（你的某个 action 往外发的那种）。
 
 只想先看它动一下，两分钟：
@@ -33,7 +33,7 @@ SoL 是一个监听 Wake-on-LAN 魔法包的服务：当收到的包命中配置
 | 先试一下，不动这台机器的服务 | [Quick start](#quick-start) 与 [Installation](#installation) | 手工跑着的 `sol listen`；`--dry-run` 只打印它打算做什么，不动手 |
 | 只用命令行参数跑，不要配置文件 | [Simple mode](#simple-mode-command-line) —— `sol listen --port 10010 --iface eth0` | 同一个守护进程，全靠命令行配置 |
 | 用 Home Assistant 驱动它——事件推出去、按钮自动化接进来 | [Home Assistant](#home-assistant) —— 两个方向各一个 webhook，需要特权的那半留在 sol 里 | 面板里能看到事件，一个按钮就能让某台机器睡眠或唤醒 |
-| 用 HTTP 触发动作——脚本、面板、另一台机器 | [Control plane](#control-plane) —— 默认关着，改一个字段就能开；curl 调用在[那一节](#control-plane)里 | `POST /v1/actions/<name>` 等端点，只绑 `127.0.0.1`，带令牌 |
+| 用 HTTP 触发动作——脚本、面板、另一台机器 | [Control plane](#control-plane) —— 安装脚本生成的配置里默认开着，令牌也生成好了；curl 调用在[那一节](#control-plane)里 | `POST /v1/actions/<name>` 等端点，只绑 `127.0.0.1`，带令牌 |
 | 要精确匹配：多个端口、多张网卡、包内容、自定义动作 | [Configuration file mode](#configuration-file-mode) | 一份按端口、网卡、来源网段、包内容、HMAC 匹配的 `sol.yaml`，还能跑你自己的命令 |
 | 自己编译，或自己出发布包 | [Build from source](#build-from-source) / [Installation](#installation) | 各平台的 `sol`，以及可以直接发布的 `dist/` 包 |
 
@@ -796,9 +796,12 @@ curl -X POST -H "Authorization: Bearer $SOL_TOKEN" -H 'Content-Type: application
 （`bearer` 配 `${SOL_TOKEN}`、`basic`，或 `mtls`）。除非你明确要求，它不会绑公网地址，也没有
 无认证模式。
 
-token 本身来自环境变量（`export SOL_TOKEN=...`）或 0600 权限的文件；它不写进 YAML，引用一个
-未设置的变量会让启动失败，而不是拿着空密钥跑起来。注释里的引用会被忽略，所以把某个可选行注释掉
-——比如上面的 `secure_on`——配置照样能加载。
+令牌有三个来源，**一份配置里只准写一个**：`token` 把令牌直接写在配置里（安装脚本生成的那份就是
+这样，令牌是它随机生成的：Linux / macOS 上文件 0600、Windows 上只留 SYSTEM 与 Administrators）、
+`token_env` 指一个环境变量的名字、`token_file` 指一个 0600 权限的文件。写了两个以上会被拒绝，
+所以不会出现"加了新来源、旧的还留着"却悄悄用错钥匙的事。`token` 里也可以写 `${SOL_TOKEN}`：整份
+YAML 在载入前会做一遍环境变量展开，引用一个未设置的变量会让启动失败，而不是拿着空密钥跑起来。
+注释里的引用会被忽略，所以把某个可选行注释掉——比如上面的 `secure_on`——配置照样能加载。
 
 端点：`GET /healthz`、`GET /v1/status`、`GET /v1/rules`、`GET /v1/interfaces`、`GET /metrics`、
 `POST /v1/actions/{name}`、`POST /v1/commands/{id}`、`POST /v1/exec`、`POST /v1/reload`。
@@ -942,9 +945,9 @@ body 格式不对回 `400 {"error":"invalid request body: ..."}`。
 #### 打开它并用 curl 调用
 
 把下面这段加进**服务实际读的那份配置**（`/etc/sol/sol.yaml`、`~/.config/sol/sol.yaml`，或 `--config`
-指定的路径）。安装脚本生成的默认配置里**已经有这一节，只是 `enabled: false`**，所以只需要打开开关——
-但得先给令牌找一个来源：`token_env` 填的是**环境变量的名字**，把令牌本身写在那儿就是那个会让启动失败的
-错误。
+指定的路径）。**安装脚本生成的配置里这一节已经开着**，`token` 也填好了（随机一串，文件 0600），
+装完就能直接调——下面这段只是自己手写时的等价写法。注意 `token_env` 填的是**环境变量的名字**，
+把令牌本身写在那儿就是那个会让启动失败的错误。
 
 ```yaml
 server:

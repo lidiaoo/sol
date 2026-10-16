@@ -441,6 +441,28 @@ rules:
 	require.Equal(t, "tok-from-env", cfg.HTTP.Token)
 }
 
+// A generated configuration carries the token itself: no environment variable to export, no file
+// to chmod. It is still exactly one source, and the token reaches the server unchanged.
+func TestLoadHTTPTokenLiteral(t *testing.T) {
+	t.Setenv("SOL_TEST_TOKEN", "ignored-when-the-value-is-set")
+
+	cfg, err := Load(writeConfig(t, `
+version: 1
+server:
+  http:
+    enabled: true
+    listen: 127.0.0.1:8080
+    auth: { type: bearer, token: 9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f }
+rules:
+  - { match: { ports: [8] }, action: noop }
+`))
+
+	require.NoError(t, err)
+	require.True(t, cfg.HTTP.Enabled)
+	require.Equal(t, AuthTypeBearer, cfg.HTTP.AuthType)
+	require.Equal(t, "9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f", cfg.HTTP.Token)
+}
+
 func TestLoadHTTPDisabledByDefault(t *testing.T) {
 	cfg, err := Load(writeConfig(t, "version: 1\nrules:\n  - { match: { ports: [8] }, action: noop }\n"))
 	require.NoError(t, err)
@@ -534,6 +556,14 @@ func TestLoadHTTPErrors(t *testing.T) {
 		},
 		"env and file together": {
 			block: "    enabled: true\n    auth: { type: bearer, token_env: SOL_X, token_file: /tmp/x }\n",
+			match: ErrSecret,
+		},
+		"token and env together": {
+			block: "    enabled: true\n    auth: { type: bearer, token: tok, token_env: SOL_X }\n",
+			match: ErrSecret,
+		},
+		"token and file together": {
+			block: "    enabled: true\n    auth: { type: bearer, token: tok, token_file: /tmp/x }\n",
 			match: ErrSecret,
 		},
 		"basic without user": {
