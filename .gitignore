@@ -38,3 +38,9 @@ go.work
 
 # 发布产物（scripts/release.sh 的落点）
 /dist/
+
+# 编辑器与工作区数据：JetBrains 的 .idea/ 里大多是机器相关的文件（sol.iml、
+# workspace.xml.bak-goroot 之类，换台机器就变），.workbuddy/ 是本项目的记忆笔记。
+# 两者都不属于仓库内容。
+/.idea/
+/.workbuddy/
