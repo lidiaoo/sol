@@ -75,7 +75,7 @@ Windows 安装「卡死」这件事，前后猜错了四次——UAC 框没弹�
 
 ## 10. Windows 上 `token_file` 用不了（**决定：不修**，用 `token_env`）
 
-- 现象：`config C:\ProgramData\sol\sol.yaml: cannot resolve a configured secret: token: … must not be
+- 现象：`config C:\Users\you\sol\sol.yaml: cannot resolve a configured secret: token: … must not be
   group/other readable (chmod 600)` —— 哪怕 ACL 已经收得只剩 SYSTEM 和管理员。
 - 原因：那个检查读的是 POSIX 权限位（`readSecretFile` 里的 `Mode().Perm()&0o077`）；Windows 没有这套
   权限位，文件模式恒为「group/other 可读」，所以**必然失败**，与配置写得多干净无关。

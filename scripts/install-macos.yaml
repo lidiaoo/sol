@@ -1,6 +1,6 @@
 # sol 怎么跑 —— macOS 安装配置
 #
-#   ~/.config/sol/install.yaml
+#   ~/sol/install.yaml
 #
 # 这份是安装脚本写给你的初稿，装完之后你自己改；改完不用重装，重启一下服务就生效：
 #
