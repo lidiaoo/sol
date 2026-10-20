@@ -82,7 +82,8 @@
                 },
                 "token": {
                   "type": "string",
-                  "description": "The bearer token itself (bearer only). The installer writes a random one here so a fresh install works; set exactly one of token, token_env and token_file."
+                  "description": "The bearer token itself (bearer only). The installer writes a random one here so a fresh install works; set exactly one of token, token_env and token_file.",
+                  "minLength": 1
                 },
                 "token_env": {
                   "type": "string",

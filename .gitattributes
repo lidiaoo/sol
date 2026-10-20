@@ -1,0 +1,46 @@
+# 行尾：按"这个文件要在哪个系统上被谁执行"来定，不交给 core.autocrlf 的全局猜测。
+#
+# 为什么要这张表：仓库在 Windows 上签出时 core.autocrlf=true 会把一切都变 CRLF，
+# 打进包里的 install.sh 到了 Linux/macOS 就是 `$'\r': command not found`，连第一行都跑不过去。
+# 光靠打包时 tr -d '\r' 只能补救 release.sh 那条路，goreleaser 是按 files: 原样搬的，救不到。
+
+# POSIX shell：必须 LF（shebang 那行也带着 CR 的话内核直接认不出解释器）。
+*.sh text eol=lf
+# 仓库里没有扩展名的可执行脚本，按同样规矩。
+scripts/sol* text eol=lf
+
+# Windows 脚本：保持 CRLF。install.ps1 尤其重要——它含中文且必须带 BOM（见文件本身），
+# CRLF 是 Windows 上的惯例写法，双击 / cmd 调用都最省事。
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 其余文本用 LF，二进制不碰。
+*.go text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.exe binary
+*.zip binary
+*.gz binary
+
+# 注意：install.ps1 **必须带 UTF-8 BOM**（Windows PowerShell 5.1 无 BOM 时按系统代码页读 .ps1，
+# 中文全变乱码、引号错位，整份脚本报语法错）。git 不会剥 BOM，但编辑器和"另存为"会——
+# 改完这个文件请确认前三字节仍是 EF BB BF：
+#   Install.ps1 每次被重写（含 agent 的 edit/write 工具）都要复核一遍，已经踩过两次。
+
+# ─────────── 随包发布的脚本与模板（三端各一份，别漏） ───────────
+# install.sh            POSIX shell 安装脚本（LF）
+# install.ps1           Windows 安装脚本（CRLF + BOM）
+# install.cmd           Windows 双击入口（CRLF）
+# install-linux.yaml    Linux 的安装配置模板（LF）
+# install-macos.yaml    macOS 的安装配置模板（LF）
+# install-windows.yaml  Windows 的安装配置模板（LF）
+# sol.yaml              三端共用的运行配置模板（LF，安装时拷成 ~/sol/sol.yaml 并换随机令牌）
+# release.sh            本地打包脚本（LF）
+# 这些文件各自的行尾规则已在上面的通配里覆盖；这张清单是给 review 用的检查表。
+

@@ -23,6 +23,12 @@ builds:
       # writes into dist/ while building.
       - -X github.com/lidiaoo/sol/internal/buildinfo.dirty=false
 
+# 安装配置模板三个平台各一份、各自维护；安装脚本只读自己那平台的 install-<平台>.yaml。
+#
+# 说明：goreleaser 的 archives[].files 不能按 goos 过滤（Archive 结构体没有 goos 字段，File 也没有
+# 条件字段），所以这边把三份都打进每个包，各自的文件名不冲突，脚本只取自己那份——多带两份模板
+# 几 KB，比按平台拆 archive 再靠 goos 过滤可靠。真正"各平台各带一份"的构建走 scripts/release.sh，
+# 那里有 goos 变量，按平台只拷一份。
 archives:
   - id: sol
     formats: [tar.gz]
@@ -38,6 +44,12 @@ archives:
       - scripts/install.sh
       - scripts/install.ps1
       - scripts/install.cmd
+      # 三个平台的安装配置模板（脚本按 OS 取自己那份）
+      - scripts/install-linux.yaml
+      - scripts/install-macos.yaml
+      - scripts/install-windows.yaml
+      # 运行配置模板（~/sol/sol.yaml）：包里带上，脚本直接拿它生成。
+      - scripts/sol.yaml
       - example/sol-example.yaml
       - schema/sol.schema.json
       # 技能目录（Hermes 的 sol-install）：README 指向它，包里也带上，跟本地脚本保持一致
@@ -45,7 +57,6 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-
 checksum:
   name_template: checksums.txt
 

@@ -1,0 +1,17 @@
+# sol 怎么跑 —— Linux 安装配置
+#
+#   ~/.config/sol/install.yaml
+#
+# 这份是安装脚本写给你的初稿，装完之后你自己改；改完不用重装，重启一下服务就生效：
+#
+#   systemctl --user restart sol
+#
+# 安装脚本只在文件**不存在**时才写这一份，已存在的一律不覆盖——所以你的改动永远是安全的。
+# 想恢复成默认：删掉这个文件，重新跑一遍 install.sh。
+#
+# 只认下面这个 run.args 一行：第一个词必须是 listen，后面的参数原样交给 sol。
+# 支持的参数以 sol listen --help 为准（安装脚本会拿它对一遍，写错会当场报出来）。
+
+run:
+  # --config 指向运行配置（端口、令牌、客户端）。想换位置就改这里，改完重启服务。
+  args: [listen, --config, ~/sol/sol.yaml]

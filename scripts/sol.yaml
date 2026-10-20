@@ -1,0 +1,37 @@
+# sol 的运行配置（三端同样的一份）。
+# 安装脚本把它当作"开箱即用的模板"：~/sol/sol.yaml（Windows 是 %USERPROFILE%\sol\sol.yaml）
+# 还没有时才拷过去，已经存在就一个字都不动——你改过的令牌、规则不会被冲掉。
+#
+# 三处跟"拷过去的那份"不一样（安装时会就地补上）：
+#   interfaces: []        留空就是全部网卡；想只在自己那张网卡上收包就填名字（如 ["eth0"]）
+#   auth.token: TOKEN     占位符。安装时换成 32 字节随机数（等同于一个控制面密码）并把文件设成 0600；
+#                         这份模板原样手动跑会报 line … field token not found（占位符是空值）；要手动用就自己填一串。
+#   listen                默认只监听 127.0.0.1；要从别的机器调接口就改成 0.0.0.0:8080 并自己管好令牌
+#
+# 改完不用重启：watch 让它秒级生效，改坏了也不会顶掉正在跑的那份。
+
+# 纯包 -> 关机；magic+"reboot" -> 重启；magic+"sleep" -> 睡眠
+version: 1
+server:
+  interfaces: []
+  # 改这份文件后几秒内自动生效（0 或去掉这行 = 只在启动时读一次）
+  watch: 5s
+  # HTTP 控制面（默认开启）：令牌三选一——token 直接写在下面、token_env 指环境变量、
+  # token_file 指一个 0600 文件。三端的设置办法与 curl 用法见 README 的 Control plane 一节；
+  # 不要控制面就把 enabled 改成 false。
+  http:
+    enabled: true
+    listen: 127.0.0.1:8080
+    auth: { type: bearer, token: TOKEN }
+rules:
+  - match: { ports: [11], content: { kind: none } }
+    action: power.shutdown
+  - match: { ports: [12], content: { kind: none } }
+    action: power.reboot
+  - match: { ports: [10], content: { kind: none } }
+    action: power.sleep
+# 重复包保护（默认就开着，可关）：电源动作各 5s 冷却；刚开机 / 刚唤醒 5s 内不执行电源动作。
+# 想关掉：settle 写 0、把对应动作写 0s。
+security:
+  settle: 5s
+  cooldowns: { power.sleep: 5s, power.shutdown: 5s, power.reboot: 5s }

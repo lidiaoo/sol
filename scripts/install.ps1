@@ -1,9 +1,10 @@
 ﻿# sol 安装脚本（Windows）—— 零参数。
 #
 # 与 scripts/install.sh 是同一份契约（docs/install-design.md）：认出现状 → 生成/读取"怎么跑"的
-# 配置（执行目录下的 install.yaml，里面只有 run.args；同目录再生成一份最小 sol.yaml）→ 展示 → 问一句 → 才动手。
+# 配置（用户目录 %USERPROFILE%\sol\install.yaml，里面只有 run.args；同目录再生成一份 sol.yaml）→ 展示 → 问一句 → 才动手。
 #
 #   powershell -ExecutionPolicy Bypass -File install.ps1     或双击 install.cmd
+#   文件必须是 **UTF-8 带 BOM**：powershell.exe 5.1 会把不带 BOM 的脚本按 ANSI(GBK) 读，中文全乱码。
 #   没有终端（管道喂答案）时只生成配置，不执行任何操作
 #
 # ⚠ 证据强度：本机没有 Windows 实机，这份脚本**只做过构造级校验（逐行审查）**，未在真机上跑过。
@@ -23,22 +24,17 @@ param(
 	[string]$SolUnitName = '',
 	[string]$SolRoot = ''
 )
-
 # 环境变量（都有默认值；测试与多实例用）：
 #   SOL_INSTALL_ROOT  把落点挂到另一个目录下（默认 C:\ProgramData）
 #   SOL_UNIT_NAME     计划任务名（默认 sol）
-
 $ErrorActionPreference = 'Stop'
-
 $Design = 'docs/install-design.md'
-
 # 子进程的窗口可能根本不在用户眼前（真机上就是"蓝窗口一片空白"）。所以子进程每说一句都顺手追加
 # 进一个**行式**进度文件：父进程在等它的同时把新行念出来，用户在眼前这个窗口里就能看见它走到哪一步。
 function Note-Progress($msg) {
 	if (-not $script:ProgressFile) { return }
 	try { Add-Content -Path $script:ProgressFile -Value ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $msg) -Encoding UTF8 -ErrorAction Stop } catch { }
 }
-
 function Say($msg) { Note-Progress $msg; Write-Host $msg }
 function Head2($msg) { Write-Host ""; Write-Host $msg -ForegroundColor White }
 function Warn2($msg) { Note-Progress "警告: $msg"; Write-Warning $msg }
@@ -54,33 +50,18 @@ function Add-Utf8NoBom([string]$Path, [string]$Text) {
 	$enc = New-Object System.Text.UTF8Encoding($false)
 	[IO.File]::AppendAllText($Path, $Text, $enc)
 }
-
 # ───────────────────────── 平台与路径 ─────────────────────────
-
-if ($env:SOL_INSTALL_ROOT) { $Root = $env:SOL_INSTALL_ROOT } else { $Root = 'C:\ProgramData' }
-if ($env:SOL_UNIT_NAME) { $TaskName = $env:SOL_UNIT_NAME } else { $TaskName = 'sol' }
-
-$InstallDir = Join-Path $Root 'sol'
-$DestBin = Join-Path $InstallDir 'sol.exe'
-# 服务认的那份运行配置跟 sol.exe 放在一起（安装目录）：任务以 SYSTEM 开机就跑，
-# 配置不该依赖某个可能被挪走、删掉的项目目录。
-$ServiceConfig = Join-Path $InstallDir 'sol.yaml'
-$Ledger = Join-Path $InstallDir 'install.json'
-$History = Join-Path $InstallDir 'install.log'
-# sol 的输出。计划任务以 SYSTEM 跑，stdout/stderr 本来没人接——所以任务跑的是我们写的包装脚本
-# run-sol.cmd，由它把输出重定向到这里（Windows 的计划任务本身没有重定向能力）。
-$LogFile = Join-Path $InstallDir 'sol.log'
-# 早先的安装让计划任务跑一个 run-sol.cmd 包装脚本；现在任务直接跑 sol.exe，这个路径只用于清理旧残留。
-$TaskCmd = Join-Path $InstallDir 'run-sol.cmd'
-
-# install.yaml 放在**你执行脚本的那个目录**；运行配置 sol.yaml 放在**安装目录**里，跟 sol.exe 做伴。
-# 服务定义里用绝对路径，所以不踩"服务有自己的家目录"那个坑。
+# $Root / $TaskName / $InstallDir / $DestBin / $Ledger / $History / $LogFile / $TaskCmd 都定义在下面的
+# 参数解析之后——-SolRoot/--sol-root 要先读进来，才能决定它们落在哪儿。
+# 两份配置都落在**当前用户的目录**里，三端一个约定（Linux/macOS 是 ~/.config/sol/install.yaml
+# 与 ~/sol/sol.yaml，Windows 是 %USERPROFILE%\sol\ 下这两个文件）：不需要管理员权限就能生成、
+# 查看、修改，也不随"你在哪个目录运行脚本"漂移（早先按执行目录走，在下载目录里跑一次就会多出一份）。
+# 服务定义里用的是绝对路径，所以不踩"服务有自己的家目录"那个坑——计划任务以 SYSTEM 跑，家目录是 system32。
 # 内部参数（UAC 升权重跑时把答案带过来；用户不需要、也不应该记这些）。
 # 为什么不用环境变量：Start-Process -Verb RunAs 经过 shell 提权，环境不保证原样继承。
 # 脚本是文件还是喂进来的（`irm … | iex`）：后者没有 $PSCommandPath，
 # 也就没法用 UAC 重跑自己——那种情况下要明说，而不是装到一半失败。
 $Piped = [string]::IsNullOrEmpty($PSCommandPath)
-
 $ActionArg = $SolAction
 $ServiceArg = $SolService
 $RunDirArg = $SolRunDir
@@ -94,19 +75,52 @@ foreach ($a in $args) {
 	elseif ($a -like '--sol-root=*') { $env:SOL_INSTALL_ROOT = $a -replace '^--sol-root=', '' }
 	else { Die "这个脚本不接受参数（$a）。所有选择都在生成的配置文件和问答里。" }
 }
-
-if ($RunDirArg) { $RunDir = $RunDirArg } else { $RunDir = (Get-Location).Path }
-$UserConfig = Join-Path $RunDir 'install.yaml'
-$DesktopConfig = Join-Path $RunDir 'sol.yaml'
-
-try {
-	$probe = Join-Path $RunDir '.sol-write-probe'
-	Set-Content -Path $probe -Value 'x' -ErrorAction Stop
-	Remove-Item $probe -Force
-} catch {
-	Die "在这个目录里写不了文件：$UserConfig 与 $DesktopConfig 要生成在这儿。换一个你有写权限的目录再跑一次。"
+# 参数解析完才定根目录与任务名（-SolRoot/--sol-root 要能改掉它们）。
+if ($env:SOL_INSTALL_ROOT) { $Root = $env:SOL_INSTALL_ROOT } else { $Root = 'C:\ProgramData' }
+if ($env:SOL_UNIT_NAME) { $TaskName = $env:SOL_UNIT_NAME } else { $TaskName = 'sol' }
+$InstallDir = Join-Path $Root 'sol'
+$DestBin = Join-Path $InstallDir 'sol.exe'
+$Ledger = Join-Path $InstallDir 'install.json'
+$History = Join-Path $InstallDir 'install.log'
+$LogFile = Join-Path $InstallDir 'sol.log'
+$TaskCmd = Join-Path $InstallDir 'run-sol.cmd'
+# 用户名下那个目录：默认 %USERPROFILE%\sol；把落点挂到别的根（SOL_INSTALL_ROOT / --sol-root）时
+# 挂在 <根>\home\sol，沙箱与多实例测试不会碰到真实的家目录。
+if ($RunDirArg) {
+	$RunDir = $RunDirArg
+} elseif ($env:SOL_INSTALL_ROOT) {
+	$RunDir = Join-Path (Join-Path $Root 'home') 'sol'
+} else {
+	$RunDir = Join-Path $env:USERPROFILE 'sol'
 }
-
+$UserConfig = Join-Path $RunDir 'install.yaml'
+$RunConfig = Join-Path $RunDir 'sol.yaml'
+# 早先的安装把这两份文件放在**执行目录**里；这份只用于把老内容搬过来。
+$LegacyUserConfig = Join-Path (Get-Location).Path 'install.yaml'
+$LegacyDesktopConfig = Join-Path (Get-Location).Path 'sol.yaml'
+# 运行配置的模板：跟脚本放在一起的那份 sol.yaml（发布包里和 install.ps1 同目录，开发树里在 scripts/ 下）。
+# 它是三端共用的一份，注释最全；生成时会就地换成随机令牌。找不到就退回脚本里的内置模板。
+$ScriptDirHint = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $PSCommandPath }
+$TemplateConfig = ''
+foreach ($cand in @((Join-Path $ScriptDirHint 'sol.yaml'), (Join-Path $ScriptDirHint 'scripts\sol.yaml'))) {
+	if (Test-Path -LiteralPath $cand) { $TemplateConfig = $cand; break }
+}
+# 目录可能还不存在：能直接写就写，写不了再请管理员（计划任务以 SYSTEM 读这份配置，用户目录
+# 默认就是"自己读写、其他账户只读"，SYSTEM 读得到）。
+function Test-DirWritable([string]$Path) {
+	$d = $Path
+	while ($d -and -not (Test-Path $d)) { $d = Split-Path -Parent $d }
+	if (-not $d) { return $false }
+	try {
+		$probe = Join-Path $d '.sol-write-probe'
+		Set-Content -Path $probe -Value 'x' -ErrorAction Stop
+		Remove-Item $probe -Force
+		return $true
+	} catch { return $false }
+}
+if (-not (Test-DirWritable $RunDir)) {
+	Die "在这个目录里写不了文件：$UserConfig 与 $RunConfig 要生成在这儿。如果这个目录属于别的账户，用管理员身份再跑一次。"
+}
 $script:Child = $false
 $IsAdmin = $false
 try {
@@ -115,7 +129,6 @@ try {
 	# 极少数环境里这个探测本身会抛（受限容器、非 Windows 的 pwsh）。别让它把整个脚本带走。
 	$IsAdmin = $false
 }
-
 # Windows 上正在运行的 exe 覆盖不了、也删不掉；进程刚被杀掉时文件锁还要一小会儿才松
 # （报错是 "Text file busy" 或 access denied）。这类事就重试，而不是赌一次就成功。
 function Invoke-WithRetry($what, $scriptBlock, $tries = 10, $delayMs = 500) {
@@ -130,14 +143,11 @@ function Invoke-WithRetry($what, $scriptBlock, $tries = 10, $delayMs = 500) {
 	}
 	return $false
 }
-
 function Has-Sha256($path) {
 	if (-not (Test-Path $path)) { return '' }
 	(Get-FileHash -Algorithm SHA256 -Path $path).Hash.ToLower()
 }
-
 # ───────────────────────── 认出现状 ─────────────────────────
-
 $ScriptDir = $PSScriptRoot
 $candidates = @(
 	(Join-Path $ScriptDir 'sol.exe'),
@@ -149,25 +159,21 @@ if (-not $LocalBin) {
 	$cmd = Get-Command sol.exe -ErrorAction SilentlyContinue
 	if ($cmd) { $LocalBin = $cmd.Source }
 }
-
 $PathSols = @()
 foreach ($d in ($env:PATH -split ';')) {
 	if (-not $d) { continue }
 	$p = Join-Path $d 'sol.exe'
 	if (Test-Path $p) { $PathSols += $p }
 }
-
 function Binary-Version($path) {
 	if (-not $path -or -not (Test-Path $path)) { return '' }
 	try { ((& $path --version) 2>$null | Select-Object -First 1) } catch { '' }
 }
-
 $LedgerExists = Test-Path $Ledger
 $LedgerJson = $null
 if ($LedgerExists) {
 	try { $LedgerJson = Get-Content -Raw -Encoding UTF8 $Ledger | ConvertFrom-Json } catch { $LedgerJson = $null }
 }
-
 # 原生命令（schtasks 之类）往 stderr 写东西时，$ErrorActionPreference='Stop' 会把它当成终止错误——
 # 既看不到真实报错，还会把流程带走（真机上就是这样把 /Create 的失败变成了 TerminatingError）。
 # 这里临时放宽，并把输出与退出码一起拿回来。
@@ -186,7 +192,6 @@ function Invoke-Native([string]$Exe, [string[]]$Argv) {
 		$ErrorActionPreference = $old
 	}
 }
-
 # 我们自己那份 sol.exe 现在有几个进程在跑（返回 pid 列表）。只认可执行文件路径就是它的：
 # 名字叫 sol.exe 的别人的进程与它无关（卸载时乱杀同名进程是另一种事故）。
 #
@@ -207,7 +212,6 @@ function Get-RunningSolIds($path) {
 	}
 	@($ids)
 }
-
 # 为什么停：① 卸载要删这个 exe，进程活着文件删不掉（Windows 的文件锁）；② 更要紧的是它一直
 # 占着 UDP 端口，下一次安装的预检绑不上，看起来就是"端口占用"。
 function Stop-RunningInstances($path, $why) {
@@ -230,7 +234,6 @@ function Stop-RunningInstances($path, $why) {
 	}
 	Start-Sleep -Milliseconds 500
 }
-
 # 预检失败时把刚才停掉的任务按原样起回来（任务定义/配置/二进制都还没动过）。
 # SOL_INSTALL_ROOT 下不碰本机计划任务（那是别人的地盘）。
 function Restore-SolTask {
@@ -239,13 +242,11 @@ function Restore-SolTask {
 	$r = Invoke-Native 'schtasks' @('/Run', '/TN', $TaskName)
 	if ($r.Code -eq 0) { Act 'admin' '把刚才停掉的任务起回来' "schtasks /Run /TN $TaskName" }
 }
-
 # v0.0.0-…（去掉 "sol version" 前缀与后面的 sha 括注）：给用户看的版本，不夹带内部串。
 function Version-Tag($path) {
 	if (-not $path) { return '' }
 	((Binary-Version $path) -replace '^.*version ', '') -replace ' .*$', ''
 }
-
 # 我们那个计划任务对象（找到就返回它，顺便能读"操作"那一栏）。找不到返回 $null。
 #
 # 为什么不用 `schtasks /Query /TN sol` 判存在：真机上任务不在时它回的是"拒绝访问"（退出码 1），
@@ -267,7 +268,6 @@ function Get-OurTask {
 	}
 	return $null
 }
-
 # 三态：'installed' / 'absent' / 'unknown'。连任务列表都读不到时宁可说"看不清"，
 # 也别把"没权限看"说成"没有"——那会让人得出"任务被删了"的错误结论。
 function Task-State {
@@ -285,25 +285,81 @@ function Task-State {
 	if (Get-OurTask) { return 'installed' }
 	return 'absent'
 }
-
 # ───────────────────────── 安装配置（只有 run.args）─────────────────────────
-
-$DefaultArgs = @('listen', '--config', $ServiceConfig)
-
-function Write-UserConfig {
-	$dir = Split-Path -Parent $UserConfig
+$DefaultArgs = @('listen', '--config', $RunConfig)
+# 原样拷贝（不重写）一份文件；CJK 路径走 -LiteralPath。
+function Copy-ConfigFile([string]$From, [string]$To) {
+	$dir = Split-Path -Parent $To
 	if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-	# 先在数组外拼好这一行：数组字面量里的字符串拼接会被 PowerShell 拆成多个元素，
-	# 结果 install.yaml 被写成好几行（`args: []` 一行、参数一行、`]` 一行），脚本自己都读不懂。
-	$argsLine = '  args: [' + ($DefaultArgs -join ', ') + ']'
-	$lines = @(
-		'# 由 install.ps1 生成：sol 怎么跑。改这里，然后重新运行一遍脚本。',
-		'run:',
-		$argsLine
-	)
-	Write-Utf8NoBom $UserConfig $lines
+	Copy-Item -LiteralPath $From -Destination $To -Force -ErrorAction Stop
 }
-
+# 从一个 YAML 文件里读 run.args（只认本脚本这种写法：一行 args: [a, b, c]）。模板和用户配置
+# 共用它——两边的写法是同一套，不存在"解析模板一套、解析用户另一套"的可能。
+# 每个 token 去掉外面的单/双引号，再展开 %VAR%（模板里用 %USERPROFILE% 写路径，换台机器也能用）。
+function Convert-ArgsOf([string]$Path) {
+	$out = @()
+	# 注意：调用处必须 @(...) 包一层——PowerShell 会把单元素数组拆成标量。
+	foreach ($line in (Get-Content -LiteralPath $Path -Encoding UTF8)) {
+		if ($line -match '^\s*args:\s*(.*)$') {
+			$val = $Matches[1].Trim().Trim('[', ']')
+			foreach ($tok in ($val -split ',')) {
+				$t = $tok.Trim()
+				$t = $t -replace '^["'']', '' -replace '["'']$', ''
+				$t = [Environment]::ExpandEnvironmentVariables($t)
+				if ($t) { $out += $t }
+			}
+		}
+	}
+	$out
+}
+# 本平台的安装配置模板：随包带的那一份（发布包里和 install.ps1 同目录，开发树里在 scripts/ 下）。
+# 三个平台各一份、各自维护，脚本只读自己那平台的。
+$InstallTemplate = Join-Path $PSScriptRoot 'install-windows.yaml'
+if (-not (Test-Path -LiteralPath $InstallTemplate)) {
+	$alt = Join-Path $PSScriptRoot 'scripts\install-windows.yaml'
+	if (Test-Path -LiteralPath $alt) { $InstallTemplate = $alt }
+}
+if (-not (Test-Path -LiteralPath $InstallTemplate)) {
+	Die "找不到 Windows 安装配置模板 install-windows.yaml（应该跟 install.ps1 放在一起）。重新下载一份发布包再装。"
+}
+# 模板里的 args 一行是 YAML 流式列表，带引号；解析它和解析用户那份必须是同一套规则，所以共用
+# Convert-ArgsOf——模板和用户配置的写法是同一套，没有第二套。模板解析不出来，或 args 跟本脚本
+# 算出来的默认值对不上，都算坏包，当场报出来而不是写一份错的配置。
+#
+# 比的是**标准落点**（%USERPROFILE%\sol\sol.yaml），不是 $DefaultArgs：$RunConfig 会被
+# -SolRunDir / -SolRoot 改掉（沙箱、多实例测试），而模板永远写着标准落点。拿被改过的值去比，
+# 只要换个目录就会把好包说成"坏包"。
+$CanonicalRunConfig = Join-Path (Join-Path $env:USERPROFILE 'sol') 'sol.yaml'
+$TemplateArgs = @(Convert-ArgsOf $InstallTemplate)
+if (($TemplateArgs -join ' ') -ne "listen --config $CanonicalRunConfig") {
+	Die "安装配置模板 $InstallTemplate 里的 args 对不上（读到：$($TemplateArgs -join ' ')；应该是 listen --config $CanonicalRunConfig）。这是坏包，重新下载。"
+}
+function Write-UserConfig {
+	Copy-ConfigFile $InstallTemplate $UserConfig
+}
+# 内容跟"我们现在会生成的那份"是否一样（忽略 CRLF）。老脚本写的注释措辞不同，所以分两步：
+# ① 逐字相同；② 去掉注释与空行后只剩 run: 和那一行 args，且 args 与默认值一致。
+# 两条都不成立，说明它承载了你的改动（改过 --config、加过别的键），那是真老配置，照搬。
+function Test-StockUserConfig([string]$Path) {
+	if (-not (Test-Path -LiteralPath $Path)) { return $false }
+	$mine = ([IO.File]::ReadAllText((Resolve-Path -LiteralPath $Path), [Text.UTF8Encoding]::new($false))) -replace "`r`n", "`n"
+	$stock = ([IO.File]::ReadAllText((Resolve-Path -LiteralPath $InstallTemplate), [Text.UTF8Encoding]::new($false))) -replace "`r`n", "`n"
+	if ($mine.TrimEnd() -eq $stock.TrimEnd()) { return $true }
+	# ② 措辞可能不同（老脚本写的注释不一样），或者路径已被展开过：只要求去掉注释与空行后
+	#    只剩 run: 和那一行 args，且那组 token 规整后与默认值一致。
+	$rest = @()
+	foreach ($l in ($mine -split "`n")) {
+		$l = $l.TrimEnd()
+		if (-not $l) { continue }
+		if ($l -match '^\s*#') { continue }
+		$rest += $l
+	}
+	if ($rest.Count -ne 2) { return $false }
+	if ($rest[0] -notmatch '^\s*run:\s*$') { return $false }
+	if ($rest[1] -notmatch '^\s*args:\s*\[.*\]\s*$') { return $false }
+	# token 规整与模板共用 Convert-ArgsOf 的同一条规则（去引号 + 展开 %VAR%）。
+	return ((Convert-ArgsOf $Path) -join ' ') -eq ($DefaultArgs -join ' ')
+}
 # 只改 install.yaml 里那一行 args:，其余（你自己的注释、别的字段）原样留着。
 function Set-Args-Line($argv) {
 	$argsLine = '  args: [' + ($argv -join ', ') + ']'
@@ -316,29 +372,13 @@ function Set-Args-Line($argv) {
 	if (-not $done) { $out += $argsLine }
 	Write-Utf8NoBom $UserConfig $out
 }
-
-function Read-Args {
-	$out = @()
-	# 注意：调用处必须 @(...) 包一层——PowerShell 会把单元素数组拆成标量。
-	foreach ($line in (Get-Content -Encoding UTF8 $UserConfig)) {
-		if ($line -match '^\s*args:\s*(.*)$') {
-			$val = $Matches[1].Trim().Trim('[', ']')
-			foreach ($tok in ($val -split ',')) {
-				$t = $tok.Trim()
-				if ($t) { $out += $t }
-			}
-		}
-	}
-	$out
-}
-
-# 服务认的那份 sol.yaml：一份开箱即用的配置（纯包关机 / magic+"reboot" 重启 / magic+"sleep" 睡眠）。
-# 没有才写，绝不覆盖；执行目录里那份（你改过的）会**原样拷过来**，不丢改动。
+function Read-Args { Convert-ArgsOf $UserConfig }
+# 两份配置在同一处（用户目录）；服务认的 sol.yaml：一份开箱即用的配置（纯包关机 / magic+"reboot" 重启 /
+# magic+"sleep" 睡眠）。没有才写，绝不覆盖；执行目录里那份（你改过的）会**原样拷过来**，不丢改动。
 $RuntimeConfigGenerated = $false
 $RuntimeConfigCopied = $false
 # 任务注册后复核失败（台账要据此记 incomplete，不能像上次那样报成功）
 $script:ServiceVerifyFailed = $false
-
 # 控制面令牌：32 字节随机数的十六进制（64 个字符），和 Linux 那份生成的是同一种东西。
 function New-ControlToken {
 	$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -346,31 +386,60 @@ function New-ControlToken {
 	$rng.GetBytes($bytes)
 	(($bytes | ForEach-Object { '{0:x2}' -f $_ }) -join '')
 }
-
-# 那份配置里有一个明文令牌，所以权限只留 SYSTEM 与 Administrators：ProgramData 默认让 Users 能读，
-# 那就等于本机任何用户都能拿这个令牌调控制面关机。只对安装目录里那份动手——自选路径是你自己的地盘，
-# 收紧了反而可能把你自己关在门外。用 SID 而不是名字：中文 Windows 上 "Administrators" 不叫这个名。
+# 那份配置里有一个明文令牌，所以权限只留 SYSTEM 与 Administrators：这两个文件现在在用户目录里，
+# 那里的默认 ACL 是"你自己读写、同机其他账户只读"——别人读得到令牌就等于能调控制面关机。
+# 用 SID 而不是名字：中文 Windows 上 "Administrators" 不叫这个名。
+# 收紧之后 SYSTEM 与管理员照样读得到，所以以 SYSTEM 跑的计划任务不受影响。
 function Set-RuntimeConfigAcl([string]$Path) {
-	if ($RunConfig -ne $ServiceConfig) { return }
 	if (-not $IsAdmin) { return }
-	$out = & icacls $Path /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' 2>&1
+	# 运行配置现在落在**用户目录**里（%USERPROFILE%\sol），归当前用户所有：留他本人 + SYSTEM +
+	# Administrators。原来只留后两个，文件一旦落在用户目录，你自己那份反而读不开。
+	$sid = ''
+	try { $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch { }
+	$out = if ($sid) {
+		& icacls $Path /inheritance:r /grant:r "${sid}:(F)" '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' 2>&1
+	} else {
+		& icacls $Path /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' 2>&1
+	}
 	if ($LASTEXITCODE -ne 0) {
-		Warn2 "没能收紧 $Path 的权限：$($out -join ' ')（里面有明文令牌，建议手动只留 SYSTEM 与 Administrators）"
+		Warn2 "没能收紧 $Path 的权限：$($out -join ' ')（里面有明文令牌，建议手动只留你本人、SYSTEM 与 Administrators）"
 	}
 }
-
 function Ensure-RuntimeConfig {
 	if (Test-Path $RunConfig) { return }
-	# 目标在安装目录里（ProgramData 要管理员）：没升权的这次别抢着建目录、也别谎报已生成，
-	# 留给升权后的那一步（它会把整个脚本重跑一遍，自然又走到这里）。自选的根是自己的地盘，照写。
-	if (-not $IsAdmin -and -not $env:SOL_INSTALL_ROOT) { return }
 	try {
 		$cfgDir = Split-Path -Parent $RunConfig
 		if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force -ErrorAction Stop | Out-Null }
-		if (($RunConfig -ne $DesktopConfig) -and (Test-Path $DesktopConfig)) {
-			Copy-Item -Path $DesktopConfig -Destination $RunConfig -Force -ErrorAction Stop
-			$script:RuntimeConfigCopied = $true
+		if (Test-Path $LegacyDesktopConfig) {
+			# ① 早先按"执行目录"生成、后来被改过的：原样搬过来，别把用户改过的令牌、规则冲掉。
+			# 跟包里发的模板逐字相同的那份是示例（仓库里、anyboot 解包留下的），照抄等于把示例当配置用——
+			# 而且令牌还是个占位符，服务起不来。那种情况往下走，用模板重新生成一份带随机令牌的。
+			$adoptLegacy = $true
+			if ($TemplateConfig -and (Test-Path $TemplateConfig)) {
+				try {
+					$mine = ([IO.File]::ReadAllText((Resolve-Path -LiteralPath $LegacyDesktopConfig), [Text.UTF8Encoding]::new($false))) -replace "`r`n", "`n"
+					$theirs = ([IO.File]::ReadAllText((Resolve-Path -LiteralPath $script:TemplateConfig), [Text.UTF8Encoding]::new($false))) -replace "`r`n", "`n"
+					if ($mine.TrimEnd() -eq $theirs.TrimEnd()) { $adoptLegacy = $false }
+				} catch { $adoptLegacy = $true }
+			}
+			if ($adoptLegacy) {
+				Copy-ConfigFile $LegacyDesktopConfig $RunConfig
+				$script:RuntimeConfigCopied = $true
+			}
+		}
+		if (-not (Test-Path $RunConfig) -and (Test-Path $TemplateConfig)) {
+			# ② 包自带的模板（scripts/sol.yaml）：注释最全的一份，只把令牌占位符换成真的随机数。
+			$token = New-ControlToken
+			$body = [System.IO.File]::ReadAllText($TemplateConfig, [Text.UTF8Encoding]::new($false))
+			# 占位符没换成真令牌的话，生成出来的就是一份起不来的配置（token 为空值）——宁可在这里报错。
+			if ($body -notmatch 'token:\s*TOKEN\s*}') { throw "模板 $TemplateConfig 里找不到 auth.token: TOKEN 占位符，换不了令牌" }
+			$body = [regex]::Replace(
+				$body,
+				'(?m)^(\s*auth:\s*\{\s*type:\s*bearer,\s*token:\s*).*?(\s*\})\s*$',
+				{ param($m) $m.Groups[1].Value + $token + $m.Groups[2].Value })
+			Write-Utf8NoBom $RunConfig ($body -split "`r?`n")
 		} else {
+			# ③ 内置模板（和 scripts/sol.yaml 一字不差的正文）。
 			$token = New-ControlToken
 			$lines = @(
 				'# 纯包 -> 关机；magic+"reboot" -> 重启；magic+"sleep" -> 睡眠',
@@ -379,12 +448,13 @@ function Ensure-RuntimeConfig {
 				'  interfaces: []',
 				'  # 改这份文件后秒级自动生效（改坏了也不会顶掉正在跑的那份）。',
 				'  watch: 5s',
-				'  # HTTP 控制面（默认开启）：令牌三选一——token 就直接写在下面（这里已经是随机生成的一串）、',
-				'  # token_env 指环境变量、token_file 指一个 0600 文件。三端的设置办法与 curl 用法见 README 的',
-				'  # Control plane 一节；不要控制面就把 enabled 改成 false。',
+				'  # HTTP 控制面（默认开启）：令牌三选一——token 直接写在下面（这里已经是随机生成的一串）、',
+				'  # token_env 指环境变量、token_file 指一个只有自己能读的文件。',
+				'  # 三端的设置办法与 curl 用法见 README 的 Control plane 一节；不要控制面就把 enabled 改成 false。',
 				'  http:',
 				'    enabled: true',
 				'    listen: 127.0.0.1:8080',
+				'    # 默认只监听本机；要从别的机器调接口就改成 0.0.0.0:8080 并自己管好令牌。',
 				"    auth: { type: bearer, token: $token }",
 				'rules:',
 				'  - match: { ports: [11], content: { kind: none } }',
@@ -401,18 +471,27 @@ function Ensure-RuntimeConfig {
 			)
 			Write-Utf8NoBom $RunConfig $lines
 		}
-		Set-RuntimeConfigAcl $RunConfig
+		if (Test-Path $RunConfig) { Set-RuntimeConfigAcl $RunConfig }
 		$script:RuntimeConfigGenerated = $true
 	} catch {
-		Warn2 "没能把运行配置写到 $RunConfig：$_（升权后的那一步会再试一次）"
+		Warn2 "没能把运行配置写到 $RunConfig：$_"
 	}
 }
-
 $ConfigGenerated = $false
-if (-not (Test-Path $UserConfig)) { Write-UserConfig; $ConfigGenerated = $true }
+if (-not (Test-Path $UserConfig)) {
+	# 执行目录里那份只有承载了你的改动（改过 --config、加过别的键）才搬过来；内容跟我们默认生成的
+	# 那份一样就只是示例（仓库里、随包复制、anyboot 解包留下的），照着抄会把示例当成这台机器的实际跑法。
+	if ((Test-Path $LegacyUserConfig) -and -not (Test-StockUserConfig $LegacyUserConfig)) {
+		# 早先在执行目录里生成、后来被你改过的：原样搬过来（里面的 --config 老取值由下面的 Test-Args 挑出来）。
+		Copy-ConfigFile $LegacyUserConfig $UserConfig
+		Say "安装配置   沿用 $(Get-Location).Path\install.yaml（原样搬到 $UserConfig）"
+	} else {
+		Write-UserConfig
+	}
+	$ConfigGenerated = $true
+}
 $ArgsList = @(Read-Args)
 if (-not $ArgsList) { Die "$UserConfig 里没有 run.args（写法：run:{ args: [$($DefaultArgs -join ', ')] }）" }
-
 function Test-Args {
 	if (-not $LocalBin) { return }
 	if ($ArgsList[0] -ne 'listen') { Die "run.args 第一个词必须是 listen（当前是 $($ArgsList[0])）" }
@@ -426,28 +505,37 @@ function Test-Args {
 	}
 }
 Test-Args
-
-$RunConfig = $DesktopConfig
-for ($i = 0; $i -lt $ArgsList.Count - 1; $i++) {
-	if ($ArgsList[$i] -eq '--config') { $RunConfig = $ArgsList[$i + 1] }
-}
-
-# 运行配置从"执行目录"搬到"安装目录"：老版本写下的默认值恰好就是 .\sol.yaml，是它才迁过来
-# （内容一起拷过去，改动不丢）。你自己另行指定的路径一律不动——那是有意为之的。
-if ($RunConfig -eq $DesktopConfig -and $DesktopConfig -ne $ServiceConfig) {
-	$RunConfig = $ServiceConfig
+# 老版本把默认值写成了执行目录里的 .\sol.yaml（后来变成 ProgramData\sol\sol.yaml）。默认值跟着位置走，
+# 所以只认这几样"我们以前替你写的"取值：认出来就改写成现在的位置，内容一起搬过去，改动不丢；
+# 你自己另行指定的路径一律不动——那是有意为之的。
+$LegacyRunConfig = @()
+if (-not [IO.Path]::IsPathRooted($RunConfig)) { $LegacyRunConfig += (Join-Path (Get-Location).Path $RunConfig) }
+if ($RunDirArg -and -not [IO.Path]::IsPathRooted($RunDirArg)) { $LegacyRunConfig += (Join-Path (Get-Location).Path $RunDirArg) }
+$LegacyRunConfig += (Join-Path $InstallDir 'sol.yaml')
+$LegacyRunConfig += (Join-Path (Get-Location).Path 'sol.yaml')
+if ($LegacyRunConfig -contains $RunConfig) {
+	$wasGenerated = $false
+	if (-not (Test-Path $RunConfig)) {
+		# 新位置还没有：老文件原样搬过去，连令牌一起。
+		foreach ($cand in $LegacyRunConfig) {
+			if ((Test-Path $cand) -and ($cand -ne $RunConfig)) {
+				try { Copy-ConfigFile $cand $RunConfig; $RuntimeConfigCopied = $true; $wasGenerated = $true } catch { Warn2 "没能把 $cand 拷到 $RunConfig：$_" }
+				break
+			}
+		}
+	}
+	$RunConfig = $DefaultArgs[2]
 	# 只换 --config 的取值，你自己加的其它参数照旧。
 	$migrated = @()
 	for ($k = 0; $k -lt $ArgsList.Count; $k++) {
 		if (($ArgsList[$k] -eq '--config') -and ($k + 1 -lt $ArgsList.Count)) {
-			$migrated += '--config'; $migrated += $ServiceConfig; $k++
+			$migrated += '--config'; $migrated += $RunConfig; $k++
 		} else { $migrated += $ArgsList[$k] }
 	}
 	$ArgsList = $migrated
 	Set-Args-Line $ArgsList
-	Say "运行配置   搬到安装目录：$RunConfig（执行目录里那份会拷过去；你另外指定的路径不受影响）"
+	Say "运行配置   改到用户目录：$RunConfig$(if ($RuntimeConfigCopied) { '（老位置那份原样拷过来了）' } else { '' }；你另外指定的路径不受影响)"
 }
-
 function Get-ThresholdPorts {
 	$ports = @()
 	if (-not (Test-Path $RunConfig)) { return $ports }
@@ -461,9 +549,7 @@ function Get-ThresholdPorts {
 	}
 	@($ports)
 }
-
 # ───────────────────────── 现状展示 ─────────────────────────
-
 function Show-State {
 	Head2 '[现状]'
 	if ($LocalBin) {
@@ -531,13 +617,12 @@ function Show-State {
 		}
 	}
 	if (Test-Path $RunConfig) {
-		if ($script:RuntimeConfigGenerated) { Say "  运行配置    $RunConfig$(if ($script:RuntimeConfigCopied) { '（从执行目录拷到安装目录的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' })" }
+		if ($script:RuntimeConfigGenerated) { Say "  运行配置    $RunConfig$(if ($script:RuntimeConfigCopied) { '（从早先的位置原样搬过来的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' })" }
 		else { Say "  运行配置    $RunConfig（sol 会读它）" }
 	} else { Say "  运行配置    还不存在：$RunConfig" }
 	if ($env:SOL_INSTALL_ROOT) { Say "  权限        普通用户 + SOL_INSTALL_ROOT=$env:SOL_INSTALL_ROOT（自己的地盘，不会升权）" }
 	elseif (-not $IsAdmin) { Say '  权限        当前不是管理员：轮到需要权限的步骤时，会用 UAC 以管理员身份重跑一遍自己（不会再问一遍）' }
 }
-
 function Show-Config {
 	Head2 '[安装配置]'
 	Say "  $UserConfig"
@@ -546,11 +631,8 @@ function Show-Config {
 	Say ''
 	if ($ConfigGenerated) { Say '  （刚生成的。改它，然后重新运行脚本；脚本不会覆盖已存在的这份文件。）' }
 }
-
 # ───────────────────────── 问答 ─────────────────────────
-
 $script:NoAnswer = $false
-
 function Ask-Yes($prompt, $default) {
 	# 升权子进程有自己的窗口，很可能不在用户眼前：在那里 Read-Host 等人按键，而父进程在 -Wait 里
 	# 干等——用户看到的就是"脚本卡死没响应"（真机上就这么撞过两次）。子进程一律不问，取默认值；
@@ -567,7 +649,6 @@ function Ask-Yes($prompt, $default) {
 	if (-not $ans) { $ans = $default }
 	return ($ans -eq 'y' -or $ans -eq 'yes')
 }
-
 function Banner {
 	$ver = ''
 	if ($LocalBin) { $ver = Version-Tag $LocalBin }
@@ -575,7 +656,6 @@ function Banner {
 	Head2 "sol 安装脚本  |  $(if ($ver) { $ver } else { '没有找到 sol.exe' })  |  $where"
 	Say '改配置、重跑这个脚本，就是改 sol 的跑法。先报现状，再问你要做什么。'
 }
-
 # 选项写成编号列表，而不是一行用斜杠串起来的 回车/u/r/n——那行既难读也难记。
 function Show-Menu {
 	Head2 '[选项]'
@@ -585,7 +665,6 @@ function Show-Menu {
 	Say '  4  退出，什么都不改'
 	Say ''
 }
-
 function Ask-Choice($prompt) {
 	if ($script:Child) { Warn2 '（升权子进程里不提问：直接退出）'; return 'quit' }
 	# 只认序号（回车＝1），同时容忍单字母的旧习惯；看不懂就重问，绝不猜。
@@ -614,9 +693,7 @@ function Ask-Choice($prompt) {
 	}
 	return 'quit'
 }
-
 # ───────────────────────── 动作清单 ─────────────────────────
-
 $script:Actions = @()
 function Act($kind, $what, $cmd) {
 	$line = "[$kind] $what"
@@ -624,7 +701,6 @@ function Act($kind, $what, $cmd) {
 	$script:Actions += $line
 	Note-Progress $line
 }
-
 function Write-Ledger($incomplete, $prevVersion, $prevSha) {
 	if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
 	$sha = Has-Sha256 $DestBin
@@ -653,20 +729,16 @@ function Write-Ledger($incomplete, $prevVersion, $prevSha) {
 	}
 	Write-Utf8NoBom $Ledger ($obj | ConvertTo-Json -Depth 5)
 }
-
 function Append-History($what) {
 	$block = @("== $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')) $what ==") + $script:Actions
 	if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
 	Add-Utf8NoBom $History $block
 	$script:Actions = @()
 }
-
 # ───────────────────────── 预检 / 装 / 卸 ─────────────────────────
-
 # ── 架构对不上：提前说人话，别让用户去看 .NET 的天书 ──
 # 在 x64 机器上解了 windows-arm64 的包时，真跑起来的报错是
 # "指定的可执行文件不是此操作系统平台的有效应用程序"。读 PE 头的 Machine 字段就能提前判断。
-
 # 读 PE 头里的 Machine（0 表示读不出来／不是 PE）。
 function Get-PEBinaryMachine($path) {
 	try {
@@ -682,7 +754,6 @@ function Get-PEBinaryMachine($path) {
 		} finally { $fs.Close() }
 	} catch { return 0 }
 }
-
 # 本机架构，统一成 x64 / arm64 / x86 这种写法。
 function Get-HostArchName {
 	$arch = ''
@@ -695,7 +766,6 @@ function Get-HostArchName {
 		default { return "$arch".ToLower() }
 	}
 }
-
 # 二进制跟本机架构对不对得上：'' = 没问题；否则给一句能直接念给用户听的原因。
 function Test-BinaryFitsHost($path) {
 	if (-not $path -or -not (Test-Path $path)) { return '' }
@@ -708,7 +778,6 @@ function Test-BinaryFitsHost($path) {
 	if (($binArch -eq $hostArch) -or ($hostArch -eq 'x64' -and $binArch -eq 'x86')) { return '' }
 	return "这份二进制是 $binArch 的，本机是 $hostArch（多半是下错架构的包了）"
 }
-
 function Invoke-Precheck {
 	if (-not $LocalBin) { return $true }
 	# 架构对不上就别装了：真跑起来只会给一句天书（"不是此操作系统平台的有效应用程序"）。
@@ -757,11 +826,8 @@ function Invoke-Precheck {
 		try { $proc.Dispose() } catch { }
 	}
 }
-
 $script:ServiceChosen = $false
-
 # ───────────────────────── 升权（UAC）─────────────────────────
-
 # 与 install.sh 同一套规矩：需要管理员的事，在动手之前一次性升权，答案用参数带过去，
 # 不再问第二遍；SOL_INSTALL_ROOT（自选的根）下永不升权；升权失败就明确报错，不装到一半。
 function Escalate-IfNeeded([string]$action) {
@@ -775,7 +841,6 @@ function Escalate-IfNeeded([string]$action) {
 		if (-not (Test-Path $InstallDir)) { $needs = $true }
 	}
 	if (-not $needs) { return }
-
 	Say ''
 	if ($action -eq 'uninstall') { Say '这一步要摘掉计划任务、删掉安装目录里的二进制、撤掉防火墙规则和 PATH，需要管理员。' }
 	else { Say '这一步要写安装目录、注册计划任务、改机器 PATH，需要管理员。' }
@@ -787,11 +852,9 @@ function Escalate-IfNeeded([string]$action) {
 	# 怎么都不动”，而按一下回车或 Esc 就解冻。多发一句，省掉这一整轮猜谜。
 	Say '那个窗口出来之后**不要用鼠标点它**：Windows 控制台的“快速编辑”会让它冻住（看起来一片空白）。真冻住了，在它里面按一下回车或 Esc 就能解冻。'
 	Say '看不到它就看任务栏、或按 Win 键找一下——**不点它，这里会一直等，看起来就像卡住了**。'
-
 	if ($Piped) {
 		Die "这一步需要管理员，但脚本是管道执行（irm … | iex）的：没有文件可以重新以管理员身份运行。请先存成文件再跑：`n  irm <install.ps1 的地址> -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`n  或者直接右键 install.cmd 选“以管理员身份运行”。"
 	}
-
 	$hostExe = (Get-Process -Id $PID).Path
 	if (-not $hostExe) { $hostExe = Join-Path $PSHOME 'powershell.exe' }
 	$svc = if ($script:ServiceChosen) { 'yes' } else { 'no' }
@@ -801,7 +864,6 @@ function Escalate-IfNeeded([string]$action) {
 	if ($script:DelConfigsGiven) { $rawArgs += @('-SolDelConfigs', $(if ($script:DelConfigs) { 'yes' } else { 'no' })) }
 	if ($env:SOL_INSTALL_ROOT) { $rawArgs += @('-SolRoot', $env:SOL_INSTALL_ROOT) }
 	$argList = @($rawArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
-
 	$env:SOL_INSTALL_ELEVATED = '1'
 	try {
 		# UAC 子进程有自己的窗口，它的输出在父进程里一个字都看不到——失败也是静悄悄的，
@@ -847,7 +909,6 @@ function Escalate-IfNeeded([string]$action) {
 		Die "这一步需要管理员权限，但 UAC 提权没成功（被拒绝或不可用）。请右键 install.cmd 选“以管理员身份运行”，或在管理员 PowerShell 里再跑一次。原因：$_"
 	}
 }
-
 # 让 sol 自己把日志写进文件——Windows 的计划任务收集不到 stdout，这是 Windows 侧唯一能落盘的方式。
 # 只在运行配置里没有 logging: 这一节时追加；用户自己写过的 logging 一律不动（改它等于改人家的配置）。
 function Add-FileLoggingToConfig {
@@ -865,7 +926,6 @@ function Add-FileLoggingToConfig {
 	Invoke-WithRetry '在运行配置里补 logging（让 sol 写日志文件）' { [System.IO.File]::WriteAllText($RunConfig, $text, $enc) } | Out-Null
 	Act 'user' "运行配置补上 logging（sol 的日志落到 $LogFile）" "（往 $RunConfig 追加 logging: { output: file, file: '$LogFile' }）"
 }
-
 function Open-ConfigDir($dir, $file) {
 	# 呼出文件管理器跳到运行配置所在目录：先问、问过才开；沙箱、子进程、无人能答时只报路径。
 	# 绝不 -Wait：一个等着人点一下的窗口就是"脚本卡死"的老剧本。
@@ -881,16 +941,12 @@ function Open-ConfigDir($dir, $file) {
 		catch { Say "     打开失败，自己开这个目录：$dir" }
 	} else { Say "     目录：$dir" }
 }
-
 function Invoke-Install {
 	if (-not $LocalBin) { Die '没有可用的 sol.exe：把它放在脚本旁边或 PATH 里，再运行一次' }
-	# 升权后的那一次才写得进安装目录，所以配置的生成/拷贝放这儿，紧挨着预检。
-	Ensure-RuntimeConfig
+	# 运行配置在进主流程时就已经落好了（Ensure-RuntimeConfig）；这里不再重复。
 	$newSha = Has-Sha256 $LocalBin
-
 	Write-Ledger $true $LedgerJson.installed_version $LedgerJson.sha256
 	Act 'user' '写安装台账（先写 incomplete，中途失败也留痕）' ''
-
 	# 你说"应用"但什么都没变 → 不折腾
 	if ($LedgerExists -and $newSha -eq $LedgerJson.sha256) {
 		$taskOk = ((Task-State) -eq 'installed') -or (-not $script:ServiceChosen)
@@ -907,7 +963,6 @@ function Invoke-Install {
 			return
 		}
 	}
-
 	# 别人的任务默认不覆盖——但**要问一句**：用户明确说要接管，就该能接管。死路是最糟的：
 	# 人说"我要装"，脚本却只回一句"不是你建的我不管"。
 	# 叫 sol 的任务归这个脚本管，不看是谁建的：注册时先删掉再按这份 install.yaml 重建（见
@@ -916,7 +971,6 @@ function Invoke-Install {
 		Say ''
 		Warn2 "已经有一份计划任务 $TaskName，而且不是本脚本建的：按你的规矩，注册时先删掉它、再按这份 install.yaml 重建。"
 	}
-
 	# 例外：升级时几乎必然"绑不上端口"——因为正在跑的那份是我们自己的 sol.exe，占着同一个端口。
 	# 那就先停它再试一次；还不过就把它按原样起回去，不让你白白少一个正在跑的服务。
 	if (-not (Invoke-Precheck)) {
@@ -933,7 +987,6 @@ function Invoke-Install {
 			Die '预检没通过，什么都没动。改完配置再运行一次。'
 		}
 	}
-
 	# Windows 陷阱：正在运行的 exe 覆盖不了 → 先结束任务
 	if ((Task-State) -eq 'installed') {
 		# 走 Invoke-Native 而不是裸调：原生命令往 stderr 写东西（这里可能是"拒绝访问"）
@@ -945,7 +998,6 @@ function Invoke-Install {
 	}
 	# 任务停了不代表进程没了（手动起的那份、或没赶上的实例）；覆盖前必须把它清掉。
 	Stop-RunningInstances $DestBin '正在运行的 exe 覆盖不了（Windows 文件锁）'
-
 	if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
 	$same = (Test-Path $DestBin) -and ((Has-Sha256 $DestBin) -eq $newSha)
 	if ($same) {
@@ -959,7 +1011,6 @@ function Invoke-Install {
 		Invoke-WithRetry '放置二进制' { Copy-Item -Path $LocalBin -Destination $DestBin -Force -ErrorAction Stop } | Out-Null
 		Act 'admin' '放置二进制' "Copy-Item $LocalBin $DestBin"
 	}
-
 	# 机器 PATH（只加一次）。沙箱里绝不碰（那是本机的地盘），真安装时也只提醒不致命：
 	# 写 Machine 级环境变量需要管理员，非管理员会抛"不允许所请求的注册表访问权"——这类 .NET 异常
 	# 在 $ErrorActionPreference='Stop' 下是**终止错误**，会把整个安装带走（真机实测就死在这儿）。
@@ -972,16 +1023,13 @@ function Invoke-Install {
 			}
 		} catch { Warn2 "没能把 $InstallDir 加进机器 PATH（不致命，命令行里用绝对路径即可）：$_" }
 	}
-
 	# SOL_INSTALL_ROOT 下不碰本机计划任务：那是别人的地盘（跟停进程、卸载那几处一样的规矩）。
 	if ($script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT) { Register-SolService }
 	elseif ($script:ServiceChosen) { Say '  （沙箱：跳过计划任务注册——本机任务管理器是别人的地盘）' }
-
 	# 计划任务是无窗口跑的，stdout 没人接：让 sol 自己写日志文件（配置里没有 logging: 就补一节）。
 	if ($script:ServiceChosen -and (Test-Path $RunConfig)) {
 		Add-FileLoggingToConfig
 	}
-
 	# 防火墙（按运行配置里的端口；读不到就不猜）。缺 NetSecurity 模块（Server Core 之类）或任何
 	# 失败都只提醒：防火墙是帮手，不是目的，绝不能把整个安装带走。
 	try {
@@ -1000,12 +1048,10 @@ function Invoke-Install {
 		Warn2 "读不到 $RunConfig 里的端口，没加防火墙规则。要放行：New-NetFirewallRule -DisplayName 'sol (WoL)' -Direction Inbound -Protocol UDP -LocalPort <端口> -Action Allow"
 	}
 	} catch { Warn2 "防火墙那一步失败（不致命，但魔法包可能进不来）：$_" }
-
 	Write-Ledger ([bool]$script:ServiceVerifyFailed) $LedgerJson.installed_version $LedgerJson.sha256
 	Act 'user' "更新安装台账（incomplete=$([bool]$script:ServiceVerifyFailed)）" ''
 	Append-History 'install'
 }
-
 function Register-SolService {
 	if ($env:SOL_INSTALL_ROOT) { return }   # 沙箱里永不碰本机任务管理器
 	# 任务直接跑 sol.exe：任务计划里"操作"那一栏就是可执行文件和它的参数，一眼看得懂。
@@ -1040,7 +1086,6 @@ function Register-SolService {
 	if ($run.Code -ne 0) { Warn2 "schtasks /Run 失败，退出码 $($run.Code)：$($run.Out)（任务已注册，只是这次没立刻起来；重启后会自动跑）" }
 	Act 'admin' '注册并启动计划任务' "schtasks /Create /TN $TaskName /TR `"$tr`" /SC ONSTART /RU SYSTEM /F; schtasks /Run /TN $TaskName"
 }
-
 function Invoke-Uninstall {
 	if (-not $LedgerExists) {
 		# 没有台账也照样清：脚本只按**自己的名字**动手（计划任务 sol、默认落点的 sol.exe、防火墙规则
@@ -1087,7 +1132,6 @@ function Invoke-Uninstall {
 	} | Out-Null
 	if (Test-Path $bin) { Warn2 "$bin 还在（可能有别的进程占着，或没权限）" }
 	Act 'admin' '删二进制、sol.bak 与运行包装脚本' "Remove-Item $bin, $bin.bak, $TaskCmd"
-
 	if (-not $script:DelConfigsGiven) {
 		$script:DelConfigs = $false
 		if (Ask-Yes '配置文件也一起删掉吗？' 'n') { $script:DelConfigs = $true }
@@ -1104,9 +1148,7 @@ function Invoke-Uninstall {
 	Remove-Item -Path $Ledger -Force -ErrorAction SilentlyContinue
 	Act 'admin' '删台账' "Remove-Item $Ledger"
 }
-
 # ───────────────────────── 报告 ─────────────────────────
-
 function Show-Report($what) {
 	switch ($what) {
 		'install' {
@@ -1116,7 +1158,7 @@ function Show-Report($what) {
 			if (Test-Path "$DestBin.bak") { Say "  （旧版本留在 $DestBin.bak，回滚就是把它换回去）" }
 			Say ''
 			Say "  安装配置    $UserConfig        改这里，然后重跑脚本"
-			Say "  运行配置    $RunConfig$(if ($script:RuntimeConfigGenerated) { $(if ($script:RuntimeConfigCopied) { '（从执行目录拷到安装目录的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' }) })"
+			Say "  运行配置    $RunConfig$(if ($script:RuntimeConfigGenerated) { $(if ($script:RuntimeConfigCopied) { '（从早先的位置原样搬过来的那份）' } else { '（刚生成的示例配置：三条规则，按需改）' }) })"
 			Say "  台账        $Ledger"
 			Say "  服务日志    $LogFile"
 			Say "  历史        $History（完整动作清单，带等价命令）"
@@ -1147,9 +1189,7 @@ function Show-Report($what) {
 		}
 	}
 }
-
 # ───────────────────────── 主流程 ─────────────────────────
-
 # 已经被 UAC 升权重跑（带答案进来的）：不重复展示、也不再问，直接执行。
 $ElevatedAction = $ActionArg
 if (-not $ElevatedAction) { $ElevatedAction = $env:SOL_INSTALL_ACTION }
@@ -1205,15 +1245,11 @@ public static bool DisableQuickEdit() {
 	}
 	exit 0
 }
-
 Ensure-RuntimeConfig
-
 Banner
 Show-State
 Show-Config
-
 $script:Noop = $false
-
 if ($LedgerExists) {
 	$stText = switch (Task-State) { 'installed' { '计划任务已注册' } 'absent' { '没有计划任务' } default { '读不到计划任务（要管理员）' } }
 	$instTag0 = if ($LedgerJson.installed_version) { $LedgerJson.installed_version } else { '版本未知' }
@@ -1250,17 +1286,13 @@ if ($LedgerExists) {
 	}
 	exit 0
 }
-
 if ($script:NoAnswer) {
 	Say ''
 	Say '没有终端：只生成了配置，没有执行任何操作。'
 	exit 0
 }
-
 $script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
 if (-not (Ask-Yes '执行吗？' 'y')) { Show-Report 'none'; exit 0 }
-
-
 Open-ConfigDir (Split-Path -Parent $RunConfig) $RunConfig
 Escalate-IfNeeded 'install'
 Invoke-Install

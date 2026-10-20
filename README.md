@@ -181,14 +181,24 @@ curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh -o
 irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。它在**你执行
-脚本的那个目录**里写 `install.yaml`，内容只有"sol 怎么跑"；同时保证有一份能跑的运行配置：纯包 → 关机
-（端口 11）、magic+"reboot" → 重启（12）、magic+"sleep" → 睡眠（10）。服务没有规则会拒绝启动，所以
-脚本直接写一份能跑的。它还把两个"重复包护栏"**写在文件里**——`security.settle` 与三个电源动作各 5s 的
-冷却：默认值一眼看得见，也一眼知道怎么关掉。**这份配置放哪，平台不同**：Linux/macOS 就是执行目录里的 `sol.yaml`；Windows 放在
-**安装目录**（`C:\ProgramData\sol\sol.yaml`，跟 `sol.exe` 做伴）——计划任务以 SYSTEM 开机就跑，配置不该
-依赖一个可能被挪走的项目目录；你在执行目录里改过的那份会被**原样拷过去**，不会丢。改配置就编辑它、再
-重跑一遍脚本。
+它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。
+
+**两份配置，都在你自己家的目录里**（不看你从哪个目录执行脚本）：
+
+| | 放哪 | 管什么 |
+| --- | --- | --- |
+| `install.yaml` | Linux/macOS `~/.config/sol/install.yaml`<br>Windows `%USERPROFILE%\sol\install.yaml` | "sol 怎么跑"——里面只有一行 `run.args` |
+| `sol.yaml` | Linux/macOS `~/sol/sol.yaml`<br>Windows `%USERPROFILE%\sol\sol.yaml` | sol 自己读的配置：听哪些端口、匹配什么、干什么 |
+
+`sol.yaml` 生成出来就是一份能跑的：纯包 → 关机（端口 11）、magic+"reboot" → 重启（12）、
+magic+"sleep" → 睡眠（10）；服务没有规则会拒绝启动，所以脚本直接写一份能跑的。它还把两个"重复包护栏"
+**写在文件里**——`security.settle` 与三个电源动作各 5s 的冷却：默认值一眼看得见，也一眼知道怎么关掉。
+控制面令牌是**这次现生成的随机数**（不是包里那个占位符），文件权限只给当前用户读。
+
+**只在文件不存在时生成，现有文件一个字节都不改**——你改过的令牌、端口、规则，重跑脚本、升级、
+卸载再装都不会被冲掉。唯一的例外是升级脚本自身：早先那几个版本把这两份写在**执行目录**（或
+`C:\ProgramData\sol\`），第一次跑到新版时会原样拷到你家的目录里，内容不改、位置换掉，然后按新位置读写。
+改配置就编辑它、再重跑一遍脚本。
 **端口 <1024 在 Linux/macOS 上要 root**：脚本动手前会升权，正常安装不用管；但如果是不要 root 的
 用户级安装，要把端口改成 ≥1024。
 它把现状、配置在哪都打印出来，再问两个问题：要不要装成服务、是否继续。你说"是"之前什么都不改。
@@ -201,8 +211,8 @@ irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile
 它做的每一件事都追加写进 `install.log`（带等价命令），和台账 `install.json` 放在一起。
 
 东西落在哪：二进制 `/usr/local/bin/sol`（Windows `C:\ProgramData\sol\sol.exe`），台账与历史
-`/usr/local/share/sol/`（Windows `C:\ProgramData\sol\`），运行配置 `sol.yaml` 在执行脚本的那个目录
-（Windows `C:\ProgramData\sol\sol.yaml`——跟二进制做伴，计划任务读的就是它）；只有你选了装服务才会多一个
+`/usr/local/share/sol/`（Windows `C:\ProgramData\sol\`），两份配置就是上表那两处（用户目录；
+服务定义里写的是绝对路径，所以以 SYSTEM / root 跑的服务照样读得到）；只有你选了装服务才会多一个
 systemd 单元 / launchd plist / 计划任务。你自己已有的配置与日志一个都不碰（没有才写一份）。
 
 这份脚本三平台通用，但目前只在 Linux 上真机跑过；macOS 与 Windows 分支的证据强度记在

@@ -15,17 +15,15 @@
 #   sol 或 sol.exe          该平台的二进制
 #   install.sh / install.ps1 / install.cmd   零参数安装脚本
 #   README.md（中文，默认）/ README.en.md / CHANGELOG.md / LICENSE
-#   sol-example.yaml        示例配置（安装脚本没配置时会自己生成一份，这份是给人读的）
+#   sol.yaml                install.sh / install.ps1 拿它生成 ~/sol/sol.yaml（没有老配置时的那份模板）
+#   sol-example.yaml        示例配置（给人读的完整注释版）
 #   sol.schema.json         配置 schema（编辑器补全用）
 set -eu
-
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
-
 VERSION=""
 ALLOW_DIRTY=no
 PLATFORMS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
-
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--allow-dirty) ALLOW_DIRTY=yes ;;
@@ -36,14 +34,11 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
-
 say() { printf '%s\n' "$*"; }
 die() { printf '错误: %s\n' "$*" >&2; exit 1; }
-
 command -v git >/dev/null 2>&1 || die "需要 git（判断工作区是否干净、取版本号）"
 GO=${GO:-go}
 command -v "$GO" >/dev/null 2>&1 || die "找不到 ${GO}（用 GO=/path/to/go 指定）"
-
 # 版本号：要么显式给，要么取最近的 tag；带 -dirty 的树默认拒绝打包（发布不该是脏树）。
 # 只把**已跟踪文件的改动**算脏：未跟踪的 .idea/、dist/ 之类不该拦住发布（不然每台机器都"脏"）。
 DIRTY=no
@@ -58,27 +53,23 @@ esac
 if [ "$DIRTY" = yes ] && [ "$ALLOW_DIRTY" != yes ]; then
 	die "工作区是脏的（或版本号带 -dirty）：发布包不该来自脏树。要么先提交，要么加 --allow-dirty 明确接受。"
 fi
-
 DIST="$ROOT/dist"
 STAGE="$DIST/stage"
 # 清的是**内容**而不是 dist 目录本身：Windows 上只要有个 shell 把 dist 当工作目录，
 # 删目录就会 "Device or resource busy"，而清内容照样能跑。
 mkdir -p "$DIST"
 rm -rf "$STAGE" 2>/dev/null || true
-rm -f "$DIST"/*.tar.gz "$DIST"/*.zip "$DIST"/checksums.txt "$DIST"/install.sh "$DIST"/install.ps1 "$DIST"/install.cmd 2>/dev/null || true
+rm -f "$DIST"/*.tar.gz "$DIST"/*.zip "$DIST"/checksums.txt "$DIST"/install.sh "$DIST"/install.ps1 "$DIST"/install.cmd "$DIST"/install-*.yaml "$DIST"/sol.yaml 2>/dev/null || true
 mkdir -p "$STAGE"
-
 # 脏标记同样盖章，口径与上面那套一致（只算已跟踪改动）：工具链自带的 vcs.modified 连未跟踪文件也算，
 # 而出包过程本身就在写 dist/stage/...，不盖的话"干净树"出出来的包也会自称 -dirty。
 DIRTY_STAMP=false
 [ "$DIRTY" = yes ] && DIRTY_STAMP=true
 LDFLAGS="-s -w -X github.com/lidiaoo/sol/internal/buildinfo.version=$VERSION -X github.com/lidiaoo/sol/internal/buildinfo.dirty=$DIRTY_STAMP"
-
 say "版本    $VERSION"
 say "落点    $DIST"
 say "平台    $PLATFORMS"
 say ""
-
 for p in $PLATFORMS; do
 	os=${p%%/*}
 	arch=${p##*/}
@@ -86,20 +77,37 @@ for p in $PLATFORMS; do
 	name="sol-$VERSION-$os-$arch"
 	dir="$STAGE/$name"
 	mkdir -p "$dir"
-
 	bin=sol
 	[ "$os" = windows ] && bin=sol.exe
-
 	printf '  %-24s ' "$name"
 	# -o 用**相对路径**：go 是 native 程序，MSYS 的 /e/... 它不认（会"成功"却没写出文件）。
 	# shellcheck disable=SC2086
 	CGO_ENABLED=0 GOOS=$os GOARCH=$arch $GO build -trimpath -ldflags "$LDFLAGS" -o "dist/stage/$name/$bin" . \
 		|| die "给 $os/$arch 编译失败"
 	chmod +x "$dir/$bin"
-
 	# 跟二进制放进同一个目录：解包后这个目录就是"执行目录"，安装脚本零参数跑起来就知道该干什么。
-	cp scripts/install.sh scripts/install.ps1 scripts/install.cmd "$dir/"
+	# install.sh 必须**去掉 CR** 再进包：仓库里这份在 Windows 上签出时是 CRLF（core.autocrlf=true），
+	# 原样塞进去到了 Linux/macOS 就是 `$'\r': command not found`，连第一行都跑不过去。
+	# install.ps1 / install.cmd 反而要留着 CRLF（Windows 上双击跑，CRLF 更省事），所以只对 sh 转。
+	tr -d '\r' <scripts/install.sh >"$dir/install.sh" || die "转换 scripts/install.sh 的换行失败"
+	cp scripts/install.ps1 scripts/install.cmd "$dir/"
 	chmod +x "$dir/install.sh"
+	# 安装配置模板**按平台**带：安装脚本只读自己那平台的 install-<平台>.yaml，三份各自维护。
+	# install.yaml 本身不随包带：那是安装脚本从模板写到你用户目录的成品。
+	case "$os" in
+	linux) install_tpl=install-linux.yaml ;;
+	darwin) install_tpl=install-macos.yaml ;;
+	windows) install_tpl=install-windows.yaml ;;
+	*) die "不知道 $os 该用哪份安装配置模板（只有 linux / darwin / windows 三份）" ;;
+	esac
+	[ -f "scripts/$install_tpl" ] || die "缺了 scripts/$install_tpl：它是 $os 安装配置的模板，必须跟着包走"
+	cp "scripts/$install_tpl" "$dir/"
+	# 运行配置模板（~/sol/sol.yaml）：安装脚本拿它生成，三平台同一份。
+	if [ -f scripts/sol.yaml ]; then
+		cp scripts/sol.yaml "$dir/"
+	else
+		die "缺了 scripts/sol.yaml：它是安装脚本生成运行配置用的模板，必须跟着包走"
+	fi
 	cp README.md README.en.md LICENSE "$dir/"
 	[ -f CHANGELOG.md ] && cp CHANGELOG.md "$dir/"
 	[ -f example/sol-example.yaml ] && cp example/sol-example.yaml "$dir/"
@@ -109,11 +117,9 @@ for p in $PLATFORMS; do
 		mkdir -p "$dir/skills"
 		cp -R skills/. "$dir/skills/"
 	fi
-
 	size=$(wc -c <"$dir/$bin" | tr -d ' ')
 	say "ok（二进制 $size 字节）"
 done
-
 say ""
 say "打包…"
 cd "$STAGE"
@@ -143,7 +149,6 @@ for d in */; do
 	printf '  %-34s %s\n' "$out" "$(wc -c <"$DIST/$out" | tr -d ' ') 字节"
 done
 cd "$ROOT"
-
 # 产物体检：每条二进制必须是对应平台该有的格式与架构（交叉编译最怕"编出来了但不是那个东西"），
 # 包里那几个脚本必须与仓库里的逐字节一致（不然包里就是另一套安装逻辑）。
 say ""
@@ -183,12 +188,18 @@ if command -v file >/dev/null 2>&1; then
 else
 	say "  （这台机器没有 file 命令：跳过二进制的格式/架构核对）"
 fi
-for name in install.sh install.ps1 install.cmd; do
-	first=$(ls -d "$STAGE"/sol-"$VERSION"-*/ 2>/dev/null | head -1)
-	[ -n "$first" ] || break
-	cmp -s "scripts/$name" "${first}$name" || die "包里的 $name 与仓库里的不一致（打包环节动过它？）"
-done
-say "  包里脚本与仓库逐字节一致：install.sh / install.ps1 / install.cmd"
+first=$(ls -d "$STAGE"/sol-"$VERSION"-*/ 2>/dev/null | head -1)
+if [ -n "$first" ]; then
+	# install.ps1 / install.cmd 是原样 cp，逐字节比；install.sh 进包时按规矩去了 CR，跟"去 CR 之后
+	# 的仓库版本"比——不能直接拿工作区那份比，Windows 上签出来的本来就是 CRLF。
+	for name in install.ps1 install.cmd; do
+		cmp -s "scripts/$name" "${first}$name" || die "包里的 $name 与仓库里的不一致（打包环节动过它？）"
+	done
+	tr -d '\r' <scripts/install.sh | cmp -s - "${first}install.sh" || die "包里的 install.sh 与仓库里那份（去 CR 后）不一致"
+	# 包里的 sh 必须一个 CR 都没有，否则 Linux/macOS 上执行就是 $'\r': command not found。
+	if grep -q "$(printf '\r')" "${first}install.sh"; then die "包里的 install.sh 还带着 CR：Linux/macOS 上跑不起来"; fi
+	say "  包里脚本与仓库一致：install.ps1 / install.cmd 逐字节，install.sh 去 CR 后逐字节（无 CR）"
+fi
 if [ -d skills ]; then
 	for sk in skills/*/; do
 		[ -d "$sk" ] || continue
@@ -197,11 +208,11 @@ if [ -d skills ]; then
 	done
 	say "  技能目录已带上：$(ls skills | tr '\n' ' ')"
 fi
-
 # README 里的一行安装指向 releases/latest/download/install.sh（install.ps1 / install.cmd 同理），
 # 所以这些脚本在 dist/ 根上也要有一份单独的资产——不然那个地址就是 404。
-cp scripts/install.sh scripts/install.ps1 scripts/install.cmd "$DIST/"
-
+# 散装那份同样要去 CR：它被 `curl -fsSL …/install.sh | sh` 直接喂给 sh，带 CR 一样跑不了。
+tr -d '\r' <scripts/install.sh >"$DIST/install.sh" || die "转换 install.sh 换行失败"
+cp scripts/install.ps1 scripts/install.cmd "$DIST/"
 # 校验和（名字与 goreleaser 的 checksum 配置一致：checksums.txt）。
 (
 	cd "$DIST"
@@ -213,7 +224,6 @@ cp scripts/install.sh scripts/install.ps1 scripts/install.cmd "$DIST/"
 say ""
 say "校验和      $DIST/checksums.txt"
 say "散装资产    install.sh / install.ps1 / install.cmd（给 releases/latest/download/ 用）"
-
 # 自检：宿主平台的二进制真的能跑（跨平台的没法在本机执行，交给 CI/真机）。
 host_os=$(uname -s 2>/dev/null | tr 'A-Z' 'a-z')
 case "$host_os" in
@@ -230,7 +240,6 @@ if [ -n "$HOST_PLATFORM" ]; then
 		say "自检        $("$hdir/$hb" --version 2>&1 | head -1)"
 	fi
 fi
-
 say ""
 say "下一步："
 say "  git tag $VERSION && git push origin $VERSION        # 打 tag（CI 会在 release 创建后自动出同一套包）"

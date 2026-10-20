@@ -202,20 +202,32 @@ irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile
 ```
 
 It uses the `sol` you already have - next to the script, in the current directory, or on `PATH` - and
-never replaces it with a download. In the directory you run it from it writes `install.yaml`, whose only
-content is how to run sol, and it makes sure a working configuration exists: a plain magic packet to port
-11 shuts the machine down, `"reboot"` after the magic packet to 12 reboots it, `"sleep"` to 10 sleeps it -
-a service with no rules refuses to start, so the script writes one that runs. It also spells out the two
-repeat guards in that file - `security.settle` and the per-action cooldowns, 5s each - so you can see the
-defaults, and see how to switch them off, without reading any docs. Where that configuration
-lives differs by platform: on Linux and macOS it is `sol.yaml` in the directory you ran the script from;
-**on Windows it goes next to the installed `sol.exe`** (`C:\ProgramData\sol\sol.yaml`), because the
-scheduled task runs as `SYSTEM` at boot and should not depend on a project directory that can move. If you
-already edited a `sol.yaml` there, the script copies it over rather than throwing it away. Edit the
-configuration and re-run the script to change it. Ports below 1024 need root on Linux/macOS, which the
-script sorts out before it touches anything - on a user-level install without root, move them to 1024 or
-above. It prints the current situation and where the configuration lives, then asks two questions:
-install as a service, and go ahead. Nothing changes until you say yes.
+never replaces it with a download.
+
+**Two files, both in your own home directory** - it no longer matters which directory you run the script
+from:
+
+| | Where | What it is |
+| --- | --- | --- |
+| `install.yaml` | Linux/macOS `~/.config/sol/install.yaml`<br>Windows `%USERPROFILE%\sol\install.yaml` | how sol is started - a single `run.args` line |
+| `sol.yaml` | Linux/macOS `~/sol/sol.yaml`<br>Windows `%USERPROFILE%\sol\sol.yaml` | what sol reads: ports, matching, actions |
+
+The `sol.yaml` it produces already runs: a plain magic packet to port 11 shuts the machine down,
+`"reboot"` after the magic packet to 12 reboots it, `"sleep"` to 10 sleeps it - a service with no rules
+refuses to start, so the script writes one that runs. It also spells out the two repeat guards in that
+file - `security.settle` and the per-action cooldowns, 5s each - so you can see the defaults, and see how
+to switch them off, without reading any docs. The control-plane token is a random one generated on the
+spot (never the placeholder shipped in the archive), and the file is readable by your account only.
+
+**Created only when missing; an existing file is not touched by a single byte** - your token, ports and
+rules survive re-running the installer, upgrades, and uninstall-then-install. The one exception is the
+installer itself changing: older versions wrote these two files into the directory you ran the script
+from (or `C:\ProgramData\sol\`), and the first run of a newer one copies them - content unchanged - into
+your home directory and works from there. Edit the configuration and re-run the script to change it.
+Ports below 1024 need root on Linux/macOS, which the script sorts out before it touches anything - on a
+user-level install without root, move them to 1024 or above. It prints the current situation and where
+the configuration lives, then asks two questions: install as a service, and go ahead. Nothing changes
+until you say yes.
 
 Privileges: it does not run as root from the start. Before any step that needs it (writing
 `/usr/local/bin`, registering the service), it re-runs itself through `sudo` on Linux/macOS, or
@@ -228,9 +240,9 @@ configuration). Every action it takes
 is appended to `install.log`, with the equivalent command, next to the ledger `install.json`.
 
 Where things go: the binary in `/usr/local/bin/sol` (`C:\ProgramData\sol\sol.exe`), the ledger and
-history in `/usr/local/share/sol/` (`C:\ProgramData\sol\`), the configuration in `sol.yaml` in the
-directory you ran the script from (`C:\ProgramData\sol\sol.yaml` - next to the binary, where the
-scheduled task reads it), and - only if you asked for the service - a systemd unit, a launchd plist, or a
+history in `/usr/local/share/sol/` (`C:\ProgramData\sol\`), the two configuration files in your home
+directory (see the table above; the service definition spells out absolute paths, so a root/SYSTEM
+service still reads them), and - only if you asked for the service - a systemd unit, a launchd plist, or a
 scheduled task. A configuration you already have (or any other one you point `run.args` at) and your logs
 are never touched - the script only creates one when there is none.
 
