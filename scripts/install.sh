@@ -608,7 +608,11 @@ fill_template_token() { # fill_template_token <文件> <令牌>
 		cat "$tok_tmp" >"$1" && rm -f "$tok_tmp"
 }
 ensure_runtime_config() {
-	[ -f "$RUN_CONFIG" ] && return 0
+	if [ -f "$RUN_CONFIG" ]; then
+		# 已存在的运行配置内容绝不动（令牌、规则都是用户的），但权限按本脚本约定放宽到 777。
+		chmod 777 "$RUN_CONFIG" 2>/dev/null || true
+		return 0
+	fi
 	# ① 老位置那份（你改过令牌、规则）原样搬过来——谁也无权冲掉。
 	# ② 没有老文件才用模板：包自带的脚本边上的 sol.yaml（注释最全），没有就用下面内置的那份。
 	# 这两条只对默认那份生效；你另外指定的 --config 路径照旧只用下面的内置模板。

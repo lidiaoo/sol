@@ -25,7 +25,7 @@ param(
 	[string]$SolRoot = ''
 )
 # 环境变量（都有默认值；测试与多实例用）：
-#   SOL_INSTALL_ROOT  把落点挂到另一个目录下（默认 C:\ProgramData）
+#   SOL_INSTALL_ROOT  把落点挂到另一个目录下（沙箱时全部落 <根>\home\sol；不设时全落 %USERPROFILE%\sol）
 #   SOL_UNIT_NAME     计划任务名（默认 sol）
 $ErrorActionPreference = 'Stop'
 $Design = 'docs/install-design.md'
@@ -53,8 +53,8 @@ function Add-Utf8NoBom([string]$Path, [string]$Text) {
 # ───────────────────────── 平台与路径 ─────────────────────────
 # $Root / $TaskName / $InstallDir / $DestBin / $Ledger / $History / $LogFile / $TaskCmd 都定义在下面的
 # 参数解析之后——-SolRoot/--sol-root 要先读进来，才能决定它们落在哪儿。
-# 两份配置都落在**当前用户的目录**里，三端一个约定（Linux/macOS 是 ~/.config/sol/install.yaml
-# 与 ~/sol/sol.yaml，Windows 是 %USERPROFILE%\sol\ 下这两个文件）：不需要管理员权限就能生成、
+# 所有 sol 产生的文件都落在**当前用户的目录**里，三端一个约定（Linux/macOS 与 Windows 都是
+# <用户目录>\sol\ 一个目录管全部：~/sol 与 %USERPROFILE%\sol）：不需要管理员权限就能生成、
 # 查看、修改，也不随"你在哪个目录运行脚本"漂移（早先按执行目录走，在下载目录里跑一次就会多出一份）。
 # 服务定义里用的是绝对路径，所以不踩"服务有自己的家目录"那个坑——计划任务以 SYSTEM 跑，家目录是 system32。
 # 内部参数（UAC 升权重跑时把答案带过来；用户不需要、也不应该记这些）。
@@ -78,21 +78,24 @@ foreach ($a in $args) {
 # 参数解析完才定根目录与任务名（-SolRoot/--sol-root 要能改掉它们）。
 if ($env:SOL_INSTALL_ROOT) { $Root = $env:SOL_INSTALL_ROOT } else { $Root = 'C:\ProgramData' }
 if ($env:SOL_UNIT_NAME) { $TaskName = $env:SOL_UNIT_NAME } else { $TaskName = 'sol' }
-$InstallDir = Join-Path $Root 'sol'
+# 所有 sol 产生的文件都收拢在用户目录的 sol 下（三端一个约定）：二进制、台账、历史、日志、
+# 两份配置，一个目录管全部。计划任务无文件可收（注册进系统任务计划，跑的就是 sol.exe）。
+# 优先级：-SolRunDir/--sol-run-dir（UAC 升权重跑时父进程把真实用户的落点传过来，子进程从这里
+# 取，不会漂到别的 profile）> SOL_INSTALL_ROOT 沙箱（挂在 <根>\home\sol）> 当前用户目录。
+if ($RunDirArg) {
+	$InstallDir = $RunDirArg
+} elseif ($env:SOL_INSTALL_ROOT) {
+	$InstallDir = Join-Path (Join-Path $Root 'home') 'sol'
+} else {
+	$InstallDir = Join-Path $env:USERPROFILE 'sol'
+}
 $DestBin = Join-Path $InstallDir 'sol.exe'
 $Ledger = Join-Path $InstallDir 'install.json'
 $History = Join-Path $InstallDir 'install.log'
 $LogFile = Join-Path $InstallDir 'sol.log'
 $TaskCmd = Join-Path $InstallDir 'run-sol.cmd'
-# 用户名下那个目录：默认 %USERPROFILE%\sol；把落点挂到别的根（SOL_INSTALL_ROOT / --sol-root）时
-# 挂在 <根>\home\sol，沙箱与多实例测试不会碰到真实的家目录。
-if ($RunDirArg) {
-	$RunDir = $RunDirArg
-} elseif ($env:SOL_INSTALL_ROOT) {
-	$RunDir = Join-Path (Join-Path $Root 'home') 'sol'
-} else {
-	$RunDir = Join-Path $env:USERPROFILE 'sol'
-}
+# 配置目录与安装目录同一个（三端统一：所有 sol 文件都在 <用户目录>\sol\ 下）。
+$RunDir = $InstallDir
 $UserConfig = Join-Path $RunDir 'install.yaml'
 $RunConfig = Join-Path $RunDir 'sol.yaml'
 # 早先的安装把这两份文件放在**执行目录**里；这份只用于把老内容搬过来。
