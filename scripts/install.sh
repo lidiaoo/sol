@@ -724,7 +724,11 @@ banner() {
 show_menu() {
 	head2 "[选项]"
 	say "  1  按配置应用（按 install.yaml 里的 run.args 装或升级）"
-	say "  2  卸载（摘掉服务，按台账删掉自己建的东西）"
+	if [ "$LEDGER_EXISTS" = yes ]; then
+		say "  2  卸载（摘掉服务，按台账删掉自己建的东西）"
+	else
+		say "  2  卸载（还没有台账：只清执行目录里的遗留，不会动别人的东西）"
+	fi
 	say "  3  重新生成 install.yaml"
 	say "  4  退出，什么都不改"
 	say ""
@@ -861,7 +865,7 @@ ask_choice() { # ask_choice <提示> -> 打印一个词：apply | uninstall | re
 		if [ "$READ_EOF" = yes ]; then printf 'quit'; return 0; fi
 		[ -n "$ans" ] || ans=1
 		case "$ans" in
-		1 | apply) printf 'apply'; return 0 ;;
+		1 | y | yes | apply) printf 'apply'; return 0 ;;
 		2 | u | uninstall) printf 'uninstall'; return 0 ;;
 		3 | r | regenerate) printf 'regenerate'; return 0 ;;
 		4 | n | no | q | quit) printf 'quit'; return 0 ;;
@@ -1420,61 +1424,49 @@ fi
 banner
 show_state
 show_config
+# 菜单是唯一入口：无论装没装过，先给地图再问去哪。有没有台账只影响菜单项措辞，
+# 不影响菜单出不出来（原来"未安装就走 y/n 连环问"会逼着人装，这里改成显式选择）。
 if [ "$LEDGER_EXISTS" = yes ]; then
 	say "检测到已安装 ${LEDGER_VERSION:-?}（服务：$(state_cn "$(service_state)")）。"
-	show_menu
-	choice=$(ask_choice "请选择")
-	case "$choice" in
-	uninstall)
-		escalate uninstall
-		do_uninstall
-		report uninstall
-		;;
-	regenerate)
-		rm -f "$USER_CONFIG"
-		write_user_config
-		CONFIG_GENERATED=yes
-		say "已重新生成：${USER_CONFIG}（重新跑一次脚本就会按它执行）"
-		exit 0
-		;;
-	quit)
-		report none
-		;;
-	*)
-		if [ "$LEDGER_CREATED_UNIT" = true ]; then
-			SERVICE_WANTED=true
-		elif [ -n "$ROOT" ] || [ "$SERVICE_KIND" = none ]; then
-			SERVICE_WANTED=false
-		else
-			# 台账没说建过单元：可能当时你选了"不装服务"，也可能上次没跑完（单元不在）。
-			# 那就再问一次——否则"我想装服务"在这条路上永远没机会说出口。
-			SERVICE_WANTED=false
-			if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
-		fi
-		open_config_dir "$(dirname "$RUN_CONFIG")" "$RUN_CONFIG"
-		escalate install
-		do_install
-		if [ "$NOOP" = yes ]; then
-			say "（什么都没改。想强制重写服务定义就选 3 重新生成配置，或先卸载。）"
-			exit 0
-		fi
-		report install
-		;;
-	esac
-	exit 0
+else
+	say "未安装（按你已有的二进制处理；装完写台账到 ${LEDGER}）。"
 fi
-# 未安装
-SERVICE_WANTED=false
-if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
-if ! ask "执行吗？" y; then
+show_menu
+choice=$(ask_choice "请选择")
+case "$choice" in
+uninstall)
+	escalate uninstall
+	do_uninstall
+	report uninstall
+	;;
+regenerate)
+	rm -f "$USER_CONFIG"
+	write_user_config
+	CONFIG_GENERATED=yes
+	say "已重新生成：${USER_CONFIG}（重新跑一次脚本就会按它执行）"
+	exit 0
+	;;
+quit)
 	report none
-	exit 0
-fi
-open_config_dir "$(dirname "$RUN_CONFIG")" "$RUN_CONFIG"
-escalate install
-do_install
-if [ "$NOOP" = yes ]; then
-	say "（什么都没改。想强制重写服务定义就选 3 重新生成配置，或先卸载。）"
-	exit 0
-fi
-report install
+	;;
+*)
+	# 要不要服务：台账说建过就沿用（升级不动它）；没说过（首次安装、或上次选了不装）就问一次。
+	if [ "$LEDGER_CREATED_UNIT" = true ]; then
+		SERVICE_WANTED=true
+	elif [ -n "$ROOT" ] || [ "$SERVICE_KIND" = none ]; then
+		SERVICE_WANTED=false
+	else
+		SERVICE_WANTED=false
+		if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
+	fi
+	open_config_dir "$(dirname "$RUN_CONFIG")" "$RUN_CONFIG"
+	escalate install
+	do_install
+	if [ "$NOOP" = yes ]; then
+		say "（什么都没改。想强制重写服务定义就选 3 重新生成配置，或先卸载。）"
+		exit 0
+	fi
+	report install
+	;;
+esac
+exit 0

@@ -664,7 +664,11 @@ function Banner {
 function Show-Menu {
 	Head2 '[选项]'
 	Say '  1  按配置应用（按 install.yaml 里的 run.args 装或升级）'
-	Say '  2  卸载（摘掉计划任务，按台账删掉自己建的东西）'
+	if ($LedgerExists) {
+		Say '  2  卸载（摘掉计划任务，按台账删掉自己建的东西）'
+	} else {
+		Say '  2  卸载（还没有台账：只清执行目录里的遗留，不会动别人的东西）'
+	}
 	Say '  3  重新生成 install.yaml'
 	Say '  4  退出，什么都不改'
 	Say ''
@@ -680,6 +684,8 @@ function Ask-Choice($prompt) {
 		if (-not $ans) { return 'apply' }
 		switch ($ans) {
 			'1' { return 'apply' }
+			'y' { return 'apply' }
+			'yes' { return 'apply' }
 			'apply' { return 'apply' }
 			'2' { return 'uninstall' }
 			'u' { return 'uninstall' }
@@ -1254,51 +1260,50 @@ Banner
 Show-State
 Show-Config
 $script:Noop = $false
+# 菜单是唯一入口：无论装没装过，先给地图再问去哪。有没有台账只影响提示行与菜单项措辞，
+# 不影响菜单出不出来（原来"未安装就走 y/n 连环问"会逼着人装，这里改成显式选择）。
 if ($LedgerExists) {
 	$stText = switch (Task-State) { 'installed' { '计划任务已注册' } 'absent' { '没有计划任务' } default { '读不到计划任务（要管理员）' } }
 	$instTag0 = if ($LedgerJson.installed_version) { $LedgerJson.installed_version } else { '版本未知' }
 	Say "检测到已安装 $instTag0（服务：$stText）。"
-	Show-Menu
-	$choice = Ask-Choice '请选择'
-	switch ($choice) {
-		'uninstall' {
-			# 先问、再升权：答案随内部参数带过去，子进程不会再问（它的窗口不一定在你眼前）。
-			$script:DelConfigs = Ask-Yes '配置文件也一起删掉吗？' 'n'
-			$script:DelConfigsGiven = $true
-			$env:SOL_INSTALL_DELCONFIGS = if ($script:DelConfigs) { 'yes' } else { 'no' }
-			Escalate-IfNeeded 'uninstall'; Invoke-Uninstall; Show-Report 'uninstall'
-		}
-		'regenerate' {
-			Remove-Item -Path $UserConfig -Force -ErrorAction SilentlyContinue
-			Write-UserConfig
-			Say "已重新生成：$UserConfig（重新运行脚本就会按它执行）"
-		}
-		'quit' { Show-Report 'none' }
-		default {
-			$script:ServiceChosen = ($LedgerJson.service.created_unit -eq $true)
-			# 台账说没建过任务，而任务也确实不在（可能上次没跑完）：再问一次，
-			# 否则"我想装服务"在这条路上永远没机会说出口。
-			if (-not $script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT -and (Task-State) -ne 'installed') {
-				$script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
-			}
-			Open-ConfigDir (Split-Path -Parent $RunConfig) $RunConfig
-			Escalate-IfNeeded 'install'
-			Invoke-Install
-			if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 3 重新生成配置，或先卸载。）' }
-			else { Show-Report 'install' }
+} else {
+	Say "未安装（按你已有的 sol.exe 处理；装完写台账到 $Ledger）。"
+}
+Show-Menu
+$choice = Ask-Choice '请选择'
+switch ($choice) {
+	'uninstall' {
+		# 先问、再升权：答案随内部参数带过去，子进程不会再问（它的窗口不一定在你眼前）。
+		$script:DelConfigs = Ask-Yes '配置文件也一起删掉吗？' 'n'
+		$script:DelConfigsGiven = $true
+		$env:SOL_INSTALL_DELCONFIGS = if ($script:DelConfigs) { 'yes' } else { 'no' }
+		Escalate-IfNeeded 'uninstall'; Invoke-Uninstall; Show-Report 'uninstall'
+	}
+	'regenerate' {
+		Remove-Item -Path $UserConfig -Force -ErrorAction SilentlyContinue
+		Write-UserConfig
+		Say "已重新生成：$UserConfig（重新运行脚本就会按它执行）"
+	}
+	'quit' {
+		if ($script:NoAnswer) {
+			# 管道/无终端：读不到答案＝退出，什么也不做（绝不替你按回车）。
+			Say ''
+			Say '没有终端：只生成了配置，没有执行任何操作。'
+		} else {
+			Show-Report 'none'
 		}
 	}
-	exit 0
+	default {
+		# 要不要服务：台账说建过就沿用（升级不动它）；没说过（首次安装、或上次选了不装）就问一次。
+		$script:ServiceChosen = ($LedgerExists -and $LedgerJson.service.created_unit -eq $true)
+		if (-not $script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT) {
+			$script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
+		}
+		Open-ConfigDir (Split-Path -Parent $RunConfig) $RunConfig
+		Escalate-IfNeeded 'install'
+		Invoke-Install
+		if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 3 重新生成配置，或先卸载。）' }
+		else { Show-Report 'install' }
+	}
 }
-if ($script:NoAnswer) {
-	Say ''
-	Say '没有终端：只生成了配置，没有执行任何操作。'
-	exit 0
-}
-$script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
-if (-not (Ask-Yes '执行吗？' 'y')) { Show-Report 'none'; exit 0 }
-Open-ConfigDir (Split-Path -Parent $RunConfig) $RunConfig
-Escalate-IfNeeded 'install'
-Invoke-Install
-if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 3 重新生成配置，或先卸载。）' }
-else { Show-Report 'install' }
+exit 0
