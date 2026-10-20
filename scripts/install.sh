@@ -13,8 +13,11 @@
 #   SOL_INSTALL_ROOT  把系统路径挂到另一个根下（默认 /，DESTDIR 风格）
 #   SOL_UNIT_NAME     服务名（Linux 默认 sol.service，macOS 默认 com.lidiaoo.sol）
 #   SOL_RUN_DIR       跑 sol 时看到的用户目录（默认 ~/sol；sudo 下 HOME 变成 /root，所以升权时显式传）
-#   SOL_INSTALL_RUN_DIR / --run-dir  install.yaml 的目录（默认 ${XDG_CONFIG_HOME:-$HOME/.config}/sol）
+#   SOL_INSTALL_RUN_DIR / --run-dir  install.yaml 的目录（默认也在 ~/sol 下）
 set -eu
+# 本脚本产出的所有文件一律放宽到 777（用户要求）：脚本自己 mktemp 出来的临时文件受
+# 默认 umask（022）影响会是 644/700，在这里统一放开，后面的 chmod 777 才不会白做。
+umask 000
 DESIGN="docs/install-design.md"
 die() {
 	printf '错误: %s\n' "$*" >&2
@@ -46,11 +49,11 @@ say() { printf '%s\n' "$*"; }
 head2() { printf '\n%s%s%s\n' "$bold" "$*" "$reset"; }
 warn() { printf '提醒: %s\n' "$*" >&2; }
 # ───────────────────────── 平台与路径 ─────────────────────────
-OS=$(uname -s)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$OS" in
-Linux) SERVICE_KIND=systemd ;;
-Darwin) SERVICE_KIND=launchd ;;
+linux) SERVICE_KIND=systemd ;;
+darwin) SERVICE_KIND=launchd ;;
 *) die "只支持 Linux 与 macOS（Windows 请用 install.ps1）。当前系统：$OS" ;;
 esac
 # 系统路径挂载点：默认就是 /（正常安装）；测试与 chroot 时可以指到别处。
@@ -60,17 +63,23 @@ if [ -n "$ROOT" ]; then
 	[ -d "$ROOT" ] || die "SOL_INSTALL_ROOT=$ROOT 不存在"
 	ROOT=$(cd "$ROOT" && pwd)
 fi
-PREFIX="$ROOT/usr/local"
-BINDIR="$PREFIX/bin"
-SHAREDIR="$PREFIX/share/sol"
-LEDGER="$SHAREDIR/install.json"
-HISTORY="$SHAREDIR/install.log"
+# 所有 sol 产生的文件都收拢在 ~/sol 下（挂了 SOL_INSTALL_ROOT 时是 $ROOT$HOME/sol）：
+# 二进制、配置、台账、历史、单元文件，一个目录管全部；systemd 日志在 journal，没有文件可收。
+# 升权重跑（sudo）时 HOME 会变成 /root：父进程已把真实用户的落点通过 SOL_RUN_DIR 传过来，
+# 这里必须优先认它，否则二进制/台账/单元会被装到 /root/sol 下（真机就这么错过一次）。
+SOL_DIR=${SOL_RUN_DIR:-"$ROOT${HOME:-/root}/sol"}
+export SOL_RUN_DIR=$SOL_DIR
+PREFIX="$SOL_DIR"
+BINDIR="$SOL_DIR/bin"
+SHAREDIR="$SOL_DIR/share"
+LEDGER="$SOL_DIR/install.json"
+HISTORY="$SOL_DIR/install.log"
 if [ "$SERVICE_KIND" = "systemd" ]; then
 	UNIT_NAME=${SOL_UNIT_NAME:-sol.service}
-	UNIT_PATH="$ROOT/etc/systemd/system/$UNIT_NAME"
+	UNIT_PATH="$SOL_DIR/$UNIT_NAME"
 else
 	UNIT_NAME=${SOL_UNIT_NAME:-com.lidiaoo.sol}
-	UNIT_PATH="$ROOT/Library/LaunchDaemons/$UNIT_NAME.plist"
+	UNIT_PATH="$SOL_DIR/$UNIT_NAME.plist"
 fi
 UID_NOW=$(id -u)
 SUDO=""
@@ -122,7 +131,7 @@ running_instances() { # running_instances <二进制完整路径>
 }
 log_hint() { # 服务日志在哪看：launchd 写文件，systemd 进 journal
 	case "$SERVICE_KIND" in
-	launchd) printf '%s' "$PREFIX/var/log/sol.log" ;;
+	launchd) printf '%s' "$SOL_DIR/sol.log" ;;
 	systemd) printf '%s' "journalctl -u $UNIT_NAME -f" ;;
 	*) printf '%s' "（$SERVICE_KIND 的日志位置未知）" ;;
 	esac
@@ -216,20 +225,15 @@ mkdir_root() { # mkdir_root <目录>
 # 挂了自选的根（SOL_INSTALL_ROOT）时，用户目录默认也挂到根下，沙箱与多实例测试不会碰到真实的家目录。
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 HOME_NOW=${HOME:-/root}
-case "$ROOT" in
-'') HOME_NOW_DEFAULT=$HOME_NOW ;;
-*) HOME_NOW_DEFAULT="$ROOT/root" ;;
-esac
 if [ -n "${RUN_DIR_ARG:-}" ]; then
 	STATE_DIR=$RUN_DIR_ARG
 else
-	STATE_DIR="${XDG_CONFIG_HOME:-${HOME:-/root}/.config}/sol"
-	[ -n "$ROOT" ] && STATE_DIR="$ROOT$STATE_DIR"
+	STATE_DIR="$SOL_DIR"
 fi
 if [ -n "${SOL_RUN_DIR:-}" ]; then
 	RUN_DIR=$SOL_RUN_DIR
 else
-	RUN_DIR="${HOME_NOW_DEFAULT%/}/sol"
+	RUN_DIR="$SOL_DIR"
 fi
 USER_CONFIG="$STATE_DIR/install.yaml"
 # 早先的安装把两份配置放在**执行目录**里（后来 sol.yaml 又搬到了系统落点）；这几个只用于把老内容搬过来。
@@ -268,12 +272,13 @@ escalate() { # escalate <install|uninstall>
 	[ -n "$ROOT" ] && return 0 # 自选的根（沙箱 / chroot）：自己的地盘，不升权
 	needs=no
 	case "$action" in
-	uninstall) needs=yes ;; # 卸载要动系统单元与落点
+	uninstall) needs=yes ;; # 卸载要动 systemd 的链接与注册信息
 	install)
 		writable_target "$BINDIR" || needs=yes
 		writable_target "$SHAREDIR" || needs=yes
 		# SERVICE_WANTED 才是"问题的答案"；SERVICE_CHOSEN 要到 do_install 里才同步，
 		# 在这个时点读它永远还是 false（会算出"不需要 root"，或者给子进程传错答案）。
+		# 单元文件在 ~/sol 下，注册进 systemd（link/enable）也要 root。
 		[ "$SERVICE_WANTED" = true ] && needs=yes
 		;;
 	esac
@@ -447,6 +452,11 @@ fi
 DEFAULT_CONFIG_PATH="$RUN_DIR/sol.yaml"
 DEFAULT_ARGS="listen --config $DEFAULT_CONFIG_PATH"          # 给人看、给报告用
 DEFAULT_ARGS_YAML="listen, --config, $DEFAULT_CONFIG_PATH"   # 写进模板与报错提示：YAML 列表要逗号
+# 模板校验比的是**真实用户的标准落点**（$HOME/sol/sol.yaml），不是 $DEFAULT_ARGS：
+# $RUN_DIR 会被 SOL_RUN_DIR / SOL_INSTALL_ROOT 改掉（沙箱、多实例测试），而模板永远写着
+# 未挂根时的标准落点。拿被改过的值去比，只要换个目录就会把好包说成"坏包"
+# （install.ps1 的 $CanonicalRunConfig 是同一套约定）。
+CANONICAL_RUN_CONFIG="${HOME:-/root}/sol/sol.yaml"
 # scripts/sol.yaml 跟脚本放在一起（开发树里在 scripts/ 下，发布包里被摊平到脚本旁边）。
 TEMPLATE_CONFIG="$SCRIPT_DIR/sol.yaml"
 [ -f "$TEMPLATE_CONFIG" ] || TEMPLATE_CONFIG="$SCRIPT_DIR/scripts/sol.yaml"
@@ -463,23 +473,32 @@ for cand in "$SCRIPT_DIR/$INSTALL_TEMPLATE_NAME" "$SCRIPT_DIR/scripts/$INSTALL_T
 	[ -f "$cand" ] && { INSTALL_TEMPLATE=$cand; break; }
 done
 [ -n "$INSTALL_TEMPLATE" ] || die "找不到本平台的安装配置模板 ${INSTALL_TEMPLATE_NAME}（应该跟 install.sh 放在一起）。重新下载一份发布包再装。"
+parse_args_of() { # parse_args_of <文件>：args 的两端空格抹平后，一行一个 token
+	sed -n '/^[[:space:]]*args:/p' "$1" |
+		sed 's/^[[:space:]]*args:[[:space:]]*//' |
+		tr -d '[]' |
+		tr ',' '\n' |
+		sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
+		sed '/^$/d'
+}
 # 模板里的 args 一行是 YAML 流式列表，带引号；解析它和解析用户那份必须是同一套规则，所以共用
 # parse_args_of——模板和用户配置的写法是同一套，没有第二套。读出来之后去掉外面的引号、展开
 # ~ / $HOME / $XDG_CONFIG_HOME（模板里这么写，换台机器、换用户都对），再跟默认值比。
 expand_args() {
 	sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/" |
-		sed -e "s#^~/#$HOME/#" -e 's#^~$#'"$HOME"'#' |
+		sed -e "s#\~/#$HOME/#" -e 's#\~$#'"$HOME"'#' |
 		sed -e "s#\$HOME#$HOME#g"
 }
 # 一个文件里 args 的规整结果（一行 token，空格分隔）：读模板与判断"是不是示例"共用这一条规则。
 args_of_file() { parse_args_of "$1" | expand_args | tr '\n' ' ' | sed 's/ *$//'; }
 user_config_args() { args_of_file "$INSTALL_TEMPLATE"; }
-# 模板必须写得能被本脚本读懂：读不出 args，或者 args 跟本脚本算出来的默认值对不上，都算坏包。
-[ "$(user_config_args)" = "$DEFAULT_ARGS" ] ||
-	die "本平台的安装配置模板 ${INSTALL_TEMPLATE} 里的 args 对不上（读到：$(user_config_args)）。这是坏包，重新下载。"
+# 模板必须写得能被本脚本读懂：读不出 args，或者 args 跟标准落点对不上，都算坏包。
+[ "$(user_config_args)" = "listen --config $CANONICAL_RUN_CONFIG" ] ||
+	die "本平台的安装配置模板 ${INSTALL_TEMPLATE} 里的 args 对不上（读到：$(user_config_args)；应该是 listen --config $CANONICAL_RUN_CONFIG）。这是坏包，重新下载。"
 write_user_config() {
 	mkdir -p "$(dirname "$USER_CONFIG")"
 	cp "$INSTALL_TEMPLATE" "$USER_CONFIG"
+	chmod 777 "$USER_CONFIG" 2>/dev/null || true
 }
 # 这份内容和"我们现在会生成的那份"是否一样（忽略 CRLF）。老脚本写的注释措辞不同，所以分两步：
 # ① 逐字相同；② 去掉注释与空行后只剩 run: 和那一行 args，且 args 与默认值一致。两条都不成立，
@@ -496,16 +515,8 @@ is_stock_user_config() { # is_stock_user_config <文件>
 	[ "$(args_of_file "$1")" = "$DEFAULT_ARGS" ]
 }
 _strip_cr() { tr -d '\r'; }
-parse_args_of() { # parse_args_of <文件>：args 的两端空格抹平后，一行一个 token
-	sed -n '/^[[:space:]]*args:/p' "$1" |
-		sed 's/^[[:space:]]*args:[[:space:]]*//' |
-		tr -d '[]' |
-		tr ',' '\n' |
-		sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
-		sed '/^$/d'
-}
 # 把 args 解析成一行一个 token（只支持本脚本自己写出的那种写法，不猜别的）。
-parse_args() { parse_args_of "$USER_CONFIG"; }
+parse_args() { parse_args_of "$USER_CONFIG" | expand_args; }
 # 搬运（老位置 → 新位置）要在升权之前做：这两份文件属于**当前用户**，用 sudo 写会变成 root 的。
 # 老内容原样拷过来（令牌、注释、你改过的规则都跟着走），绝不覆盖新位置上已有的文件。
 CONFIG_GENERATED=no
@@ -515,11 +526,13 @@ if [ ! -f "$USER_CONFIG" ] && [ -f "$LEGACY_USER_CONFIG" ]; then
 		: # 内容跟默认生成的那份一样（只有默认 args）：那是示例，不搬
 	elif mkdir -p "$STATE_DIR" && cp "$LEGACY_USER_CONFIG" "$USER_CONFIG" 2>/dev/null; then
 		LEGACY_USER_COPIED=$LEGACY_USER_CONFIG
+		chmod 777 "$USER_CONFIG" 2>/dev/null || true
 	else
 		warn "没能把 $LEGACY_USER_CONFIG 拷到 $USER_CONFIG，按新位置重新生成。"
 	fi
 	CONFIG_GENERATED=yes
 fi
+chmod 777 "$USER_CONFIG" 2>/dev/null || true
 # 老位置的内容在升权之前就原样搬过来了（见"升权"一节前面那段）；这里只剩"还没有就写一份"。
 [ -f "$USER_CONFIG" ] || { write_user_config; CONFIG_GENERATED=yes; }
 [ -n "$LEGACY_USER_COPIED" ] && say "安装配置   沿用 $LEGACY_USER_COPIED（原样拷到 $USER_CONFIG；你另外指定的不受影响）"
@@ -567,7 +580,8 @@ case " $LEGACY_RUN_CONFIG $LEGACY_RUN_CONFIG_ABS $RUN_DIR/sol.yaml" in
 	awk -v a="  args: [listen, --config, $RUN_CONFIG]" '
 		!done && /^[[:space:]]*args:/ { print a; done = 1; next }
 		{ print }
-	' "$USER_CONFIG" >"$USER_CONFIG.tmp" && mv "$USER_CONFIG.tmp" "$USER_CONFIG"
+	' "$USER_CONFIG" >"$USER_CONFIG.tmp" && command mv -f "$USER_CONFIG.tmp" "$USER_CONFIG"
+	chmod 777 "$USER_CONFIG" 2>/dev/null || true
 	say "运行配置   改到用户目录：$RUN_CONFIG$( [ -n "$RUN_COPY_FROM" ] && printf '（老位置那份原样拷过去）' )；你另外指定的路径不受影响。"
 	;;
 esac
@@ -602,7 +616,7 @@ ensure_runtime_config() {
 		if [ -n "$RUN_COPY_FROM" ]; then
 			# 用户目录里那份必须是当前用户的（服务以 root 跑，读得到），所以不是 root 写。
 			mkdir -p "$RUN_DIR" 2>/dev/null || mkdir_root "$RUN_DIR"
-			if cp "$RUN_COPY_FROM" "$RUN_CONFIG" 2>/dev/null && chmod 600 "$RUN_CONFIG" 2>/dev/null; then
+			if cp "$RUN_COPY_FROM" "$RUN_CONFIG" 2>/dev/null && chmod 777 "$RUN_CONFIG" 2>/dev/null; then
 				RUNTIME_CONFIG_GENERATED=yes
 				RUNTIME_CONFIG_COPIED=yes
 				RUN_COPIED_FROM=$RUN_COPY_FROM
@@ -615,7 +629,7 @@ ensure_runtime_config() {
 			if cp "$TEMPLATE_CONFIG" "$runtime_tmp" 2>/dev/null &&
 				fill_template_token "$runtime_tmp" "$(new_control_token)" &&
 				cp "$runtime_tmp" "$RUN_CONFIG" 2>/dev/null; then
-				chmod 600 "$RUN_CONFIG" 2>/dev/null || true
+				chmod 777 "$RUN_CONFIG" 2>/dev/null || true
 				rm -f "$runtime_tmp"
 				RUNTIME_CONFIG_GENERATED=yes
 				RUNTIME_CONFIG_FROM=$TEMPLATE_CONFIG
@@ -659,9 +673,9 @@ YAML
 	mkdir_root "$(dirname "$RUN_CONFIG")"
 	# 默认落在用户目录里，不需要 root；真写不进去（HOME 不可写之类）再请一次 sudo。
 	if [ "$(dirname "$RUN_CONFIG")" = "$RUN_DIR" ] && writable_target "$RUN_DIR"; then
-		install -m 600 "$runtime_tmp" "$RUN_CONFIG" || put_root "$runtime_tmp" "$RUN_CONFIG" 0600
+		install -m 777 "$runtime_tmp" "$RUN_CONFIG" || put_root "$runtime_tmp" "$RUN_CONFIG" 0777
 	else
-		put_root "$runtime_tmp" "$RUN_CONFIG" 0600
+		put_root "$runtime_tmp" "$RUN_CONFIG" 0777
 	fi
 	rm -f "$runtime_tmp"
 	RUNTIME_CONFIG_GENERATED=yes
@@ -772,7 +786,7 @@ show_state() {
 	fi
 	if [ -f "$RUN_CONFIG" ]; then
 		if [ "$RUNTIME_CONFIG_GENERATED" = yes ]; then
-			say "  运行配置    ${RUN_CONFIG}（沿用了 ${RUN_COPIED_FROM}，原样拷过来的）"
+			say "  运行配置    ${RUN_CONFIG}（沿用了 ${RUN_COPIED_FROM:-}，原样拷过来的）"
 		else
 			say "  运行配置    ${RUN_CONFIG}（sol 会读它）"
 		fi
@@ -954,7 +968,7 @@ write_ledger() { # write_ledger <incomplete: true|false> [prevVersion] [prevSha]
   },
   "firewall_rules": [],
   "config_paths": ["$RUN_CONFIG"],
-  "log_paths": [$( [ "$SERVICE_KIND" = launchd ] && printf '"%s"' "$PREFIX/var/log/sol.log" )],
+  "log_paths": [$( [ "$SERVICE_KIND" = launchd ] && printf '"%s"' "$SOL_DIR/sol.log" )],
   "previous": { "installed_version": "$2", "sha256": "$3" },
   "incomplete": $1
 }
@@ -963,7 +977,7 @@ EOF
 		cp "$LEDGER_TMP" "$LEDGER"
 	else
 		mkdir_root "$SHAREDIR"
-		put_root "$LEDGER_TMP" "$LEDGER" 0644
+		put_root "$LEDGER_TMP" "$LEDGER" 0777
 	fi
 }
 append_history() { # append_history <动作>
@@ -972,15 +986,18 @@ append_history() { # append_history <动作>
 		printf '== %s %s ==\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"
 		printf '%s\n' "$ACTIONS"
 	} >"$tmp"
+	chmod 777 "$tmp" 2>/dev/null || true
 	if [ -f "$HISTORY" ] && [ -w "$HISTORY" ]; then
 		cat "$tmp" >>"$HISTORY"
 	else
 		mkdir_root "$SHAREDIR"
+		chmod 777 "$HISTORY" 2>/dev/null || as_root chmod 0777 "$HISTORY" 2>/dev/null || true
 		if [ -n "$SUDO" ] && [ ! -w "$SHAREDIR" ]; then
 			as_root tee -a "$HISTORY" <"$tmp" >/dev/null
 		else
 			cat "$tmp" >>"$HISTORY" 2>/dev/null || as_root tee -a "$HISTORY" <"$tmp" >/dev/null
 		fi
+		chmod 777 "$HISTORY" 2>/dev/null || as_root chmod 0777 "$HISTORY" 2>/dev/null || true
 	fi
 	rm -f "$tmp"
 }
@@ -1023,8 +1040,8 @@ render_unit() {
 			printf '  <key>RunAtLoad</key><true/>\n'
 			printf '  <key>KeepAlive</key><true/>\n'
 			# launchd 要日志文件的目录先存在，否则任务起不来（这是 macOS 上最容易踩的一脚）。
-			printf '  <key>StandardOutPath</key><string>%s/var/log/sol.log</string>\n' "$PREFIX"
-			printf '  <key>StandardErrorPath</key><string>%s/var/log/sol.log</string>\n' "$PREFIX"
+			printf '  <key>StandardOutPath</key><string>%s/sol.log</string>\n' "$PREFIX"
+			printf '  <key>StandardErrorPath</key><string>%s/sol.log</string>\n' "$PREFIX"
 			printf '</dict>\n</plist>\n'
 		}
 		;;
@@ -1157,13 +1174,13 @@ do_install() {
 		fi
 		new_tmp=$(mktemp)
 		cp "$LOCAL_BIN" "$new_tmp"
-		chmod 0755 "$new_tmp"
+		chmod 0777 "$new_tmp"
 		if [ -w "$BINDIR" ]; then
 			mv "$new_tmp" "$DEST_BIN"
 			act user "放置二进制（原子替换）" "mv <新二进制> $DEST_BIN"
 		else
 			as_root mv "$new_tmp" "$DEST_BIN"
-			as_root chmod 0755 "$DEST_BIN"
+			as_root chmod 0777 "$DEST_BIN"
 			act root "放置二进制（原子替换）" "sudo mv <新二进制> $DEST_BIN"
 		fi
 		rm -f "$new_tmp"
@@ -1196,7 +1213,7 @@ do_install() {
 	launchd)
 		if [ "$SERVICE_CHOSEN" = true ]; then
 			if ! launchctl print "system/$UNIT_NAME" >/dev/null 2>&1; then
-				warn "launchd 任务没有在跑。看日志：$PREFIX/var/log/sol.log"
+				warn "launchd 任务没有在跑。看日志：$SOL_DIR/sol.log"
 			else
 				RUNNING_VER="running"
 			fi
@@ -1210,12 +1227,12 @@ write_service() {
 		mkdir_root "$(dirname "$UNIT_PATH")"
 		if [ "$SERVICE_KIND" = launchd ]; then
 			# launchd 在启动任务之前要求日志文件所在目录已存在，否则任务直接起不来。
-			mkdir_root "$PREFIX/var/log"
-			act root "建日志目录（launchd 需要它存在）" "sudo mkdir -p $PREFIX/var/log"
+			mkdir_root "$SOL_DIR"
+			act root "建日志目录（launchd 需要它存在）" "sudo mkdir -p $SOL_DIR"
 		fi
 		unit_tmp=$(mktemp)
 		render_unit >"$unit_tmp"
-		put_root "$unit_tmp" "$UNIT_PATH" 0644
+		put_root "$unit_tmp" "$UNIT_PATH" 0777
 		rm -f "$unit_tmp"
 		act root "写服务定义（从 run.args 生成）" "sudo cp <服务定义> $UNIT_PATH"
 		;;
@@ -1226,9 +1243,11 @@ write_service() {
 			warn "SOL_INSTALL_ROOT=${ROOT}：单元文件写好了，但不注册服务（systemd 看不见它）。"
 		elif command -v systemctl >/dev/null 2>&1; then
 			as_root systemctl daemon-reload >/dev/null 2>&1 || true
+			# 单元文件在 ~/sol 下（不在 /etc/systemd/system），systemd 找不到名字，要先 link 再 enable。
+			as_root systemctl link --force "$UNIT_PATH" >/dev/null 2>&1 || true
 			as_root systemctl enable --now "$UNIT_NAME" >/dev/null 2>&1 ||
 				warn "systemctl enable --now $UNIT_NAME 失败，手动跑一遍看原因"
-			act root "启用并启动服务" "sudo systemctl enable --now $UNIT_NAME"
+			act root "链接并启用服务" "sudo systemctl link --force $UNIT_PATH && sudo systemctl enable --now $UNIT_NAME"
 		else
 			warn "没有 systemctl（容器里？）：单元文件已写好，进了 systemd 的系统再 enable"
 		fi
@@ -1267,6 +1286,8 @@ do_uninstall() {
 		act root "停用并禁用服务" "sudo systemctl disable --now $UNIT_NAME"
 		rm_root "$UNIT_PATH"
 		[ -f "$UNIT_PATH" ] || act root "删单元文件" "sudo rm $UNIT_PATH"
+		# 单元在 ~/sol 下是通过 systemctl link 挂进来的，删文件后要把链接也摘掉。
+		as_root systemctl unlink "$UNIT_PATH" >/dev/null 2>&1 || as_root systemctl disable "$UNIT_NAME" >/dev/null 2>&1 || true
 		as_root systemctl daemon-reload >/dev/null 2>&1 || true
 		act root "重载 systemd" "sudo systemctl daemon-reload"
 		;;
