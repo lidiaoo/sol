@@ -143,7 +143,16 @@ for d in */; do
 		fi
 		out="$name.zip"
 	else
-		tar -czf "$DIST/$name.tar.gz" "$name"
+		# 二进制必须带**可执行位**进包：解包后第一件事就是跑它，没有 x 位的话
+		# install.sh 的 find_local_binary 会认为"脚本旁边没有 sol"，直接报"没有可用的 sol 二进制"。
+		# 而 git-bash/Windows 上的 NTFS 没有 POSIX 权限位，chmod +x 是空操作（ls 仍显示 rw-r--r--），
+		# 所以不能指望 chmod，只能在 tar 里**显式**把这条成员的 mode 写成 0755。
+		# tar 的 --mode 对所有成员一律生效，所以分两步：先打进其余文件，再用 --mode 追加二进制。
+		tar -cf "$DIST/$name.tar" --exclude="$name/sol" "$name" &&
+			tar -rf "$DIST/$name.tar" --mode='u+rwx,go+rx' "$name/sol" &&
+			gzip -cf "$DIST/$name.tar" >"$DIST/$name.tar.gz" &&
+			rm -f "$DIST/$name.tar" ||
+			die "打包 $name.tar.gz 失败"
 		out="$name.tar.gz"
 	fi
 	printf '  %-34s %s\n' "$out" "$(wc -c <"$DIST/$out" | tr -d ' ') 字节"
@@ -200,6 +209,18 @@ if [ -n "$first" ]; then
 	if grep -q "$(printf '\r')" "${first}install.sh"; then die "包里的 install.sh 还带着 CR：Linux/macOS 上跑不起来"; fi
 	say "  包里脚本与仓库一致：install.ps1 / install.cmd 逐字节，install.sh 去 CR 后逐字节（无 CR）"
 fi
+# 二进制在 tar 里必须带可执行位。这条只能查**包里的记录**，不能查工作区里的文件——在
+# git-bash/Windows 上 NTFS 没有 POSIX 权限位，chmod +x 是空操作，工作区里那份永远是 rw-r--r--，
+# 真出了这种包，用户解包后 install.sh 会报"没有可用的 sol 二进制"（它在找一个 -x 的文件）。
+for tb in "$DIST"/sol-"$VERSION"-*.tar.gz; do
+	[ -e "$tb" ] || continue
+	tline=$(tar -tvzf "$tb" | grep -E "/sol\$" | head -1)
+	case "$tline" in
+	-rwx*) : ;;
+	*) die "$(basename "$tb") 里的 sol 没有可执行位（解包后装不上）：$tline" ;;
+	esac
+done
+say "  包里的 sol 带可执行位（tar -tvzf 记录为 -rwx…）"
 if [ -d skills ]; then
 	for sk in skills/*/; do
 		[ -d "$sk" ] || continue
