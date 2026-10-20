@@ -534,7 +534,8 @@ if ($LegacyRunConfig -contains $RunConfig) {
 	}
 	$ArgsList = $migrated
 	Set-Args-Line $ArgsList
-	Say "运行配置   改到用户目录：$RunConfig$(if ($RuntimeConfigCopied) { '（老位置那份原样拷过来了）' } else { '' }；你另外指定的路径不受影响)"
+	$copiedNote = if ($RuntimeConfigCopied) { '（老位置那份原样拷过来了）' } else { '' }
+	Say "运行配置   改到用户目录：$RunConfig$copiedNote；你另外指定的路径不受影响"
 }
 function Get-ThresholdPorts {
 	$ports = @()
