@@ -456,8 +456,42 @@ function Set-RuntimeConfigAcl([string]$Path) {
 		Warn2 "没能收紧 $Path 的权限：$($out -join ' ')（里面有明文令牌，建议手动只留你本人、SYSTEM 与 Administrators）"
 	}
 }
+# 老配置里 logging.file 写的是老落点（C:\ProgramData\sol\sol.log）。东西搬到用户目录、老落点清掉之后，
+# 那个路径已经不可写了——计划任务以 SYSTEM 跑，sol 一开日志就 "Access is denied"，预检直接不过，
+# 用户看到的是"装不上"而不是"日志路径过期了"。这里只改**指进老落点**的值，用户自己挑的
+# 日志路径（比方 D:\logs\sol.log）一个字都不动。
+function Repair-RunConfigLogPath {
+	if (-not (Test-Path -LiteralPath $RunConfig)) { return }
+	$legacyRoot = $LegacyInstallDir.TrimEnd('\')
+	if (-not $legacyRoot) { return }
+	# 不加"必须正在迁移"这类守卫，是因为**所有**能走到这里的现实状态都要改：
+	#   · 老目录还在 → Move-LegacyInstall 会把它下面的 sol.log 删掉，配置再指着它就是指着空气；
+	#   · 老目录已经没了 → 那条路径直接不可创建，SYSTEM 起服务就 Access is denied。
+	# 反过来，"用户特意挑 C:\ProgramData\sol\sol.log 当日志"这种状态在这里不成立——那个目录
+	# 归我们管、里面同名文件就是我们清的对象。所以只要值落在这棵树里就搬，用户自己挑的别处不动。
+	$enc = New-Object System.Text.UTF8Encoding($false)
+	try { $old = [System.IO.File]::ReadAllText($RunConfig, $enc) } catch { return }
+	if ($old.IndexOf($legacyRoot, [StringComparison]::OrdinalIgnoreCase) -lt 0) { return }
+	# 只认 file: 后面的值；flow 写法（logging: { output: file, file: '…' }）也照顾到，
+	# 而 "output: file" 这种冒号在后面的不算（正则要求 file 后面就是冒号）。
+	# 末尾那个 (?=…) 是边界：C:\ProgramData\sol2\… 不能被当成 C:\ProgramData\sol 命中
+	# （不然会把别人的路径截一半改写掉）。
+	$pattern = '(\bfile\s*:\s*)([''"]?)(' + [regex]::Escape($legacyRoot) + '(?:\\[^''"\r\n}]*)?)(?=[\\''"\s}]|$)\2'
+	$rx = New-Object System.Text.RegularExpressions.Regex($pattern)
+	if ($rx.Matches($old).Count -eq 0) { return }
+	$new = $rx.Replace($old, {
+			param($m)
+			$leaf = Split-Path -Leaf $m.Groups[3].Value
+			if (-not $leaf) { $leaf = 'sol.log' }
+			$q = $m.Groups[2].Value
+			$m.Groups[1].Value + $q + (Join-Path $RunDir $leaf) + $q
+		})
+	if ($new -ceq $old) { return }
+	Invoke-WithRetry '把运行配置里指向老落点的日志路径换成新落点' { [System.IO.File]::WriteAllText($RunConfig, $new, $enc) } | Out-Null
+	Act 'user' "运行配置的日志路径改到新落点（$RunDir）" "（logging.file 里的 $legacyRoot 换成 $RunDir）"
+}
 function Ensure-RuntimeConfig {
-	if (Test-Path $RunConfig) { return }
+	if (Test-Path $RunConfig) { Repair-RunConfigLogPath; return }
 	try {
 		$cfgDir = Split-Path -Parent $RunConfig
 		if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force -ErrorAction Stop | Out-Null }

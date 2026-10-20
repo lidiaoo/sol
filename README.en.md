@@ -231,8 +231,10 @@ rules survive re-running the installer, upgrades, and uninstall-then-install. Th
 installer itself changing: older versions wrote these files into the directory you ran the script from,
 into `~/.config/sol/`, or into `C:\ProgramData\sol\`, and the first run of a newer one moves them -
 content unchanged - into `~/sol/` and cleans up what belongs to us at the old places, so you are never
-left with "one copy on PATH, another one in the service". Edit the configuration and re-run the script to
-change it.
+left with "one copy on PATH, another one in the service". A `logging.file` in `sol.yaml` that points into
+the old location is rewritten to the new one too - that path stops being writable once the old directory
+is gone, and sol would fail to start with `Access is denied`. A log path you picked yourself is left
+alone. Edit the configuration and re-run the script to change it.
 Ports below 1024 need root on Linux/macOS, which the script sorts out before it touches anything - on a
 user-level install without root, move them to 1024 or above. It prints the current situation and where
 the configuration lives, then asks two questions: install as a service, and go ahead. Nothing changes

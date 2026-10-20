@@ -258,6 +258,7 @@ sol v0.3.0（用你提供的 ./sol）-> /home/you/sol/sol（systemd 服务已启
   - **文件权限**：里面有明文令牌，所以生成后 `chmod 600`（Windows 用 `icacls` 只留当前用户与 Administrators）。
   - **计划任务没有 stdout**：任务跑的是 `sol.exe listen --config …`，日志必须由 sol 自己写文件，配置里要有 `logging: {output: file}`。
 - **老位置的内容会搬过来（新位置没有文件时才搬，绝不覆盖）**：三处老位置——① 执行目录（最早的版本）；② Unix `~/.config/sol/install.yaml` 与 `/usr/local/share/sol/`、Windows `C:\ProgramData\sol\`（二进制、台账、日志）。搬的时候把老那份**原样拷过去**（令牌、注释、你改过的规则都不丢），并把 `install.yaml` 里 `--config` 的**默认**取值改写成新路径、把 `~/` 展开成绝对路径；你自己另行指定的路径一律不动。搬完之后：Unix 删掉 `~/.config/sol/` 那份；Windows 的 `C:\ProgramData\sol\` 里属于我们的 `sol.exe`/`.bak`/`install.json`/`install.log`/`sol.log`/包装脚本逐个清掉（目录空了连目录删，还有别人的东西就留着），并从**机器 PATH** 撤下那一行——不留"命令行一份、计划任务另一份"的局面。
+  - 搬完还要**修日志路径**：老 `sol.yaml` 里 `logging: { output: file, file: 'C:\ProgramData\sol\sol.log' }` 指向的老落点已经被清掉了，计划任务又以 SYSTEM 跑，sol 一开日志就是 `Access is denied`，预检直接不过——用户看到的是"装不上"，而不是"日志路径过期了"。所以 `sol.yaml` 里凡是 `file:` 之后**指进老落点**的取值，都改写成新落点下的同名文件；用户自己挑的路径（`D:\logs\sol.log` 之类）一个字都不动。只认 `file:` 后面的值，`output: file` 那种冒号在后面的不算。
 - **端口 <1024 在 Linux/macOS 上要 root**，所以默认配置意味着：正常安装（动手前会升权）没问题；但"不要 root 的用户级安装"在这种配置下预检会失败（sol 报 `bind: permission denied`），那种场景得把端口改成 ≥1024。Windows 上低端口不需要特权，不受这一条影响。
 
 用 sudo 跑也一样：整份产物跟的是**当前用户的家目录**（`install.sh` 升权重跑时显式传 `SOL_RUN_DIR=$RUN_DIR`，因为 sudo 下 `HOME` 会变成 `/root`；`install.ps1` 走 `Start-Process -Verb RunAs`，`USERPROFILE` 仍是你的）。服务自己的家目录不同，所以才把绝对路径写进服务定义。

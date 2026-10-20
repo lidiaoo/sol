@@ -52,5 +52,6 @@ elevated-*.progress
 # 安装脚本的本地验证目录（沙箱根、假 sudo/uname、端到端产物）：跑 .soltest.sh / .shsandbox 用，
 # 只在本机存在，不进仓库。
 .sbtest*/
+.sbsandbox/
 .shsandbox/
 .soltest.sh
