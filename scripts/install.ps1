@@ -76,9 +76,14 @@ foreach ($a in $args) {
 	else { Die "这个脚本不接受参数（$a）。所有选择都在生成的配置文件和问答里。" }
 }
 # 参数解析完才定根目录与任务名（-SolRoot/--sol-root 要能改掉它们）。
+# 落点里那几个固定名字只在这里写一次：报告、报错文案、计划任务、打包自检都引用它们，
+# 免得同一个 'sol.yaml' 在文件里散成十几处字面量、改一处漏一处。
+$DirName = 'sol'                 # 用户目录下那个目录（%USERPROFILE%\sol；设了自选根时是 <根>\home\sol）
+$InstallConfigName = 'install.yaml'   # 安装配置："sol 怎么跑"
+$RunConfigName = 'sol.yaml'           # 运行配置：sol 自己读的那份
 if ($env:SOL_INSTALL_ROOT) { $Root = $env:SOL_INSTALL_ROOT } else { $Root = 'C:\ProgramData' }
 if ($env:SOL_UNIT_NAME) { $TaskName = $env:SOL_UNIT_NAME } else { $TaskName = 'sol' }
-$InstallDir = Join-Path $Root 'sol'
+$InstallDir = Join-Path $Root $DirName
 $DestBin = Join-Path $InstallDir 'sol.exe'
 $Ledger = Join-Path $InstallDir 'install.json'
 $History = Join-Path $InstallDir 'install.log'
@@ -89,20 +94,20 @@ $TaskCmd = Join-Path $InstallDir 'run-sol.cmd'
 if ($RunDirArg) {
 	$RunDir = $RunDirArg
 } elseif ($env:SOL_INSTALL_ROOT) {
-	$RunDir = Join-Path (Join-Path $Root 'home') 'sol'
+	$RunDir = Join-Path (Join-Path $Root 'home') $DirName
 } else {
-	$RunDir = Join-Path $env:USERPROFILE 'sol'
+	$RunDir = Join-Path $env:USERPROFILE $DirName
 }
-$UserConfig = Join-Path $RunDir 'install.yaml'
-$RunConfig = Join-Path $RunDir 'sol.yaml'
+$UserConfig = Join-Path $RunDir $InstallConfigName
+$RunConfig = Join-Path $RunDir $RunConfigName
 # 早先的安装把这两份文件放在**执行目录**里；这份只用于把老内容搬过来。
-$LegacyUserConfig = Join-Path (Get-Location).Path 'install.yaml'
-$LegacyDesktopConfig = Join-Path (Get-Location).Path 'sol.yaml'
+$LegacyUserConfig = Join-Path (Get-Location).Path $InstallConfigName
+$LegacyDesktopConfig = Join-Path (Get-Location).Path $RunConfigName
 # 运行配置的模板：跟脚本放在一起的那份 sol.yaml（发布包里和 install.ps1 同目录，开发树里在 scripts/ 下）。
 # 它是三端共用的一份，注释最全；生成时会就地换成随机令牌。找不到就退回脚本里的内置模板。
 $ScriptDirHint = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $PSCommandPath }
 $TemplateConfig = ''
-foreach ($cand in @((Join-Path $ScriptDirHint 'sol.yaml'), (Join-Path $ScriptDirHint 'scripts\sol.yaml'))) {
+foreach ($cand in @((Join-Path $ScriptDirHint $RunConfigName), (Join-Path $ScriptDirHint "scripts\$RunConfigName"))) {
 	if (Test-Path -LiteralPath $cand) { $TemplateConfig = $cand; break }
 }
 # 目录可能还不存在：能直接写就写，写不了再请管理员（计划任务以 SYSTEM 读这份配置，用户目录
@@ -326,16 +331,25 @@ if (-not (Test-Path -LiteralPath $InstallTemplate)) {
 # Convert-ArgsOf——模板和用户配置的写法是同一套，没有第二套。模板解析不出来，或 args 跟本脚本
 # 算出来的默认值对不上，都算坏包，当场报出来而不是写一份错的配置。
 #
-# 比的是**标准落点**（%USERPROFILE%\sol\sol.yaml），不是 $DefaultArgs：$RunConfig 会被
+# 比的是**标准落点**（%USERPROFILE%\sol\sol.yaml），不是 $DefaultArgs / $RunConfig：那两个会被
 # -SolRunDir / -SolRoot 改掉（沙箱、多实例测试），而模板永远写着标准落点。拿被改过的值去比，
-# 只要换个目录就会把好包说成"坏包"。
-$CanonicalRunConfig = Join-Path (Join-Path $env:USERPROFILE 'sol') 'sol.yaml'
+# 只要换个目录就会把好包说成"坏包"。标准落点由上面那两个全局名字拼出来，这里不再重写一遍字面量。
+$CanonicalRunConfig = Join-Path (Join-Path $env:USERPROFILE $DirName) $RunConfigName
 $TemplateArgs = @(Convert-ArgsOf $InstallTemplate)
 if (($TemplateArgs -join ' ') -ne "listen --config $CanonicalRunConfig") {
 	Die "安装配置模板 $InstallTemplate 里的 args 对不上（读到：$($TemplateArgs -join ' ')；应该是 listen --config $CanonicalRunConfig）。这是坏包，重新下载。"
 }
 function Write-UserConfig {
 	Copy-ConfigFile $InstallTemplate $UserConfig
+	# 落点不是标准位置（-SolRoot / -SolRunDir 沙箱、多实例）时，模板里那句 %USERPROFILE%\sol\sol.yaml
+	# 展开出来是**真实用户目录**，跟这份配置实际所在的位置对不上——预检当场读不到文件（实测就是这个错：
+	# read config C:\Users\jianghh\sol\sol.yaml: The system cannot find the file specified）。
+	# 上面那行 Copy 是原样拷贝，所以这里把 args 改写成本机真实的绝对路径：以后无论谁去展开
+	# （脚本、cmd、计划任务里的 SYSTEM），指的都是同一份文件，不依赖 %USERPROFILE% 在谁名下。
+	# 标准安装时两个路径本来就相等，这句不产生任何改动（Set-Args-Line 里有 -ceq 短路）。
+	if ((@(Convert-ArgsOf $UserConfig) -join ' ') -ne "listen --config $RunConfig") {
+		Set-Args-Line @('listen', '--config', $RunConfig)
+	}
 }
 # 内容跟"我们现在会生成的那份"是否一样（忽略 CRLF）。老脚本写的注释措辞不同，所以分两步：
 # ① 逐字相同；② 去掉注释与空行后只剩 run: 和那一行 args，且 args 与默认值一致。
@@ -358,19 +372,39 @@ function Test-StockUserConfig([string]$Path) {
 	if ($rest[0] -notmatch '^\s*run:\s*$') { return $false }
 	if ($rest[1] -notmatch '^\s*args:\s*\[.*\]\s*$') { return $false }
 	# token 规整与模板共用 Convert-ArgsOf 的同一条规则（去引号 + 展开 %VAR%）。
-	return ((Convert-ArgsOf $Path) -join ' ') -eq ($DefaultArgs -join ' ')
+	# 比的是标准落点 $CanonicalRunConfig：$DefaultArgs 会被 -SolRunDir / -SolRoot 改掉，
+	# 拿它去比，沙箱里那份"一字不差的示例"就判不出来，会被当成用户配置搬走。
+	return ((Convert-ArgsOf $Path) -join ' ') -eq "listen --config $CanonicalRunConfig"
 }
 # 只改 install.yaml 里那一行 args:，其余（你自己的注释、别的字段）原样留着。
 function Set-Args-Line($argv) {
+	# 这是一份"已经存在、而且被用户改过"的配置（没改过的那份上面 Straight 判断早就重写了），
+	# 所以除了 args 那一行，其它字节一个都不能动。整份读进来再写回去有两个风险，都被这一段绕开了：
+	#   ① 编码：PS 5.1 的 Get-Content 不给 -Encoding 就按系统 ANSI 代码页解码，中文注释会被读坏再写坏；
+	#   ② 内容：注释措辞、行尾、结尾换行都会被 WriteAllLines 重新排版一遍，等于把用户的文件洗了一次。
+	# 做法：只读那一行、只替换那一行的字节区间，失败就原样不动（宁可留着老取值，也不要写坏文件）。
+	$enc = New-Object System.Text.UTF8Encoding($false)
+	$old = [System.IO.File]::ReadAllText($UserConfig, $enc)
+	$nl = "`n"
+	if ($old.Contains("`r`n")) { $nl = "`r`n" }
+	$eol = if ($nl -eq "`r`n") { "`r" } else { "" }
 	$argsLine = '  args: [' + ($argv -join ', ') + ']'
-	$lines = @(Get-Content -Encoding UTF8 $UserConfig)
-	$out = @()
-	$done = $false
-	foreach ($l in $lines) {
-		if ((-not $done) -and ($l -match '^\s*args:\s*')) { $out += $argsLine; $done = $true } else { $out += $l }
+	# (?m) 下 $ 只认 \n，所以把 CR 单独吃掉再放回去，行尾风格保持不变。
+	$pattern = '(?m)^[ \t]*args:[ \t]*\[[^\]\r\n]*\][ \t]*' + $eol + '$'
+	$rx = New-Object System.Text.RegularExpressions.Regex($pattern)
+	$hit = $rx.Matches($old)
+	if ($hit.Count -eq 1) {
+		$new = $rx.Replace($old, [System.Text.RegularExpressions.MatchEvaluator] { param($m) $argsLine + $eol }, 1)
+	} elseif ($hit.Count -eq 0) {
+		# 没有 args 行（理论上进不来：Read-Args 已经拦过），只在末尾补一行。
+		$sep = if ($old.EndsWith("`n") -or $old.Length -eq 0) { '' } else { $nl }
+		$new = $old + $sep + $argsLine + $nl
+	} else {
+		Warn2 "$UserConfig 里有多行 args:，不敢猜是哪一行；这次不改它（你的文件保持原样）"
+		return
 	}
-	if (-not $done) { $out += $argsLine }
-	Write-Utf8NoBom $UserConfig $out
+	if ($new -ceq $old) { return }
+	Invoke-WithRetry '只改写安装配置里的 args 那一行' { [System.IO.File]::WriteAllText($UserConfig, $new, $enc) } | Out-Null
 }
 function Read-Args { Convert-ArgsOf $UserConfig }
 # 两份配置在同一处（用户目录）；服务认的 sol.yaml：一份开箱即用的配置（纯包关机 / magic+"reboot" 重启 /
@@ -484,7 +518,7 @@ if (-not (Test-Path $UserConfig)) {
 	if ((Test-Path $LegacyUserConfig) -and -not (Test-StockUserConfig $LegacyUserConfig)) {
 		# 早先在执行目录里生成、后来被你改过的：原样搬过来（里面的 --config 老取值由下面的 Test-Args 挑出来）。
 		Copy-ConfigFile $LegacyUserConfig $UserConfig
-		Say "安装配置   沿用 $(Get-Location).Path\install.yaml（原样搬到 $UserConfig）"
+		Say "安装配置   沿用 $(Get-Location).Path\$InstallConfigName（原样搬到 $UserConfig）"
 	} else {
 		Write-UserConfig
 	}
@@ -511,8 +545,8 @@ Test-Args
 $LegacyRunConfig = @()
 if (-not [IO.Path]::IsPathRooted($RunConfig)) { $LegacyRunConfig += (Join-Path (Get-Location).Path $RunConfig) }
 if ($RunDirArg -and -not [IO.Path]::IsPathRooted($RunDirArg)) { $LegacyRunConfig += (Join-Path (Get-Location).Path $RunDirArg) }
-$LegacyRunConfig += (Join-Path $InstallDir 'sol.yaml')
-$LegacyRunConfig += (Join-Path (Get-Location).Path 'sol.yaml')
+$LegacyRunConfig += (Join-Path $InstallDir $RunConfigName)
+$LegacyRunConfig += (Join-Path (Get-Location).Path $RunConfigName)
 if ($LegacyRunConfig -contains $RunConfig) {
 	$wasGenerated = $false
 	if (-not (Test-Path $RunConfig)) {
@@ -913,18 +947,34 @@ function Escalate-IfNeeded([string]$action) {
 # 让 sol 自己把日志写进文件——Windows 的计划任务收集不到 stdout，这是 Windows 侧唯一能落盘的方式。
 # 只在运行配置里没有 logging: 这一节时追加；用户自己写过的 logging 一律不动（改它等于改人家的配置）。
 function Add-FileLoggingToConfig {
-	$text = Get-Content -Path $RunConfig -Raw -ErrorAction SilentlyContinue
-	if ($null -eq $text) { return }
-	if ($text -match '(?m)^\s*logging\s*:') {
+	# 只"读来判、追加来写"，绝不把整份文件读进来再写回去。
+	# 整文件读改写一旦解码方式错了（PS 5.1 的 Get-Content 不给 -Encoding 就按系统 ANSI 代码页，
+	# 简中是 GBK），坏掉的是整份配置：全角标点的尾字节在 GBK 里映射不到字符，会被换成 '?'，
+	# 连后面的换行一起吞掉——注释被粘成一行，再以 UTF-8 写回去文件就永久坏了。
+	# 实测吃到过：生成的 sol.yaml 里 4 处注释被粘行，sol 报 yaml: line 7: did not find expected key。
+	# 追加最多多出一行，坏不了已有的内容。
+	if (-not (Test-Path -LiteralPath $RunConfig)) { return }
+	$hasLogging = $false
+	try {
+		foreach ($l in (Get-Content -LiteralPath $RunConfig -Encoding UTF8 -ErrorAction Stop)) {
+			if ($l -match '^\s*logging\s*:') { $hasLogging = $true; break }
+		}
+	} catch {
+		Say "（读不了运行配置，跳过补 logging：$_）"
+		return
+	}
+	if ($hasLogging) {
 		Say "（运行配置里已经有 logging，照它来，脚本不动它）"
 		return
 	}
-	if (-not $text.EndsWith("`n")) { $text += "`n" }
-	$text += "`n# 计划任务的输出没人接，所以让 sol 自己写文件（这一节由安装脚本补上；想改就改）。`nlogging: { output: file, file: '$LogFile' }`n"
-	# 用不带 BOM 的 UTF-8 写回：PS 5.1 的 -Encoding utf8 会插 BOM，而这里是往文件**中间**追加，
-	# 中间冒出一个 BOM 会让 YAML 读不动。
-	$enc = New-Object System.Text.UTF8Encoding($false)
-	Invoke-WithRetry '在运行配置里补 logging（让 sol 写日志文件）' { [System.IO.File]::WriteAllText($RunConfig, $text, $enc) } | Out-Null
+	# 末尾没有换行就先补一个，免得注释和最后一行粘在一起。
+	$sep = ''
+	try {
+		$tail = [System.IO.File]::ReadAllText($RunConfig, [Text.UTF8Encoding]::new($false))
+		if ($tail.Length -gt 0 -and -not $tail.EndsWith("`n")) { $sep = "`n" }
+	} catch { $sep = "`n" }
+	$block = $sep + "`n# 计划任务的输出没人接，所以让 sol 自己写文件（这一节由安装脚本补上；想改就改）。`nlogging: { output: file, file: '$LogFile' }`n"
+	Invoke-WithRetry '在运行配置里补 logging（让 sol 写日志文件）' { Add-Utf8NoBom $RunConfig $block } | Out-Null
 	Act 'user' "运行配置补上 logging（sol 的日志落到 $LogFile）" "（往 $RunConfig 追加 logging: { output: file, file: '$LogFile' }）"
 }
 function Open-ConfigDir($dir, $file) {
@@ -1234,6 +1284,9 @@ public static bool DisableQuickEdit() {
 	Say "（已用管理员权限重跑：$ElevatedAction）"
 	Say "  工作目录    $RunDir"
 	Say "  执行的动作  $ElevatedAction（服务 $($script:ServiceChosen)）"
+	# 升权那条路上 Never 走到下面那句 Ensure-RuntimeConfig（它只在无人能答的正常主流程里调用），
+	# 少了这一句，升权进程会对着一个不存在的运行配置做预检、报"没法预检"然后什么都不装。
+	Ensure-RuntimeConfig
 	try {
 		switch ($ElevatedAction) {
 			'install' { Invoke-Install; if ($script:Noop) { Say '（什么都没改。）' } else { Show-Report 'install' } }

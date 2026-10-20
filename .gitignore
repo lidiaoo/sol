@@ -46,5 +46,11 @@ go.work
 /.idea/
 /.workbuddy/
 
-# ��װ�ű���Ȩ�׶εĽ����ļ��������ڲ�����ύ��
+# 安装脚本在提权阶段的进度文件：属于本地残留，不提交。
 elevated-*.progress
+
+# 安装脚本的本地验证目录（沙箱根、假 sudo/uname、端到端产物）：跑 .soltest.sh / .shsandbox 用，
+# 只在本机存在，不进仓库。
+.sbtest*/
+.shsandbox/
+.soltest.sh

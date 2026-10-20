@@ -1348,7 +1348,7 @@ Home Assistant 自动化反过来触发**同一个组**——冷却会吸收掉�
    # 计划任务直接跑 sol.exe：任务计划里"操作"一栏就是 exe + 参数，一眼看得懂。
    # 任务没有 stdout 可接，所以日志由 sol 自己写文件——运行配置里补一节：
    #   logging: { output: file, file: 'C:\ProgramData\sol\sol.log' }
-   schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\ProgramData\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+   schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\Users\you\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
    schtasks /Run /TN sol
    ```
 

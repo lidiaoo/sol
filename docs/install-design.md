@@ -397,7 +397,7 @@ WantedBy=multi-user.target
 **Windows**（计划任务，纯 exe 不能注册成服务）：
 
 ```powershell
-schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\ProgramData\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\Users\you\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
 
 schtasks /Query /TN sol /V /FO LIST
 ```

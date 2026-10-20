@@ -46,13 +46,17 @@ say() { printf '%s\n' "$*"; }
 head2() { printf '\n%s%s%s\n' "$bold" "$*" "$reset"; }
 warn() { printf '提醒: %s\n' "$*" >&2; }
 # ───────────────────────── 平台与路径 ─────────────────────────
-OS=$(uname -s)
+# uname -s 给的是 Linux / Darwin（首字母大写）。这里顺手留一份小写版给下面的 case 用：
+# 两处都写死大写（或都写死小写），后代改一处漏一处就会在某平台上永远命不中默认分支——
+# 真的发生过：模板选取那里写成小写，Linux 上直接 die"不认识的系统 Linux"。
+OS_RAW=$(uname -s)
 ARCH=$(uname -m)
-case "$OS" in
+case "$OS_RAW" in
 Linux) SERVICE_KIND=systemd ;;
 Darwin) SERVICE_KIND=launchd ;;
-*) die "只支持 Linux 与 macOS（Windows 请用 install.ps1）。当前系统：$OS" ;;
+*) die "只支持 Linux 与 macOS（Windows 请用 install.ps1）。当前系统：$OS_RAW" ;;
 esac
+OS=$(printf '%s' "$OS_RAW" | tr 'A-Z' 'a-z')   # linux / darwin：后面按平台挑文件都用它
 # 系统路径挂载点：默认就是 /（正常安装）；测试与 chroot 时可以指到别处。
 ROOT=${SOL_INSTALL_ROOT:-}
 if [ "$ROOT" = "/" ]; then ROOT=""; fi
@@ -216,6 +220,11 @@ mkdir_root() { # mkdir_root <目录>
 # 挂了自选的根（SOL_INSTALL_ROOT）时，用户目录默认也挂到根下，沙箱与多实例测试不会碰到真实的家目录。
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 HOME_NOW=${HOME:-/root}
+# 落点里那几个固定名字：只在这里写一次。报告、报错文案、服务定义、打包自检都引用它们，
+# 免得同一个 "sol.yaml" 在文件里散成十几处字面量、改一处漏一处。
+DIR_NAME="sol"            # 用户目录下那个目录（~/sol；设了自选根时是 <根>/root/sol）
+INSTALL_CONFIG_NAME="install.yaml"   # 安装配置："sol 怎么跑"
+RUN_CONFIG_NAME="sol.yaml"           # 运行配置：sol 自己读的那份
 case "$ROOT" in
 '') HOME_NOW_DEFAULT=$HOME_NOW ;;
 *) HOME_NOW_DEFAULT="$ROOT/root" ;;
@@ -223,24 +232,30 @@ esac
 if [ -n "${RUN_DIR_ARG:-}" ]; then
 	STATE_DIR=$RUN_DIR_ARG
 else
-	STATE_DIR="${XDG_CONFIG_HOME:-${HOME:-/root}/.config}/sol"
+	STATE_DIR="${XDG_CONFIG_HOME:-${HOME:-/root}/.config}/$DIR_NAME"
 	[ -n "$ROOT" ] && STATE_DIR="$ROOT$STATE_DIR"
 fi
 if [ -n "${SOL_RUN_DIR:-}" ]; then
 	RUN_DIR=$SOL_RUN_DIR
 else
-	RUN_DIR="${HOME_NOW_DEFAULT%/}/sol"
+	RUN_DIR="${HOME_NOW_DEFAULT%/}/$DIR_NAME"
 fi
-USER_CONFIG="$STATE_DIR/install.yaml"
+USER_CONFIG="$STATE_DIR/$INSTALL_CONFIG_NAME"
+# 运行配置的默认落点。**定义在这里**（不是后面"安装配置"那一节）：升权前那段"目录写不了"的
+# 报错文案要用它，晚定义的变量在 die 里只会打出空字符串。
+DEFAULT_CONFIG_PATH="$RUN_DIR/$RUN_CONFIG_NAME"
 # 早先的安装把两份配置放在**执行目录**里（后来 sol.yaml 又搬到了系统落点）；这几个只用于把老内容搬过来。
-LEGACY_USER_CONFIG="$(pwd)/install.yaml"
-LEGACY_RUN_CONFIG="$(pwd)/sol.yaml"
+LEGACY_USER_CONFIG="$(pwd)/$INSTALL_CONFIG_NAME"
+LEGACY_RUN_CONFIG="$(pwd)/$RUN_CONFIG_NAME"
 # 运行配置的模板：跟脚本放在一起的 sol.yaml（发布包里和 install.sh 同目录，开发树里在 scripts/ 下）。
 # 执行目录里那份 sol.yaml 若与它一字不差，说明只是随包示例（令牌还是占位符），不搬。
 SHIPPED_RUN_CONFIG=""
-for cand in "$SCRIPT_DIR/sol.yaml" "$SCRIPT_DIR/scripts/sol.yaml"; do
+for cand in "$SCRIPT_DIR/$RUN_CONFIG_NAME" "$SCRIPT_DIR/scripts/$RUN_CONFIG_NAME"; do
 	if [ -f "$cand" ]; then SHIPPED_RUN_CONFIG=$cand; break; fi
 done
+# 去 CR 的读法：下面几处比对、以及后面解析 args 都要用。**定义在第一次调用之前**——
+# 函数体里的调用虽然延迟绑定，但顶层现在就调了 same_as_shipped，那时它还不会被定义。
+_strip_cr() { tr -d '\r'; }
 # 内容比对走两步：cmp 快（同一次解包出来的两份完全一样），不行再按文本比（容忍 CRLF 差异）。
 same_as_shipped() { # same_as_shipped <候选文件> <模板文件>
 	[ -f "$1" ] && [ -f "$2" ] || return 1
@@ -248,8 +263,8 @@ same_as_shipped() { # same_as_shipped <候选文件> <模板文件>
 	[ "$(_strip_cr <"$1")" = "$(_strip_cr <"$2")" ]
 }
 RUN_COPY_FROM=""
-if [ ! -f "$RUN_DIR/sol.yaml" ]; then
-	for cand in "$LEGACY_RUN_CONFIG" "$SHAREDIR/sol.yaml" "$ROOT/var/lib/sol/sol.yaml"; do
+if [ ! -f "$DEFAULT_CONFIG_PATH" ]; then
+	for cand in "$LEGACY_RUN_CONFIG" "$SHAREDIR/$RUN_CONFIG_NAME" "$ROOT/var/lib/sol/$RUN_CONFIG_NAME"; do
 		[ -f "$cand" ] || continue
 		# 执行目录里那份若是包自带的模板，说明它只是示例（令牌还是占位符），别拿它当配置。
 		[ "$cand" = "$LEGACY_RUN_CONFIG" ] && [ -n "$SHIPPED_RUN_CONFIG" ] && same_as_shipped "$cand" "$SHIPPED_RUN_CONFIG" && continue
@@ -444,12 +459,13 @@ if [ "$SERVICE_KIND" = "launchd" ] && command -v brew >/dev/null 2>&1; then
 	brew list --formula 2>/dev/null | grep -qx sol && MANAGED_BY="brew"
 fi
 # ───────────────────────── 安装配置（只有 run.args）─────────────────────────
-DEFAULT_CONFIG_PATH="$RUN_DIR/sol.yaml"
+# DEFAULT_CONFIG_PATH 在"平台与路径"一节就定好了（升权前的报错文案要用它），这里不再重算——
+# 同一个路径定义两次，早晚会有一处忘改。$INSTALL_TEMPLATE_NAME / $RUN_CONFIG_NAME 同理。
 DEFAULT_ARGS="listen --config $DEFAULT_CONFIG_PATH"          # 给人看、给报告用
 DEFAULT_ARGS_YAML="listen, --config, $DEFAULT_CONFIG_PATH"   # 写进模板与报错提示：YAML 列表要逗号
 # scripts/sol.yaml 跟脚本放在一起（开发树里在 scripts/ 下，发布包里被摊平到脚本旁边）。
-TEMPLATE_CONFIG="$SCRIPT_DIR/sol.yaml"
-[ -f "$TEMPLATE_CONFIG" ] || TEMPLATE_CONFIG="$SCRIPT_DIR/scripts/sol.yaml"
+TEMPLATE_CONFIG="$SCRIPT_DIR/$RUN_CONFIG_NAME"
+[ -f "$TEMPLATE_CONFIG" ] || TEMPLATE_CONFIG="$SCRIPT_DIR/scripts/$RUN_CONFIG_NAME"
 # 本平台的安装配置模板：随包带的那一份（发布包里和 install.sh 同目录，开发树里在 scripts/ 下）。
 # 三个平台各一份、各自维护，注释和写法可以不一样；脚本只读自己那平台的，不认识的平台不猜。
 case "$OS" in
@@ -458,18 +474,33 @@ darwin) INSTALL_TEMPLATE_NAME="install-macos.yaml" ;;
 *) INSTALL_TEMPLATE_NAME="" ;;
 esac
 INSTALL_TEMPLATE=""
-[ -n "$INSTALL_TEMPLATE_NAME" ] || die "不认识的系统 ${OS}：不知道怎么装。Linux 用 install.sh，macOS 用 install-macos.sh，Windows 用 install.cmd。"
+[ -n "$INSTALL_TEMPLATE_NAME" ] || die "不认识的系统 ${OS}：不知道怎么装。Linux 与 macOS 都用 install.sh，Windows 用 install.cmd。"
 for cand in "$SCRIPT_DIR/$INSTALL_TEMPLATE_NAME" "$SCRIPT_DIR/scripts/$INSTALL_TEMPLATE_NAME"; do
 	[ -f "$cand" ] && { INSTALL_TEMPLATE=$cand; break; }
 done
 [ -n "$INSTALL_TEMPLATE" ] || die "找不到本平台的安装配置模板 ${INSTALL_TEMPLATE_NAME}（应该跟 install.sh 放在一起）。重新下载一份发布包再装。"
+# 解析 args 的几件工具必须先定义、再被调用：shell 跟 PowerShell 一样，函数是**执行到那一行**才存在的。
+# 这里原来的顺序反了（膨胀成 args_of_file 在 490 行被调用、parse_args_of 却定义在 526 行），
+# 于是 Linux 上必然报 "parse_args_of: command not found" → "这是坏包，重新下载"。整段提到前面。
+parse_args_of() { # parse_args_of <文件>：args 的两端空格抹平后，一行一个 token
+	sed -n '/^[[:space:]]*args:/p' "$1" |
+		sed 's/^[[:space:]]*args:[[:space:]]*//' |
+		tr -d '[]' |
+		tr ',' '\n' |
+		sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
+		sed '/^$/d'
+}
 # 模板里的 args 一行是 YAML 流式列表，带引号；解析它和解析用户那份必须是同一套规则，所以共用
 # parse_args_of——模板和用户配置的写法是同一套，没有第二套。读出来之后去掉外面的引号、展开
 # ~ / $HOME / $XDG_CONFIG_HOME（模板里这么写，换台机器、换用户都对），再跟默认值比。
+# 注意 ~ 展开成 HOME_NOW_DEFAULT（= $HOME，设了 SOL_INSTALL_ROOT 时是 <根>/root），不是裸 $HOME：
+# 默认落点 DEFAULT_CONFIG_PATH 就是按 HOME_NOW_DEFAULT 算的，两边用不同的家目录会在 chroot/沙箱里
+# 比对失败，报出一句莫名其妙的"模板是坏包，重新下载"。
 expand_args() {
+	_home_for_tilde=${HOME_NOW_DEFAULT:-$HOME}
 	sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/" |
-		sed -e "s#^~/#$HOME/#" -e 's#^~$#'"$HOME"'#' |
-		sed -e "s#\$HOME#$HOME#g"
+		sed -e "s#^~/#$_home_for_tilde/#" -e "s#^~\$#$_home_for_tilde#" |
+		sed -e "s#\$HOME#$_home_for_tilde#g"
 }
 # 一个文件里 args 的规整结果（一行 token，空格分隔）：读模板与判断"是不是示例"共用这一条规则。
 args_of_file() { parse_args_of "$1" | expand_args | tr '\n' ' ' | sed 's/ *$//'; }
@@ -480,6 +511,26 @@ user_config_args() { args_of_file "$INSTALL_TEMPLATE"; }
 write_user_config() {
 	mkdir -p "$(dirname "$USER_CONFIG")"
 	cp "$INSTALL_TEMPLATE" "$USER_CONFIG"
+	# 落点不是标准位置（SOL_RUN_DIR / 自选根 / 沙箱测试）时，模板里那句 ~/sol/sol.yaml 展开出来
+	# 指向的是**这个用户的标准落点**，跟这份配置实际所在的位置对不上——预检当场读不到文件。
+	# 所以一律改写成本机真实的绝对路径：以后无论谁去展开（脚本、服务定义、sudo 下的另一个 HOME），
+	# 指的都是同一份文件。标准安装时两边本来就相等，这段不产生任何改动。
+	# 目标路径就是 DEFAULT_CONFIG_PATH（sol.yaml 的真实落点，已经算进了 SOL_RUN_DIR / 自选根），
+	# 不是解析出来的 $RUN_CONFIG——那个变量要等这份文件写出来之后才能解析，这时候还不存在。
+	#
+	# 这里必须比**字面量**，不能比 expand_args 展开后的结果：模板写的是 ~/sol/sol.yaml，展开后
+	# 恰好等于默认落点，看着"已经对了"；可 sol 自己不展开 ~（resolvePath 原样返回），它拿到这个
+	# 参数就是去开一个叫 "~" 的目录，当场 decode config 失败。所以只要文件里写的不是那条绝对
+	# 路径，就改写成绝对路径——标准安装时这一行改动前后只差一个 ~ 的展开，语义不变。
+	_literal_want="listen --config $DEFAULT_CONFIG_PATH"
+	_literal_now=$(parse_args_of "$USER_CONFIG" | tr '\n' ' ' | sed 's/ *$//')
+	if [ "$_literal_now" != "$_literal_want" ]; then
+		# 只换 args 那一行的取值，别的字节一个都不动（注释、行尾、你自己的改动）。
+		awk -v a="  args: [$DEFAULT_ARGS_YAML]" '
+			!done && /^[[:space:]]*args:/ { print a; done = 1; next }
+			{ print }
+		' "$USER_CONFIG" >"$USER_CONFIG.tmp" && mv "$USER_CONFIG.tmp" "$USER_CONFIG"
+	fi
 }
 # 这份内容和"我们现在会生成的那份"是否一样（忽略 CRLF）。老脚本写的注释措辞不同，所以分两步：
 # ① 逐字相同；② 去掉注释与空行后只剩 run: 和那一行 args，且 args 与默认值一致。两条都不成立，
@@ -494,15 +545,6 @@ is_stock_user_config() { # is_stock_user_config <文件>
 	[ "$(printf '%s\n' "$_rest" | grep -cvE '^(run:|[[:space:]]+args:[[:space:]]*\[.*\])$' || true)" = "0" ] || return 1
 	# 模板里的路径写成 ~/sol/sol.yaml，用户那份多半已展开成绝对路径：两边都走同一条规整规则再比。
 	[ "$(args_of_file "$1")" = "$DEFAULT_ARGS" ]
-}
-_strip_cr() { tr -d '\r'; }
-parse_args_of() { # parse_args_of <文件>：args 的两端空格抹平后，一行一个 token
-	sed -n '/^[[:space:]]*args:/p' "$1" |
-		sed 's/^[[:space:]]*args:[[:space:]]*//' |
-		tr -d '[]' |
-		tr ',' '\n' |
-		sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
-		sed '/^$/d'
 }
 # 把 args 解析成一行一个 token（只支持本脚本自己写出的那种写法，不猜别的）。
 parse_args() { parse_args_of "$USER_CONFIG"; }
@@ -523,6 +565,17 @@ fi
 # 老位置的内容在升权之前就原样搬过来了（见"升权"一节前面那段）；这里只剩"还没有就写一份"。
 [ -f "$USER_CONFIG" ] || { write_user_config; CONFIG_GENERATED=yes; }
 [ -n "$LEGACY_USER_COPIED" ] && say "安装配置   沿用 $LEGACY_USER_COPIED（原样拷到 $USER_CONFIG；你另外指定的不受影响）"
+# 搬过来的那份可能写着 ~/sol/sol.yaml（老模板就是教人这么写的）。**必须展开成绝对路径**：
+# 这段文本最后是当命令行参数交给 sol 的，shell 不参与展开，sol 自己也不展开 ~（resolvePath 原样
+# 返回）——它只会去开一个名字叫 "~" 的目录。真机上这么干过一次，结果在当时的执行目录里多出一个
+# 字面量 ~/sol/sol.yaml，而"服务在跑、配置却读不到"。
+normalize_args_tilde() { # normalize_args_tilde <文件>
+	[ -f "$1" ] || return 0
+	grep -q '^[[:space:]]*args:.*~/' "$1" || return 0
+	_home_for_args=${HOME_NOW_DEFAULT:-$HOME}
+	sed -i.bak "s#^\([[:space:]]*args:.*[ \[,]\)~/#\1${_home_for_args}/#g" "$1" && rm -f "$1.bak"
+}
+normalize_args_tilde "$USER_CONFIG"
 OLD_IFS_SAVE=$IFS
 IFS='
 '
@@ -554,20 +607,24 @@ done
 # 所以只认这几样"我们以前替你写的"取值：认出来就改写成现在的位置，文件原样搬过去，改动不丢；
 # 你自己另行指定的路径一律不动——那是有意为之的。
 case "$RUN_CONFIG" in
-/*) LEGACY_RUN_CONFIG_ABS=$RUN_CONFIG ;;
-*) LEGACY_RUN_CONFIG_ABS="$(pwd)/$RUN_CONFIG" ;;
+/*) RUN_CONFIG_ABS=$RUN_CONFIG ;;
+*) RUN_CONFIG_ABS="$(pwd)/$RUN_CONFIG" ;;
 esac
-case " $LEGACY_RUN_CONFIG $LEGACY_RUN_CONFIG_ABS $RUN_DIR/sol.yaml" in
-*" $RUN_CONFIG "*)
+# 比对的串里**只能**放"我们以前写过的默认落点"。这里原来把 $RUN_CONFIG 自己也算进去了
+# （$LEGACY_RUN_CONFIG_ABS 就是它），等于自比自——永远命中，于是你在 install.yaml 里写的
+# 任何 --config 都会被悄悄改回默认落点，注释里那句"你另外指定的路径不动"根本没兑现。
+LEGACY_DEFAULTS=" $DEFAULT_CONFIG_PATH $LEGACY_RUN_CONFIG $SHAREDIR/$RUN_CONFIG_NAME $ROOT/var/lib/$DIR_NAME/$RUN_CONFIG_NAME $ROOT/etc/sol/$RUN_CONFIG_NAME "
+case "$LEGACY_DEFAULTS" in
+*" $RUN_CONFIG "* | *" $RUN_CONFIG_ABS "*)
 	# 文件本身在升权之前就搬好了（上面那段），这里只把 install.yaml 里的默认值改写成新位置。
 	old_run_config=$RUN_CONFIG
 	RUN_CONFIG=$DEFAULT_CONFIG_PATH
-	# 只把那个值整段换成新路径：参数顺序、你自己加的 flag 都不碰。
-	ARGS=$(printf '%s\n' "$ARGS" | sed "s#^$(printf '%s' "$old_run_config" | sed 's/[.[\*^$#]/\\&/g')\$#$RUN_CONFIG#")
-	awk -v a="  args: [listen, --config, $RUN_CONFIG]" '
-		!done && /^[[:space:]]*args:/ { print a; done = 1; next }
-		{ print }
-	' "$USER_CONFIG" >"$USER_CONFIG.tmp" && mv "$USER_CONFIG.tmp" "$USER_CONFIG"
+	# 只把那个值整段换成新路径：参数顺序、你自己加的 flag（--watch 之类）都不碰。
+	_old_re=$(printf '%s' "$old_run_config" | sed 's/[.[\*^$#]/\\&/g')
+	ARGS=$(printf '%s\n' "$ARGS" | sed "s#^${_old_re}\$#$RUN_CONFIG#")
+	# 同一件事落到文件上：只换那一行里的这个值，别把整行重写成只剩 --config 一个参数。
+	sed -i.bak "s#^\([[:space:]]*args:[[:space:]]*\[.*\)${_old_re}\(.*\]\)#\1${RUN_CONFIG}\2#" "$USER_CONFIG" &&
+		rm -f "$USER_CONFIG.bak"
 	say "运行配置   改到用户目录：$RUN_CONFIG$( [ -n "$RUN_COPY_FROM" ] && printf '（老位置那份原样拷过去）' )；你另外指定的路径不受影响。"
 	;;
 esac

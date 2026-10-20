@@ -1452,7 +1452,7 @@ with a machine-level environment variable for the token:
    # The task runs sol.exe itself: the task's action is just the exe and its arguments.
    # A task has no stdout to collect, so sol writes its own log file — add this to the config:
    #   logging: { output: file, file: 'C:\ProgramData\sol\sol.log' }
-   schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\ProgramData\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+   schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\Users\you\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
    schtasks /Run /TN sol
    ```
 
