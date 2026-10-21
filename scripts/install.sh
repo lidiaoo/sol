@@ -1,11 +1,9 @@
 #!/bin/sh
 # sol 安装脚本 —— 零参数。
 #
-# 它只做三件事：认出现状 → 生成/读取"怎么跑"的配置 → 你确认之后才动手。
-# 装完只有一个目录：**用户目录下的 sol**（三端一个约定）——
-#   Linux / macOS  ~/sol/   sol  install.yaml  sol.yaml  install.json  install.log  sol.log
-#   Windows        %USERPROFILE%\sol\   sol.exe  install.yaml  sol.yaml  install.json  install.log  sol.log
-# 跟你在哪个目录执行脚本无关。设计文档（本脚本与它是同一份契约）：docs/install-design.md
+# 它只做三件事：认出现状 → 生成/读取"怎么跑"的配置（都在用户目录里：~/.config/sol/install.yaml
+# 与 ~/sol/sol.yaml，跟你在哪个目录执行脚本无关）→ 你确认之后才动手。
+# 设计文档（本脚本与它是同一份契约）：docs/install-design.md
 #
 #   sh install.sh              生成配置 → 展示现状 → 问一句 → 执行
 #   printf 'y\n' | sh install.sh   CI / 无人值守：管道喂答案
@@ -14,9 +12,12 @@
 # 环境变量（都有默认值；普通用户不需要设，测试与多实例用）：
 #   SOL_INSTALL_ROOT  把系统路径挂到另一个根下（默认 /，DESTDIR 风格）
 #   SOL_UNIT_NAME     服务名（Linux 默认 sol.service，macOS 默认 com.lidiaoo.sol）
-#   SOL_RUN_DIR       落点目录本身（默认 ~/sol；sudo 下 HOME 变成 /root，所以升权时显式传）
-#   SOL_INSTALL_RUN_DIR / --run-dir  同 SOL_RUN_DIR（历史名字，留着兼容）
+#   SOL_RUN_DIR       跑 sol 时看到的用户目录（默认 ~/sol；sudo 下 HOME 变成 /root，所以升权时显式传）
+#   SOL_INSTALL_RUN_DIR / --run-dir  install.yaml 的目录（默认也在 ~/sol 下）
 set -eu
+# 本脚本产出的所有文件一律放宽到 777（用户要求）：脚本自己 mktemp 出来的临时文件受
+# 默认 umask（022）影响会是 644/700，在这里统一放开，后面的 chmod 777 才不会白做。
+umask 000
 DESIGN="docs/install-design.md"
 die() {
 	printf '错误: %s\n' "$*" >&2
@@ -48,17 +49,13 @@ say() { printf '%s\n' "$*"; }
 head2() { printf '\n%s%s%s\n' "$bold" "$*" "$reset"; }
 warn() { printf '提醒: %s\n' "$*" >&2; }
 # ───────────────────────── 平台与路径 ─────────────────────────
-# uname -s 给的是 Linux / Darwin（首字母大写）。这里顺手留一份小写版给下面的 case 用：
-# 两处都写死大写（或都写死小写），后代改一处漏一处就会在某平台上永远命不中默认分支——
-# 真的发生过：模板选取那里写成小写，Linux 上直接 die"不认识的系统 Linux"。
-OS_RAW=$(uname -s)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
-case "$OS_RAW" in
-Linux) SERVICE_KIND=systemd ;;
-Darwin) SERVICE_KIND=launchd ;;
-*) die "只支持 Linux 与 macOS（Windows 请用 install.ps1）。当前系统：$OS_RAW" ;;
+case "$OS" in
+linux) SERVICE_KIND=systemd ;;
+darwin) SERVICE_KIND=launchd ;;
+*) die "只支持 Linux 与 macOS（Windows 请用 install.ps1）。当前系统：$OS" ;;
 esac
-OS=$(printf '%s' "$OS_RAW" | tr 'A-Z' 'a-z')   # linux / darwin：后面按平台挑文件都用它
 # 系统路径挂载点：默认就是 /（正常安装）；测试与 chroot 时可以指到别处。
 ROOT=${SOL_INSTALL_ROOT:-}
 if [ "$ROOT" = "/" ]; then ROOT=""; fi
@@ -66,15 +63,23 @@ if [ -n "$ROOT" ]; then
 	[ -d "$ROOT" ] || die "SOL_INSTALL_ROOT=$ROOT 不存在"
 	ROOT=$(cd "$ROOT" && pwd)
 fi
-# 落点（BINDIR / SHAREDIR / LEDGER / HISTORY / STATE_DIR / LOG_FILE）全部挂在用户目录下的 sol 里，
-# 而用户目录要等下面的"平台与路径"第二段才算得出来，所以那一段挪到 RUN_DIR 之后。
-# 这里只定服务定义的位置——它天然在系统目录（systemd / launchd 只认那几个地方）。
+# 所有 sol 产生的文件都收拢在 ~/sol 下（挂了 SOL_INSTALL_ROOT 时是 $ROOT$HOME/sol）：
+# 二进制、配置、台账、历史、单元文件，一个目录管全部；systemd 日志在 journal，没有文件可收。
+# 升权重跑（sudo）时 HOME 会变成 /root：父进程已把真实用户的落点通过 SOL_RUN_DIR 传过来，
+# 这里必须优先认它，否则二进制/台账/单元会被装到 /root/sol 下（真机就这么错过一次）。
+SOL_DIR=${SOL_RUN_DIR:-"$ROOT${HOME:-/root}/sol"}
+export SOL_RUN_DIR=$SOL_DIR
+PREFIX="$SOL_DIR"
+BINDIR="$SOL_DIR/bin"
+SHAREDIR="$SOL_DIR/share"
+LEDGER="$SOL_DIR/install.json"
+HISTORY="$SOL_DIR/install.log"
 if [ "$SERVICE_KIND" = "systemd" ]; then
 	UNIT_NAME=${SOL_UNIT_NAME:-sol.service}
-	UNIT_PATH="$ROOT/etc/systemd/system/$UNIT_NAME"
+	UNIT_PATH="$SOL_DIR/$UNIT_NAME"
 else
 	UNIT_NAME=${SOL_UNIT_NAME:-com.lidiaoo.sol}
-	UNIT_PATH="$ROOT/Library/LaunchDaemons/$UNIT_NAME.plist"
+	UNIT_PATH="$SOL_DIR/$UNIT_NAME.plist"
 fi
 UID_NOW=$(id -u)
 SUDO=""
@@ -126,7 +131,7 @@ running_instances() { # running_instances <二进制完整路径>
 }
 log_hint() { # 服务日志在哪看：launchd 写文件，systemd 进 journal
 	case "$SERVICE_KIND" in
-	launchd) printf '%s' "$LOG_FILE" ;;
+	launchd) printf '%s' "$SOL_DIR/sol.log" ;;
 	systemd) printf '%s' "journalctl -u $UNIT_NAME -f" ;;
 	*) printf '%s' "（$SERVICE_KIND 的日志位置未知）" ;;
 	esac
@@ -212,69 +217,34 @@ mkdir_root() { # mkdir_root <目录>
 	[ -d "$1" ] && return 0
 	if writable_target "$(dirname "$1")"; then mkdir -p "$1"; else as_root mkdir -p "$1"; fi
 }
-# 落点只有一个：**当前用户目录下的 sol**，三端一个约定（Windows 是 %USERPROFILE%\sol）：「sol」
-#   Linux / macOS  ~/sol/   sol  install.yaml  sol.yaml  install.json  install.log  sol.log
-#   Windows        %USERPROFILE%\sol\   sol.exe  install.yaml  sol.yaml  install.json  install.log  sol.log
-# 二进制、配置、台账、日志全在同一个目录里：卸载就是删这一个目录，"东西都装到哪去了"只有一句答案。
+# 两份配置都在**当前用户的目录**里，三端一个约定（Windows 是 %USERPROFILE%\sol\ 下这两个文件）：
+#   ~/.config/sol/install.yaml   "怎么跑"（只有 run.args），跟 XDG 的规矩走，已存在就绝不覆盖
+#   ~/sol/sol.yaml               sol 自己读的运行配置（用户目录下的 sol 落点），没有才写
 # 不按执行目录走：在下载目录里跑一次就在那儿多出一份，还各自有各自的令牌，谁也说不清算哪份。
-# 服务定义**不在**这里：systemd / launchd 只认 /etc/systemd/system 与 /Library/LaunchDaemons，
-# 那一步仍然要 root。服务里跑的是绝对路径，所以不踩"服务有自己的家目录"那个坑。
+# 服务定义里用的是绝对路径，所以不踩"服务有自己的家目录"那个坑。
 # 挂了自选的根（SOL_INSTALL_ROOT）时，用户目录默认也挂到根下，沙箱与多实例测试不会碰到真实的家目录。
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 HOME_NOW=${HOME:-/root}
-# 落点里那几个固定名字：只在这里写一次。报告、报错文案、服务定义、打包自检都引用它们，
-# 免得同一个 "sol.yaml" 在文件里散成十几处字面量、改一处漏一处。
-DIR_NAME="sol"            # 用户目录下那个目录（~/sol；设了自选根时是 <根>/root/sol）
-INSTALL_CONFIG_NAME="install.yaml"   # 安装配置："sol 怎么跑"
-RUN_CONFIG_NAME="sol.yaml"           # 运行配置：sol 自己读的那份
-LEDGER_NAME="install.json"           # 安装台账：装了什么、装到哪、上一版是什么
-HISTORY_NAME="install.log"           # 完整动作清单，带等价命令
-LOG_NAME="sol.log"                   # sol 自己的运行日志（服务把 stdout 送进这里）
-case "$ROOT" in
-'') HOME_NOW_DEFAULT=$HOME_NOW ;;
-*) HOME_NOW_DEFAULT="$ROOT/root" ;;
-esac
-# --run-dir / SOL_INSTALL_RUN_DIR 原来只改 install.yaml 的目录、运行配置另算；现在两者是同一个
-# 目录（用户目录下的 sol），所以它直接决定整个落点，别再分出第二个位置。
 if [ -n "${RUN_DIR_ARG:-}" ]; then
-	RUN_DIR=$RUN_DIR_ARG
-elif [ -n "${SOL_RUN_DIR:-}" ]; then
+	STATE_DIR=$RUN_DIR_ARG
+else
+	STATE_DIR="$SOL_DIR"
+fi
+if [ -n "${SOL_RUN_DIR:-}" ]; then
 	RUN_DIR=$SOL_RUN_DIR
 else
-	RUN_DIR="${HOME_NOW_DEFAULT%/}/$DIR_NAME"
+	RUN_DIR="$SOL_DIR"
 fi
-RUN_DIR=${RUN_DIR%/}   # 结尾的斜杠会让 $RUN_DIR/sol 变成 //sol（不影响用，只是难看）
-# 落点全在这一个目录里。BINDIR / SHAREDIR 是历史名字（以前是 /usr/local/bin 与 /usr/local/share/sol），
-# 保留是为了少改几处引用；它们现在都等于 RUN_DIR。
-STATE_DIR=$RUN_DIR
-BINDIR=$RUN_DIR
-SHAREDIR=$RUN_DIR
-LEDGER="$RUN_DIR/$LEDGER_NAME"
-HISTORY="$RUN_DIR/$HISTORY_NAME"
-LOG_FILE="$RUN_DIR/$LOG_NAME"
-DEST_BIN="$RUN_DIR/sol"
-USER_CONFIG="$RUN_DIR/$INSTALL_CONFIG_NAME"
-# 早先的版本把二进制和台账放在系统落点（/usr/local/bin/sol、/usr/local/share/sol/install.json），
-# 配置还有过 /usr/local/share/sol/sol.yaml。现在全挪进用户目录了，这几个只用于「认出旧安装、搬走、别留双份」。
-LEGACY_BINDIR="$ROOT/usr/local/bin"
-LEGACY_SHAREDIR="$ROOT/usr/local/share/sol"
-LEGACY_LEDGER="$LEGACY_SHAREDIR/$LEDGER_NAME"
-LEGACY_BIN="$LEGACY_BINDIR/sol"
-# 运行配置的默认落点。**定义在这里**（不是后面"安装配置"那一节）：升权前那段"目录写不了"的
-# 报错文案要用它，晚定义的变量在 die 里只会打出空字符串。
-DEFAULT_CONFIG_PATH="$RUN_DIR/$RUN_CONFIG_NAME"
+USER_CONFIG="$STATE_DIR/install.yaml"
 # 早先的安装把两份配置放在**执行目录**里（后来 sol.yaml 又搬到了系统落点）；这几个只用于把老内容搬过来。
-LEGACY_USER_CONFIG="$(pwd)/$INSTALL_CONFIG_NAME"
-LEGACY_RUN_CONFIG="$(pwd)/$RUN_CONFIG_NAME"
+LEGACY_USER_CONFIG="$(pwd)/install.yaml"
+LEGACY_RUN_CONFIG="$(pwd)/sol.yaml"
 # 运行配置的模板：跟脚本放在一起的 sol.yaml（发布包里和 install.sh 同目录，开发树里在 scripts/ 下）。
 # 执行目录里那份 sol.yaml 若与它一字不差，说明只是随包示例（令牌还是占位符），不搬。
 SHIPPED_RUN_CONFIG=""
-for cand in "$SCRIPT_DIR/$RUN_CONFIG_NAME" "$SCRIPT_DIR/scripts/$RUN_CONFIG_NAME"; do
+for cand in "$SCRIPT_DIR/sol.yaml" "$SCRIPT_DIR/scripts/sol.yaml"; do
 	if [ -f "$cand" ]; then SHIPPED_RUN_CONFIG=$cand; break; fi
 done
-# 去 CR 的读法：下面几处比对、以及后面解析 args 都要用。**定义在第一次调用之前**——
-# 函数体里的调用虽然延迟绑定，但顶层现在就调了 same_as_shipped，那时它还不会被定义。
-_strip_cr() { tr -d '\r'; }
 # 内容比对走两步：cmp 快（同一次解包出来的两份完全一样），不行再按文本比（容忍 CRLF 差异）。
 same_as_shipped() { # same_as_shipped <候选文件> <模板文件>
 	[ -f "$1" ] && [ -f "$2" ] || return 1
@@ -282,8 +252,8 @@ same_as_shipped() { # same_as_shipped <候选文件> <模板文件>
 	[ "$(_strip_cr <"$1")" = "$(_strip_cr <"$2")" ]
 }
 RUN_COPY_FROM=""
-if [ ! -f "$DEFAULT_CONFIG_PATH" ]; then
-	for cand in "$LEGACY_RUN_CONFIG" "$LEGACY_SHAREDIR/$RUN_CONFIG_NAME" "$ROOT/var/lib/sol/$RUN_CONFIG_NAME"; do
+if [ ! -f "$RUN_DIR/sol.yaml" ]; then
+	for cand in "$LEGACY_RUN_CONFIG" "$SHAREDIR/sol.yaml" "$ROOT/var/lib/sol/sol.yaml"; do
 		[ -f "$cand" ] || continue
 		# 执行目录里那份若是包自带的模板，说明它只是示例（令牌还是占位符），别拿它当配置。
 		[ "$cand" = "$LEGACY_RUN_CONFIG" ] && [ -n "$SHIPPED_RUN_CONFIG" ] && same_as_shipped "$cand" "$SHIPPED_RUN_CONFIG" && continue
@@ -294,23 +264,22 @@ fi
 # ───────────────────────── 升权 ─────────────────────────
 # 已经带答案升过权了（子进程）：不再问，直接做。
 ELEVATED_ACTION=${ACTION_ARG:-${SOL_INSTALL_ACTION:-}}
-# 现在落点（二进制、配置、台账、日志）全在用户目录下的 sol 里，写它**不需要 root**；
-# 还要 root 的只剩"系统级服务定义"这一步（/etc/systemd/system、/Library/LaunchDaemons 只认 root）。
-# 与其半路一条条 sudo（密码问一半、失败还被吞掉），不如动手之前一次性升权：把答案带过去重跑。
+# 要写系统路径 / 注册服务这一步需要 root。与其半路一条条 sudo（密码问一半、失败还被吞掉），
+# 不如动手之前一次性升权：把已经问到的答案带过去，用 sudo 重跑一遍自己。
 escalate() { # escalate <install|uninstall>
 	action=$1
 	[ "$UID_NOW" = "0" ] && return 0
 	[ -n "$ROOT" ] && return 0 # 自选的根（沙箱 / chroot）：自己的地盘，不升权
 	needs=no
 	case "$action" in
+	uninstall) needs=yes ;; # 卸载要动 systemd 的链接与注册信息
 	install)
+		writable_target "$BINDIR" || needs=yes
+		writable_target "$SHAREDIR" || needs=yes
 		# SERVICE_WANTED 才是"问题的答案"；SERVICE_CHOSEN 要到 do_install 里才同步，
 		# 在这个时点读它永远还是 false（会算出"不需要 root"，或者给子进程传错答案）。
+		# 单元文件在 ~/sol 下，注册进 systemd（link/enable）也要 root。
 		[ "$SERVICE_WANTED" = true ] && needs=yes
-		;;
-	uninstall)
-		# 只有"确实有一份系统级服务定义要摘"时才需要 root；只是删用户目录里的文件不用。
-		if [ "$LEDGER_CREATED_UNIT" = true ] || [ -f "$UNIT_PATH" ]; then needs=yes; fi
 		;;
 	esac
 	[ "$needs" = yes ] || return 0
@@ -320,9 +289,9 @@ escalate() { # escalate <install|uninstall>
 		warn "这一步要 root，但脚本是管道执行的、没法自己升权：下面需要权限的步骤会逐条 sudo。"
 		return 0
 	fi
-	[ -n "$SUDO" ] || die "这一步需要 root（服务定义 ${UNIT_PATH}）。请用 root 角色重跑，或者装的时候不选服务（只把文件放进 $RUN_DIR）。"
+	[ -n "$SUDO" ] || die "这一步需要 root（落点 ${BINDIR}、服务 ${UNIT_NAME}）。请用 root 角色重跑，或把落点换到你自己有写权限的目录。"
 	say ""
-	say "这一步要写 $UNIT_PATH 并注册 $SERVICE_KIND 服务，需要 root（你的文件都在 $RUN_DIR 里，已经写好了）。"
+	say "这一步要写 $BINDIR 并注册 $SERVICE_KIND 服务，需要 root。"
 	say "我用 sudo 重新执行一遍自己：同一处配置、你刚才的答案带过去，不会再问一遍。"
 	if [ "$SERVICE_WANTED" = true ]; then svc=yes; else svc=no; fi
 	# exec 会顶掉当前进程：先放锁（子进程会自己重新拿），否则父进程的 trap 永远不会跑。
@@ -330,9 +299,9 @@ escalate() { # escalate <install|uninstall>
 	exec "$SUDO" env "SOL_RUN_DIR=$RUN_DIR" "$self" "--sol-action=$action" "--sol-service=$svc" "--sol-run-dir=$STATE_DIR" \
 		"--sol-unit-name=$UNIT_NAME" "--sol-root=$ROOT"
 }
-# 落点写不进去（HOME 只读、或别人家的目录）时先说清楚，而不是跑到一半才死在 mkdir 上。
-if [ -z "$ROOT" ] && ! writable_target "$RUN_DIR"; then
-	die "在这个目录里写不了文件：$RUN_DIR（sol、$INSTALL_CONFIG_NAME、$RUN_CONFIG_NAME、台账、日志都放这儿）。
+# 默认落点写不进去（HOME 只读、或别人家的目录）时先说清楚，而不是跑到一半才死在 mkdir 上。
+if [ -z "$ROOT" ] && ! writable_target "$STATE_DIR"; then
+	die "在这个目录里写不了文件：$USER_CONFIG（安装配置）与 $DEFAULT_CONFIG_PATH（运行配置）都要生成在这儿。
 改一下 HOME（或者它的属主/权限），或者用 --run-dir 指定一个能写的目录再跑一次。"
 fi
 # ───────────────────────── 小工具 ─────────────────────────
@@ -391,11 +360,9 @@ fi
 echo $$ >"$LOCK_DIR/pid"
 trap 'rm -rf "$LOCK_DIR"; [ -n "$TMPDIR_OUT" ] && rm -f "$TMPDIR_OUT"' EXIT INT TERM
 # ───────────────────────── 认出现状 ─────────────────────────
-# ① 脚本旁边 ② 当前目录 ③ 已经装好的那份（$RUN_DIR/sol） ④ PATH。
-# ③ 是为了「只重跑安装脚本、不重新下载包」也能升级：解压出来的包装过之后，包早就删了。
-# 指到同一个文件的多次命中只算一次。
+# ① 脚本旁边 ② 当前目录 ③ PATH。指到同一个文件的多次命中只算一次。
 find_local_binary() {
-	for c in "$SCRIPT_DIR/sol" "$PWD/sol" "$DEST_BIN"; do
+	for c in "$SCRIPT_DIR/sol" "$PWD/sol"; do
 		[ -f "$c" ] && [ -x "$c" ] && {
 			printf '%s\n' "$c"
 			return 0
@@ -482,13 +449,17 @@ if [ "$SERVICE_KIND" = "launchd" ] && command -v brew >/dev/null 2>&1; then
 	brew list --formula 2>/dev/null | grep -qx sol && MANAGED_BY="brew"
 fi
 # ───────────────────────── 安装配置（只有 run.args）─────────────────────────
-# DEFAULT_CONFIG_PATH 在"平台与路径"一节就定好了（升权前的报错文案要用它），这里不再重算——
-# 同一个路径定义两次，早晚会有一处忘改。$INSTALL_TEMPLATE_NAME / $RUN_CONFIG_NAME 同理。
+DEFAULT_CONFIG_PATH="$RUN_DIR/sol.yaml"
 DEFAULT_ARGS="listen --config $DEFAULT_CONFIG_PATH"          # 给人看、给报告用
 DEFAULT_ARGS_YAML="listen, --config, $DEFAULT_CONFIG_PATH"   # 写进模板与报错提示：YAML 列表要逗号
+# 模板校验比的是**真实用户的标准落点**（$HOME/sol/sol.yaml），不是 $DEFAULT_ARGS：
+# $RUN_DIR 会被 SOL_RUN_DIR / SOL_INSTALL_ROOT 改掉（沙箱、多实例测试），而模板永远写着
+# 未挂根时的标准落点。拿被改过的值去比，只要换个目录就会把好包说成"坏包"
+# （install.ps1 的 $CanonicalRunConfig 是同一套约定）。
+CANONICAL_RUN_CONFIG="${HOME:-/root}/sol/sol.yaml"
 # scripts/sol.yaml 跟脚本放在一起（开发树里在 scripts/ 下，发布包里被摊平到脚本旁边）。
-TEMPLATE_CONFIG="$SCRIPT_DIR/$RUN_CONFIG_NAME"
-[ -f "$TEMPLATE_CONFIG" ] || TEMPLATE_CONFIG="$SCRIPT_DIR/scripts/$RUN_CONFIG_NAME"
+TEMPLATE_CONFIG="$SCRIPT_DIR/sol.yaml"
+[ -f "$TEMPLATE_CONFIG" ] || TEMPLATE_CONFIG="$SCRIPT_DIR/scripts/sol.yaml"
 # 本平台的安装配置模板：随包带的那一份（发布包里和 install.sh 同目录，开发树里在 scripts/ 下）。
 # 三个平台各一份、各自维护，注释和写法可以不一样；脚本只读自己那平台的，不认识的平台不猜。
 case "$OS" in
@@ -497,14 +468,11 @@ darwin) INSTALL_TEMPLATE_NAME="install-macos.yaml" ;;
 *) INSTALL_TEMPLATE_NAME="" ;;
 esac
 INSTALL_TEMPLATE=""
-[ -n "$INSTALL_TEMPLATE_NAME" ] || die "不认识的系统 ${OS}：不知道怎么装。Linux 与 macOS 都用 install.sh，Windows 用 install.cmd。"
+[ -n "$INSTALL_TEMPLATE_NAME" ] || die "不认识的系统 ${OS}：不知道怎么装。Linux 用 install.sh，macOS 用 install-macos.sh，Windows 用 install.cmd。"
 for cand in "$SCRIPT_DIR/$INSTALL_TEMPLATE_NAME" "$SCRIPT_DIR/scripts/$INSTALL_TEMPLATE_NAME"; do
 	[ -f "$cand" ] && { INSTALL_TEMPLATE=$cand; break; }
 done
 [ -n "$INSTALL_TEMPLATE" ] || die "找不到本平台的安装配置模板 ${INSTALL_TEMPLATE_NAME}（应该跟 install.sh 放在一起）。重新下载一份发布包再装。"
-# 解析 args 的几件工具必须先定义、再被调用：shell 跟 PowerShell 一样，函数是**执行到那一行**才存在的。
-# 这里原来的顺序反了（膨胀成 args_of_file 在 490 行被调用、parse_args_of 却定义在 526 行），
-# 于是 Linux 上必然报 "parse_args_of: command not found" → "这是坏包，重新下载"。整段提到前面。
 parse_args_of() { # parse_args_of <文件>：args 的两端空格抹平后，一行一个 token
 	sed -n '/^[[:space:]]*args:/p' "$1" |
 		sed 's/^[[:space:]]*args:[[:space:]]*//' |
@@ -515,45 +483,22 @@ parse_args_of() { # parse_args_of <文件>：args 的两端空格抹平后，一
 }
 # 模板里的 args 一行是 YAML 流式列表，带引号；解析它和解析用户那份必须是同一套规则，所以共用
 # parse_args_of——模板和用户配置的写法是同一套，没有第二套。读出来之后去掉外面的引号、展开
-# ~ / $HOME（模板里这么写，换台机器、换用户都对），再跟默认值比。
-# 注意 ~ 展开成 HOME_NOW_DEFAULT（= $HOME，设了 SOL_INSTALL_ROOT 时是 <根>/root），不是裸 $HOME：
-# 默认落点 DEFAULT_CONFIG_PATH 就是按 HOME_NOW_DEFAULT 算的，两边用不同的家目录会在 chroot/沙箱里
-# 比对失败，报出一句莫名其妙的"模板是坏包，重新下载"。
+# ~ / $HOME / $XDG_CONFIG_HOME（模板里这么写，换台机器、换用户都对），再跟默认值比。
 expand_args() {
-	_home_for_tilde=${HOME_NOW_DEFAULT:-$HOME}
 	sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/" |
-		sed -e "s#^~/#$_home_for_tilde/#" -e "s#^~\$#$_home_for_tilde#" |
-		sed -e "s#\$HOME#$_home_for_tilde#g"
+		sed -e "s#\~/#$HOME/#" -e 's#\~$#'"$HOME"'#' |
+		sed -e "s#\$HOME#$HOME#g"
 }
 # 一个文件里 args 的规整结果（一行 token，空格分隔）：读模板与判断"是不是示例"共用这一条规则。
 args_of_file() { parse_args_of "$1" | expand_args | tr '\n' ' ' | sed 's/ *$//'; }
 user_config_args() { args_of_file "$INSTALL_TEMPLATE"; }
-# 模板必须写得能被本脚本读懂：读不出 args，或者 args 跟本脚本算出来的默认值对不上，都算坏包。
-[ "$(user_config_args)" = "$DEFAULT_ARGS" ] ||
-	die "本平台的安装配置模板 ${INSTALL_TEMPLATE} 里的 args 对不上（读到：$(user_config_args)）。这是坏包，重新下载。"
+# 模板必须写得能被本脚本读懂：读不出 args，或者 args 跟标准落点对不上，都算坏包。
+[ "$(user_config_args)" = "listen --config $CANONICAL_RUN_CONFIG" ] ||
+	die "本平台的安装配置模板 ${INSTALL_TEMPLATE} 里的 args 对不上（读到：$(user_config_args)；应该是 listen --config $CANONICAL_RUN_CONFIG）。这是坏包，重新下载。"
 write_user_config() {
 	mkdir -p "$(dirname "$USER_CONFIG")"
 	cp "$INSTALL_TEMPLATE" "$USER_CONFIG"
-	# 落点不是标准位置（SOL_RUN_DIR / 自选根 / 沙箱测试）时，模板里那句 ~/sol/sol.yaml 展开出来
-	# 指向的是**这个用户的标准落点**，跟这份配置实际所在的位置对不上——预检当场读不到文件。
-	# 所以一律改写成本机真实的绝对路径：以后无论谁去展开（脚本、服务定义、sudo 下的另一个 HOME），
-	# 指的都是同一份文件。标准安装时两边本来就相等，这段不产生任何改动。
-	# 目标路径就是 DEFAULT_CONFIG_PATH（sol.yaml 的真实落点，已经算进了 SOL_RUN_DIR / 自选根），
-	# 不是解析出来的 $RUN_CONFIG——那个变量要等这份文件写出来之后才能解析，这时候还不存在。
-	#
-	# 这里必须比**字面量**，不能比 expand_args 展开后的结果：模板写的是 ~/sol/sol.yaml，展开后
-	# 恰好等于默认落点，看着"已经对了"；可 sol 自己不展开 ~（resolvePath 原样返回），它拿到这个
-	# 参数就是去开一个叫 "~" 的目录，当场 decode config 失败。所以只要文件里写的不是那条绝对
-	# 路径，就改写成绝对路径——标准安装时这一行改动前后只差一个 ~ 的展开，语义不变。
-	_literal_want="listen --config $DEFAULT_CONFIG_PATH"
-	_literal_now=$(parse_args_of "$USER_CONFIG" | tr '\n' ' ' | sed 's/ *$//')
-	if [ "$_literal_now" != "$_literal_want" ]; then
-		# 只换 args 那一行的取值，别的字节一个都不动（注释、行尾、你自己的改动）。
-		awk -v a="  args: [$DEFAULT_ARGS_YAML]" '
-			!done && /^[[:space:]]*args:/ { print a; done = 1; next }
-			{ print }
-		' "$USER_CONFIG" >"$USER_CONFIG.tmp" && mv "$USER_CONFIG.tmp" "$USER_CONFIG"
-	fi
+	chmod 777 "$USER_CONFIG" 2>/dev/null || true
 }
 # 这份内容和"我们现在会生成的那份"是否一样（忽略 CRLF）。老脚本写的注释措辞不同，所以分两步：
 # ① 逐字相同；② 去掉注释与空行后只剩 run: 和那一行 args，且 args 与默认值一致。两条都不成立，
@@ -569,8 +514,9 @@ is_stock_user_config() { # is_stock_user_config <文件>
 	# 模板里的路径写成 ~/sol/sol.yaml，用户那份多半已展开成绝对路径：两边都走同一条规整规则再比。
 	[ "$(args_of_file "$1")" = "$DEFAULT_ARGS" ]
 }
+_strip_cr() { tr -d '\r'; }
 # 把 args 解析成一行一个 token（只支持本脚本自己写出的那种写法，不猜别的）。
-parse_args() { parse_args_of "$USER_CONFIG"; }
+parse_args() { parse_args_of "$USER_CONFIG" | expand_args; }
 # 搬运（老位置 → 新位置）要在升权之前做：这两份文件属于**当前用户**，用 sudo 写会变成 root 的。
 # 老内容原样拷过来（令牌、注释、你改过的规则都跟着走），绝不覆盖新位置上已有的文件。
 CONFIG_GENERATED=no
@@ -580,25 +526,16 @@ if [ ! -f "$USER_CONFIG" ] && [ -f "$LEGACY_USER_CONFIG" ]; then
 		: # 内容跟默认生成的那份一样（只有默认 args）：那是示例，不搬
 	elif mkdir -p "$STATE_DIR" && cp "$LEGACY_USER_CONFIG" "$USER_CONFIG" 2>/dev/null; then
 		LEGACY_USER_COPIED=$LEGACY_USER_CONFIG
+		chmod 777 "$USER_CONFIG" 2>/dev/null || true
 	else
 		warn "没能把 $LEGACY_USER_CONFIG 拷到 $USER_CONFIG，按新位置重新生成。"
 	fi
 	CONFIG_GENERATED=yes
 fi
+chmod 777 "$USER_CONFIG" 2>/dev/null || true
 # 老位置的内容在升权之前就原样搬过来了（见"升权"一节前面那段）；这里只剩"还没有就写一份"。
 [ -f "$USER_CONFIG" ] || { write_user_config; CONFIG_GENERATED=yes; }
 [ -n "$LEGACY_USER_COPIED" ] && say "安装配置   沿用 $LEGACY_USER_COPIED（原样拷到 $USER_CONFIG；你另外指定的不受影响）"
-# 搬过来的那份可能写着 ~/sol/sol.yaml（老模板就是教人这么写的）。**必须展开成绝对路径**：
-# 这段文本最后是当命令行参数交给 sol 的，shell 不参与展开，sol 自己也不展开 ~（resolvePath 原样
-# 返回）——它只会去开一个名字叫 "~" 的目录。真机上这么干过一次，结果在当时的执行目录里多出一个
-# 字面量 ~/sol/sol.yaml，而"服务在跑、配置却读不到"。
-normalize_args_tilde() { # normalize_args_tilde <文件>
-	[ -f "$1" ] || return 0
-	grep -q '^[[:space:]]*args:.*~/' "$1" || return 0
-	_home_for_args=${HOME_NOW_DEFAULT:-$HOME}
-	sed -i.bak "s#^\([[:space:]]*args:.*[ \[,]\)~/#\1${_home_for_args}/#g" "$1" && rm -f "$1.bak"
-}
-normalize_args_tilde "$USER_CONFIG"
 OLD_IFS_SAVE=$IFS
 IFS='
 '
@@ -630,24 +567,21 @@ done
 # 所以只认这几样"我们以前替你写的"取值：认出来就改写成现在的位置，文件原样搬过去，改动不丢；
 # 你自己另行指定的路径一律不动——那是有意为之的。
 case "$RUN_CONFIG" in
-/*) RUN_CONFIG_ABS=$RUN_CONFIG ;;
-*) RUN_CONFIG_ABS="$(pwd)/$RUN_CONFIG" ;;
+/*) LEGACY_RUN_CONFIG_ABS=$RUN_CONFIG ;;
+*) LEGACY_RUN_CONFIG_ABS="$(pwd)/$RUN_CONFIG" ;;
 esac
-# 比对的串里**只能**放"我们以前写过的默认落点"。这里原来把 $RUN_CONFIG 自己也算进去了
-# （$LEGACY_RUN_CONFIG_ABS 就是它），等于自比自——永远命中，于是你在 install.yaml 里写的
-# 任何 --config 都会被悄悄改回默认落点，注释里那句"你另外指定的路径不动"根本没兑现。
-LEGACY_DEFAULTS=" $DEFAULT_CONFIG_PATH $LEGACY_RUN_CONFIG $LEGACY_SHAREDIR/$RUN_CONFIG_NAME $ROOT/var/lib/$DIR_NAME/$RUN_CONFIG_NAME $ROOT/etc/sol/$RUN_CONFIG_NAME "
-case "$LEGACY_DEFAULTS" in
-*" $RUN_CONFIG "* | *" $RUN_CONFIG_ABS "*)
+case " $LEGACY_RUN_CONFIG $LEGACY_RUN_CONFIG_ABS $RUN_DIR/sol.yaml" in
+*" $RUN_CONFIG "*)
 	# 文件本身在升权之前就搬好了（上面那段），这里只把 install.yaml 里的默认值改写成新位置。
 	old_run_config=$RUN_CONFIG
 	RUN_CONFIG=$DEFAULT_CONFIG_PATH
-	# 只把那个值整段换成新路径：参数顺序、你自己加的 flag（--watch 之类）都不碰。
-	_old_re=$(printf '%s' "$old_run_config" | sed 's/[.[\*^$#]/\\&/g')
-	ARGS=$(printf '%s\n' "$ARGS" | sed "s#^${_old_re}\$#$RUN_CONFIG#")
-	# 同一件事落到文件上：只换那一行里的这个值，别把整行重写成只剩 --config 一个参数。
-	sed -i.bak "s#^\([[:space:]]*args:[[:space:]]*\[.*\)${_old_re}\(.*\]\)#\1${RUN_CONFIG}\2#" "$USER_CONFIG" &&
-		rm -f "$USER_CONFIG.bak"
+	# 只把那个值整段换成新路径：参数顺序、你自己加的 flag 都不碰。
+	ARGS=$(printf '%s\n' "$ARGS" | sed "s#^$(printf '%s' "$old_run_config" | sed 's/[.[\*^$#]/\\&/g')\$#$RUN_CONFIG#")
+	awk -v a="  args: [listen, --config, $RUN_CONFIG]" '
+		!done && /^[[:space:]]*args:/ { print a; done = 1; next }
+		{ print }
+	' "$USER_CONFIG" >"$USER_CONFIG.tmp" && command mv -f "$USER_CONFIG.tmp" "$USER_CONFIG"
+	chmod 777 "$USER_CONFIG" 2>/dev/null || true
 	say "运行配置   改到用户目录：$RUN_CONFIG$( [ -n "$RUN_COPY_FROM" ] && printf '（老位置那份原样拷过去）' )；你另外指定的路径不受影响。"
 	;;
 esac
@@ -674,7 +608,11 @@ fill_template_token() { # fill_template_token <文件> <令牌>
 		cat "$tok_tmp" >"$1" && rm -f "$tok_tmp"
 }
 ensure_runtime_config() {
-	[ -f "$RUN_CONFIG" ] && return 0
+	if [ -f "$RUN_CONFIG" ]; then
+		# 已存在的运行配置内容绝不动（令牌、规则都是用户的），但权限按本脚本约定放宽到 777。
+		chmod 777 "$RUN_CONFIG" 2>/dev/null || true
+		return 0
+	fi
 	# ① 老位置那份（你改过令牌、规则）原样搬过来——谁也无权冲掉。
 	# ② 没有老文件才用模板：包自带的脚本边上的 sol.yaml（注释最全），没有就用下面内置的那份。
 	# 这两条只对默认那份生效；你另外指定的 --config 路径照旧只用下面的内置模板。
@@ -682,7 +620,7 @@ ensure_runtime_config() {
 		if [ -n "$RUN_COPY_FROM" ]; then
 			# 用户目录里那份必须是当前用户的（服务以 root 跑，读得到），所以不是 root 写。
 			mkdir -p "$RUN_DIR" 2>/dev/null || mkdir_root "$RUN_DIR"
-			if cp "$RUN_COPY_FROM" "$RUN_CONFIG" 2>/dev/null && chmod 600 "$RUN_CONFIG" 2>/dev/null; then
+			if cp "$RUN_COPY_FROM" "$RUN_CONFIG" 2>/dev/null && chmod 777 "$RUN_CONFIG" 2>/dev/null; then
 				RUNTIME_CONFIG_GENERATED=yes
 				RUNTIME_CONFIG_COPIED=yes
 				RUN_COPIED_FROM=$RUN_COPY_FROM
@@ -695,7 +633,7 @@ ensure_runtime_config() {
 			if cp "$TEMPLATE_CONFIG" "$runtime_tmp" 2>/dev/null &&
 				fill_template_token "$runtime_tmp" "$(new_control_token)" &&
 				cp "$runtime_tmp" "$RUN_CONFIG" 2>/dev/null; then
-				chmod 600 "$RUN_CONFIG" 2>/dev/null || true
+				chmod 777 "$RUN_CONFIG" 2>/dev/null || true
 				rm -f "$runtime_tmp"
 				RUNTIME_CONFIG_GENERATED=yes
 				RUNTIME_CONFIG_FROM=$TEMPLATE_CONFIG
@@ -739,9 +677,9 @@ YAML
 	mkdir_root "$(dirname "$RUN_CONFIG")"
 	# 默认落在用户目录里，不需要 root；真写不进去（HOME 不可写之类）再请一次 sudo。
 	if [ "$(dirname "$RUN_CONFIG")" = "$RUN_DIR" ] && writable_target "$RUN_DIR"; then
-		install -m 600 "$runtime_tmp" "$RUN_CONFIG" || put_root "$runtime_tmp" "$RUN_CONFIG" 0600
+		install -m 777 "$runtime_tmp" "$RUN_CONFIG" || put_root "$runtime_tmp" "$RUN_CONFIG" 0777
 	else
-		put_root "$runtime_tmp" "$RUN_CONFIG" 0600
+		put_root "$runtime_tmp" "$RUN_CONFIG" 0777
 	fi
 	rm -f "$runtime_tmp"
 	RUNTIME_CONFIG_GENERATED=yes
@@ -786,7 +724,11 @@ banner() {
 show_menu() {
 	head2 "[选项]"
 	say "  1  按配置应用（按 install.yaml 里的 run.args 装或升级）"
-	say "  2  卸载（摘掉服务，按台账删掉自己建的东西）"
+	if [ "$LEDGER_EXISTS" = yes ]; then
+		say "  2  卸载（摘掉服务，按台账删掉自己建的东西）"
+	else
+		say "  2  卸载（还没有台账：只清执行目录里的遗留，不会动别人的东西）"
+	fi
 	say "  3  重新生成 install.yaml"
 	say "  4  退出，什么都不改"
 	say ""
@@ -799,7 +741,7 @@ show_state() {
 		[ -n "$fits" ] && warn "${fits}——这份装不起来，去下本机架构的那个包。"
 		say "  版本        $(version_tag "$LOCAL_BIN")（sha256 $(sha256 "$LOCAL_BIN" | cut -c1-12)…）"
 	else
-		say "  二进制      没有找到可用的 sol：脚本旁边、当前目录、${DEST_BIN}、\$PATH 里都没有"
+		say "  二进制      没有找到可用的 sol：脚本旁边、当前目录、\$PATH 里都没有"
 	fi
 	if [ -n "$PATH_SOLS" ]; then
 		say "  PATH 上的 sol"
@@ -835,7 +777,7 @@ show_state() {
 	esac
 	say "  日志        $(log_hint)"
 	inst_bin=$(ledger_field binary)
-	[ -n "$inst_bin" ] || inst_bin="$DEST_BIN"
+	[ -n "$inst_bin" ] || inst_bin="$BINDIR/sol"
 	inst_n=$(running_instances "$inst_bin" | wc -l | tr -d ' ')
 	if [ "$inst_n" != "0" ]; then
 		say "  进程        有 $inst_n 个在跑：${inst_bin}（要用到端口时会先停掉它）"
@@ -844,15 +786,15 @@ show_state() {
 	fi
 	[ -n "$MANAGED_BY" ] && say "  包管理器    这个 sol 是 $MANAGED_BY 装的（升级会覆盖它）"
 	if [ "$UID_NOW" = "0" ]; then
-		say "  权限        root（注册服务不需要再升权）"
+		say "  权限        root（写系统路径与注册服务不需要再升权）"
 	elif [ -n "$ROOT" ]; then
 		say "  权限        普通用户 + SOL_INSTALL_ROOT=${ROOT}（自己的地盘，不会 sudo）"
 	else
-		say "  权限        普通用户（落点在自己目录里、不用提权；只有装系统级服务时才在动手前 sudo 重跑一遍）"
+		say "  权限        普通用户（要写系统路径/注册服务时，动手前会用 sudo 重跑一遍自己）"
 	fi
 	if [ -f "$RUN_CONFIG" ]; then
 		if [ "$RUNTIME_CONFIG_GENERATED" = yes ]; then
-			say "  运行配置    ${RUN_CONFIG}（沿用了 ${RUN_COPIED_FROM}，原样拷过来的）"
+			say "  运行配置    ${RUN_CONFIG}（沿用了 ${RUN_COPIED_FROM:-}，原样拷过来的）"
 		else
 			say "  运行配置    ${RUN_CONFIG}（sol 会读它）"
 		fi
@@ -923,7 +865,7 @@ ask_choice() { # ask_choice <提示> -> 打印一个词：apply | uninstall | re
 		if [ "$READ_EOF" = yes ]; then printf 'quit'; return 0; fi
 		[ -n "$ans" ] || ans=1
 		case "$ans" in
-		1 | apply) printf 'apply'; return 0 ;;
+		1 | y | yes | apply) printf 'apply'; return 0 ;;
 		2 | u | uninstall) printf 'uninstall'; return 0 ;;
 		3 | r | regenerate) printf 'regenerate'; return 0 ;;
 		4 | n | no | q | quit) printf 'quit'; return 0 ;;
@@ -1012,7 +954,7 @@ precheck() { # 用同一个二进制 + 同一份配置起一次（dry-run：匹�
 	return 1
 }
 write_ledger() { # write_ledger <incomplete: true|false> [prevVersion] [prevSha]
-	binary=${DEST_BIN:-$RUN_DIR/sol}
+	binary=${DEST_BIN:-$BINDIR/sol}
 	sha=""
 	[ -f "$binary" ] && sha=$(sha256 "$binary")
 	cat >"$LEDGER_TMP" <<EOF
@@ -1021,7 +963,7 @@ write_ledger() { # write_ledger <incomplete: true|false> [prevVersion] [prevSha]
   "method": "script",
   "installed_version": "$(binary_version "$binary" | sed 's/.*version //')",
   "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "prefix": "$RUN_DIR",
+  "prefix": "$BINDIR",
   "binary": "$binary",
   "sha256": "$sha",
   "service": {
@@ -1034,7 +976,7 @@ write_ledger() { # write_ledger <incomplete: true|false> [prevVersion] [prevSha]
   },
   "firewall_rules": [],
   "config_paths": ["$RUN_CONFIG"],
-  "log_paths": [$( [ "$SERVICE_KIND" = launchd ] && printf '"%s"' "$LOG_FILE" )],
+  "log_paths": [$( [ "$SERVICE_KIND" = launchd ] && printf '"%s"' "$SOL_DIR/sol.log" )],
   "previous": { "installed_version": "$2", "sha256": "$3" },
   "incomplete": $1
 }
@@ -1042,8 +984,8 @@ EOF
 	if [ -f "$LEDGER" ] && [ -w "$LEDGER" ]; then
 		cp "$LEDGER_TMP" "$LEDGER"
 	else
-		mkdir_root "$RUN_DIR"
-		put_root "$LEDGER_TMP" "$LEDGER" 0644
+		mkdir_root "$SHAREDIR"
+		put_root "$LEDGER_TMP" "$LEDGER" 0777
 	fi
 }
 append_history() { # append_history <动作>
@@ -1052,15 +994,18 @@ append_history() { # append_history <动作>
 		printf '== %s %s ==\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"
 		printf '%s\n' "$ACTIONS"
 	} >"$tmp"
+	chmod 777 "$tmp" 2>/dev/null || true
 	if [ -f "$HISTORY" ] && [ -w "$HISTORY" ]; then
 		cat "$tmp" >>"$HISTORY"
 	else
-		mkdir_root "$RUN_DIR"
-		if [ -n "$SUDO" ] && [ ! -w "$RUN_DIR" ]; then
+		mkdir_root "$SHAREDIR"
+		chmod 777 "$HISTORY" 2>/dev/null || as_root chmod 0777 "$HISTORY" 2>/dev/null || true
+		if [ -n "$SUDO" ] && [ ! -w "$SHAREDIR" ]; then
 			as_root tee -a "$HISTORY" <"$tmp" >/dev/null
 		else
 			cat "$tmp" >>"$HISTORY" 2>/dev/null || as_root tee -a "$HISTORY" <"$tmp" >/dev/null
 		fi
+		chmod 777 "$HISTORY" 2>/dev/null || as_root chmod 0777 "$HISTORY" 2>/dev/null || true
 	fi
 	rm -f "$tmp"
 }
@@ -1069,8 +1014,7 @@ append_history() { # append_history <动作>
 # 少一个就是 set -u 当场炸死（而且只在有 root 的那条路上炸，很难撞见）。
 SERVICE_CHOSEN=false
 SERVICE_WANTED=false
-# DEST_BIN 不在这里置空：它早在路径那一段就等于 $RUN_DIR/sol 了。置空会让卸载报告打出
-# "已删除：" 后面一片空白（卸载路径不走 do_install，没人再给它赋值）。
+DEST_BIN=""
 NOOP=no
 del_configs=no
 # 现在这份配置对应的服务定义。**只有这一个渲染器**：写盘和"比有没有变"都用它，
@@ -1083,7 +1027,7 @@ render_unit() {
 			printf 'Description=SoL listener\n'
 			printf 'After=network-online.target\n\n'
 			printf '[Service]\n'
-			printf 'ExecStart=%s %s\n' "$DEST_BIN" "$(printf '%s' "$ARGS" | tr '\n' ' ' | sed 's/ $//')"
+			printf 'ExecStart=%s %s\n' "$BINDIR/sol" "$(printf '%s' "$ARGS" | tr '\n' ' ' | sed 's/ $//')"
 			printf 'Restart=always\n'
 			printf '# 要用保留端口 7/9 或 <1024 端口时取消注释（并保证配置里的端口确实是那些）：\n'
 			printf '# AmbientCapabilities=CAP_NET_BIND_SERVICE\n'
@@ -1098,15 +1042,14 @@ render_unit() {
 			printf '<plist version="1.0">\n<dict>\n'
 			printf '  <key>Label</key><string>%s</string>\n' "$UNIT_NAME"
 			printf '  <key>ProgramArguments</key>\n  <array>\n'
-			printf '    <string>%s</string>\n' "$DEST_BIN"
+			printf '    <string>%s</string>\n' "$BINDIR/sol"
 			printf '%s\n' "$ARGS" | while IFS= read -r a; do printf '    <string>%s</string>\n' "$a"; done
 			printf '  </array>\n'
 			printf '  <key>RunAtLoad</key><true/>\n'
 			printf '  <key>KeepAlive</key><true/>\n'
 			# launchd 要日志文件的目录先存在，否则任务起不来（这是 macOS 上最容易踩的一脚）。
-			# 日志跟二进制同目录：整个 sol 目录都在用户目录下，服务以 root 跑也写得到（root 无视权限）。
-			printf '  <key>StandardOutPath</key><string>%s</string>\n' "$LOG_FILE"
-			printf '  <key>StandardErrorPath</key><string>%s</string>\n' "$LOG_FILE"
+			printf '  <key>StandardOutPath</key><string>%s/sol.log</string>\n' "$PREFIX"
+			printf '  <key>StandardErrorPath</key><string>%s/sol.log</string>\n' "$PREFIX"
 			printf '</dict>\n</plist>\n'
 		}
 		;;
@@ -1146,57 +1089,11 @@ open_config_dir() { # open_config_dir <目录> <文件>
 		say "     目录：$dir"
 	fi
 }
-# 老版本把二进制放在 /usr/local/bin/sol、台账放在 /usr/local/share/sol/install.json。落点已经收进
-# 用户目录了，机器上留着那份旧二进制只会造成"命令行走的是一份、服务跑的是另一份"——搬过来时顺手
-# 清掉它。只认台账里记下的路径和这个历史默认值，别的一律不碰（别人装的 sol 跟我们无关）。
-# 挂了自选根时**照样清**：那时 LEGACY_BIN 就是 <根>/usr/local/bin/sol，删的仍在根里面，
-# 而且沙箱测试只有走这条路才碰得到这段代码。
-migrate_legacy_bin() {
-	# 候选有两个，两个都要看：台账里记着的那份（换过落点、或手工装到别处过），以及历史落点上那份。
-	# 只按台账判断会漏掉最常见的一种状态——台账已经写成新落点、老落点却还留着一份（实测过）。
-	for old in "${LEDGER_BINARY:-}" "$LEGACY_BIN"; do
-		[ -n "$old" ] || continue
-		[ "$old" = "$DEST_BIN" ] && continue
-		[ -f "$old" ] || continue
-		[ -f "$DEST_BIN" ] || continue # 新的那份还没就位：不能先把旧的删了，否则机器上一份都不剩
-		# 只删"我们装过的那份"：台账里记着它，或者老台账（安装证据）就在历史落点上。
-		# 两条都不成立就别动——那是别人放在 /usr/local/bin 里的 sol，只提醒一句。
-		case "$old" in
-		"$LEDGER_BINARY") : ;;
-		*) [ -f "$LEGACY_LEDGER" ] || {
-			say "提示        $old 也是一份 sol，但台账里没有它的记录（不是这个脚本装的），没动它"
-			continue
-		} ;;
-		esac
-		stop_instances "$old" "老落点那份要搬走，不能让它继续占着端口"
-		rm_root "$old" "$old.bak"
-		act root "清掉老落点里的二进制" "sudo rm $old $old.bak"
-		say "二进制      老落点那份已清掉：$old（现在只有 $DEST_BIN）"
-	done
-}
-# 老的台账（/usr/local/share/sol/install.json）也是同一件事：新台账写在 $RUN_DIR 里，
-# 旧的那份留着会让下一次运行读到"上一次装在 /usr/local/bin"这种过期信息。
-migrate_legacy_ledger() {
-	[ -f "$LEGACY_LEDGER" ] || return 0
-	[ "$LEGACY_LEDGER" = "$LEDGER" ] && return 0
-	rm_root "$LEGACY_LEDGER"
-	act root "清掉老落点里的台账" "sudo rm $LEGACY_LEDGER"
-	rm_root "$LEGACY_SHAREDIR/$HISTORY_NAME"
-	act root "清掉老落点里的历史" "sudo rm $LEGACY_SHAREDIR/$HISTORY_NAME"
-	# 老落点目录空了就删掉（/usr/local/share/sol 是我们建的，删了不留空壳）。用 rmdir：它只删空目录，
-	# 目录里万一冒出别人的东西会失败——比 rm -rf 安全，也就不会删到不该删的。
-	# /usr/local/bin 不删：那是系统的目录，里面还有别人的东西。
-	if [ -d "$LEGACY_SHAREDIR" ] && [ -z "$(ls -A "$LEGACY_SHAREDIR" 2>/dev/null)" ]; then
-		if writable_target "$LEGACY_SHAREDIR"; then rmdir "$LEGACY_SHAREDIR"; else as_root rmdir "$LEGACY_SHAREDIR"; fi
-		act root "删掉空了的老落点目录" "sudo rmdir $LEGACY_SHAREDIR"
-	fi
-}
 do_install() {
-	[ -n "$LOCAL_BIN" ] ||
-		die "没有可用的 sol 二进制：把 sol（或 sol.exe）放在脚本旁边、\$PATH 里，或者已经装在 ${DEST_BIN}，再跑一次"
+	[ -n "$LOCAL_BIN" ] || die "没有可用的 sol 二进制：把 sol（或 sol.exe）放在脚本旁边或 \$PATH 里，再跑一次"
 	new_ver=$(binary_version "$LOCAL_BIN")
 	new_sha=$(sha256 "$LOCAL_BIN")
-	DEST_BIN="$RUN_DIR/sol"
+	DEST_BIN="$BINDIR/sol"
 	# 别人的服务定义默认不覆盖——但**要问一句**：用户明确说要接管，就该能接管（死路最糟）。
 	if [ "$SERVICE_WANTED" = true ] && [ -f "$UNIT_PATH" ] && [ "$LEDGER_CREATED_UNIT" != true ]; then
 		say ""
@@ -1228,9 +1125,6 @@ do_install() {
 		if [ "$unit_same" = yes ] && [ "$fresh" = yes ]; then
 			say ""
 			say "已是最新，无需操作：二进制没变（sha256 $new_sha 与台账一致），服务定义没变，服务在运行。"
-			# 但"老落点还留着一份"这件事得处理掉：不然机器上一直有两个 sol，命令行走哪份看 PATH。
-			migrate_legacy_bin
-			migrate_legacy_ledger
 			NOOP=yes
 			return 0
 		fi
@@ -1274,7 +1168,7 @@ do_install() {
 		esac
 	fi
 	# 3) 放二进制：原子替换；旧的留 sol.bak
-	mkdir_root "$RUN_DIR"
+	mkdir_root "$BINDIR"
 	if [ -f "$DEST_BIN" ] && [ "$(sha256 "$DEST_BIN")" = "$new_sha" ]; then
 		say "二进制      已经就是这份（sha256 相同），不动"
 	else
@@ -1288,13 +1182,13 @@ do_install() {
 		fi
 		new_tmp=$(mktemp)
 		cp "$LOCAL_BIN" "$new_tmp"
-		chmod 0755 "$new_tmp"
-		if [ -w "$RUN_DIR" ]; then
+		chmod 0777 "$new_tmp"
+		if [ -w "$BINDIR" ]; then
 			mv "$new_tmp" "$DEST_BIN"
 			act user "放置二进制（原子替换）" "mv <新二进制> $DEST_BIN"
 		else
 			as_root mv "$new_tmp" "$DEST_BIN"
-			as_root chmod 0755 "$DEST_BIN"
+			as_root chmod 0777 "$DEST_BIN"
 			act root "放置二进制（原子替换）" "sudo mv <新二进制> $DEST_BIN"
 		fi
 		rm -f "$new_tmp"
@@ -1304,8 +1198,6 @@ do_install() {
 			act user "清 quarantine 标记（macOS）" "xattr -d com.apple.quarantine $DEST_BIN"
 		fi
 	fi
-	# 3.5) 老系统落点里那份（/usr/local/bin/sol）搬走：不然机器上会有两个 sol，PATH 上谁先生效看运气。
-	migrate_legacy_bin
 	# 4) 服务定义（只有选了服务才写）
 	if [ "$SERVICE_CHOSEN" = true ]; then
 		write_service
@@ -1313,8 +1205,6 @@ do_install() {
 	# 5) 台账 + 历史（这次是完整的）
 	write_ledger false "$LEDGER_VERSION" "$LEDGER_SHA"
 	act user "更新安装台账（incomplete=false）" ""
-	# 老落点的残留台账在读完、写完新台账之后再清：先清会让上面那几个 LEDGER_* 变成"没装过"。
-	migrate_legacy_ledger
 	append_history "install"
 	# 6) 回读：服务真起来了吗、跑的是不是新版
 	RUNNING_VER=""
@@ -1331,7 +1221,7 @@ do_install() {
 	launchd)
 		if [ "$SERVICE_CHOSEN" = true ]; then
 			if ! launchctl print "system/$UNIT_NAME" >/dev/null 2>&1; then
-				warn "launchd 任务没有在跑。看日志：$LOG_FILE"
+				warn "launchd 任务没有在跑。看日志：$SOL_DIR/sol.log"
 			else
 				RUNNING_VER="running"
 			fi
@@ -1345,13 +1235,12 @@ write_service() {
 		mkdir_root "$(dirname "$UNIT_PATH")"
 		if [ "$SERVICE_KIND" = launchd ]; then
 			# launchd 在启动任务之前要求日志文件所在目录已存在，否则任务直接起不来。
-			# 日志就在 $RUN_DIR 里（跟二进制同目录），安装时已经把落点目录建好了，这里只是兜底。
-			mkdir_root "$RUN_DIR"
-			act root "确认日志目录存在（launchd 需要它）" "sudo mkdir -p $RUN_DIR"
+			mkdir_root "$SOL_DIR"
+			act root "建日志目录（launchd 需要它存在）" "sudo mkdir -p $SOL_DIR"
 		fi
 		unit_tmp=$(mktemp)
 		render_unit >"$unit_tmp"
-		put_root "$unit_tmp" "$UNIT_PATH" 0644
+		put_root "$unit_tmp" "$UNIT_PATH" 0777
 		rm -f "$unit_tmp"
 		act root "写服务定义（从 run.args 生成）" "sudo cp <服务定义> $UNIT_PATH"
 		;;
@@ -1362,9 +1251,11 @@ write_service() {
 			warn "SOL_INSTALL_ROOT=${ROOT}：单元文件写好了，但不注册服务（systemd 看不见它）。"
 		elif command -v systemctl >/dev/null 2>&1; then
 			as_root systemctl daemon-reload >/dev/null 2>&1 || true
+			# 单元文件在 ~/sol 下（不在 /etc/systemd/system），systemd 找不到名字，要先 link 再 enable。
+			as_root systemctl link --force "$UNIT_PATH" >/dev/null 2>&1 || true
 			as_root systemctl enable --now "$UNIT_NAME" >/dev/null 2>&1 ||
 				warn "systemctl enable --now $UNIT_NAME 失败，手动跑一遍看原因"
-			act root "启用并启动服务" "sudo systemctl enable --now $UNIT_NAME"
+			act root "链接并启用服务" "sudo systemctl link --force $UNIT_PATH && sudo systemctl enable --now $UNIT_NAME"
 		else
 			warn "没有 systemctl（容器里？）：单元文件已写好，进了 systemd 的系统再 enable"
 		fi
@@ -1389,7 +1280,7 @@ do_uninstall() {
 		say "      按默认落点，会动的是："
 		[ -f "$UNIT_PATH" ] && say "        · 单元 ${UNIT_PATH}"
 		[ -n "$LOCAL_BIN" ] && say "        · 安装包里那份 ${LOCAL_BIN}"
-		say "        · ${DEST_BIN}、防火墙规则（如果加过）"
+		say "        · ${BINDIR}/sol、防火墙规则（如果加过）、以及 PATH 里那一行"
 		if ask "要我按上面的默认落点强制清理吗" n; then
 			say "      好，强制清理（历史里会记成无台账的强制清理）。"
 		else
@@ -1403,6 +1294,8 @@ do_uninstall() {
 		act root "停用并禁用服务" "sudo systemctl disable --now $UNIT_NAME"
 		rm_root "$UNIT_PATH"
 		[ -f "$UNIT_PATH" ] || act root "删单元文件" "sudo rm $UNIT_PATH"
+		# 单元在 ~/sol 下是通过 systemctl link 挂进来的，删文件后要把链接也摘掉。
+		as_root systemctl unlink "$UNIT_PATH" >/dev/null 2>&1 || as_root systemctl disable "$UNIT_NAME" >/dev/null 2>&1 || true
 		as_root systemctl daemon-reload >/dev/null 2>&1 || true
 		act root "重载 systemd" "sudo systemctl daemon-reload"
 		;;
@@ -1416,43 +1309,32 @@ do_uninstall() {
 	# 先停进程，再删东西：正在跑的 exe 删不掉（文件锁），而且它会一直占着端口——
 	# 下次安装的预检就会以"端口占用"失败，看起来像是装不上。
 	bin=$(ledger_field binary)
-	[ -n "$bin" ] || bin="$DEST_BIN"
+	[ -n "$bin" ] || bin="$BINDIR/sol"
 	stop_instances "$bin" "卸载要删掉它，也不能让它继续占着端口"
 	if [ -f "$bin" ]; then
 		rm_root "$bin" "$bin.bak"
 		act root "删二进制与 sol.bak" "sudo rm $bin $bin.bak"
 	fi
-	# 配置与日志默认留着；问了才删。它们现在是**你自己的**文件（就在用户目录里），用 rm 而不是 sudo rm：
-	# 走 root 删出来的残留属主会变成 root，下次普通用户想改都改不了。
+	# 配置与日志默认留着；问了才删
 	del_configs=no
-	if ask "配置文件也一起删掉吗？（$INSTALL_CONFIG_NAME、$RUN_CONFIG_NAME）" n; then del_configs=yes; fi
+	if ask "配置文件也一起删掉吗？" n; then del_configs=yes; fi
 	if [ "$del_configs" = yes ]; then
 		if [ -f "$USER_CONFIG" ]; then
 			rm -f "$USER_CONFIG"
 			act user "删安装配置" "rm $USER_CONFIG"
 		fi
 		if [ -f "$RUN_CONFIG" ]; then
-			rm -f "$RUN_CONFIG"
-			act user "删运行配置" "rm $RUN_CONFIG"
+			rm_root "$RUN_CONFIG"
+			act root "删运行配置" "sudo rm $RUN_CONFIG"
 		fi
 	else
 		say "配置留着：${USER_CONFIG}、$RUN_CONFIG"
-		say "（要删：rm $USER_CONFIG $RUN_CONFIG）"
+		say "（要删：rm $USER_CONFIG ${RUN_CONFIG}）"
 		act user "保留配置（未删）" "# 配置与日志保留"
 	fi
 	append_history "uninstall"
-	# 台账最后删（它记着上面这些路径）。删完顺手说一句目录里还剩什么——用户问的最多的就是
-	# "到底还有没有东西留在别处"，答案现在只有一个目录。
-	rm -f "$LEDGER" 2>/dev/null || true
-	act user "删台账" "rm $LEDGER"
-	_leftover=$(ls -A "$RUN_DIR" 2>/dev/null | tr '\n' ' ' || true)
-	_leftover=${_leftover% }
-	if [ -z "$_leftover" ]; then
-		rmdir "$RUN_DIR" 2>/dev/null || true
-		act user "删掉空的落点目录" "rmdir $RUN_DIR"
-	else
-		say "落点目录里还剩：$_leftover（在 $RUN_DIR；不要了就连目录一起删：rm -rf $RUN_DIR）"
-	fi
+	rm_root "$LEDGER"
+	act root "删台账" "sudo rm $LEDGER"
 }
 # ───────────────────────── 报告 ─────────────────────────
 report() { # report <install|uninstall|none>
@@ -1460,7 +1342,6 @@ report() { # report <install|uninstall|none>
 	install)
 		head2 "[完成]"
 		say "  版本        $(version_tag "$DEST_BIN" || echo '（读不到版本）')"
-		say "  落点        $RUN_DIR（二进制、配置、台账、日志都在这一个目录里）"
 		say "  二进制      $DEST_BIN"
 		if [ -f "$DEST_BIN.bak" ]; then say "  （旧版本留在 $DEST_BIN.bak，回滚就是把它换回去）"; fi
 		say ""
@@ -1499,7 +1380,7 @@ report() { # report <install|uninstall|none>
 		else
 			say "  服务        $(state_cn "$(service_state)")（${UNIT_NAME}）"
 		fi
-		say "  二进制      $([ -f "$DEST_BIN" ] && echo "还在：$DEST_BIN" || echo "已删除：$DEST_BIN")"
+		say "  二进制      $([ -f "$BINDIR/sol" ] && echo "还在：$BINDIR/sol" || echo "已删除：$BINDIR/sol")"
 		if [ "$del_configs" = yes ]; then
 			say "  配置        已按你的选择删除"
 		else
@@ -1543,61 +1424,49 @@ fi
 banner
 show_state
 show_config
+# 菜单是唯一入口：无论装没装过，先给地图再问去哪。有没有台账只影响菜单项措辞，
+# 不影响菜单出不出来（原来"未安装就走 y/n 连环问"会逼着人装，这里改成显式选择）。
 if [ "$LEDGER_EXISTS" = yes ]; then
 	say "检测到已安装 ${LEDGER_VERSION:-?}（服务：$(state_cn "$(service_state)")）。"
-	show_menu
-	choice=$(ask_choice "请选择")
-	case "$choice" in
-	uninstall)
-		escalate uninstall
-		do_uninstall
-		report uninstall
-		;;
-	regenerate)
-		rm -f "$USER_CONFIG"
-		write_user_config
-		CONFIG_GENERATED=yes
-		say "已重新生成：${USER_CONFIG}（重新跑一次脚本就会按它执行）"
-		exit 0
-		;;
-	quit)
-		report none
-		;;
-	*)
-		if [ "$LEDGER_CREATED_UNIT" = true ]; then
-			SERVICE_WANTED=true
-		elif [ -n "$ROOT" ] || [ "$SERVICE_KIND" = none ]; then
-			SERVICE_WANTED=false
-		else
-			# 台账没说建过单元：可能当时你选了"不装服务"，也可能上次没跑完（单元不在）。
-			# 那就再问一次——否则"我想装服务"在这条路上永远没机会说出口。
-			SERVICE_WANTED=false
-			if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
-		fi
-		open_config_dir "$(dirname "$RUN_CONFIG")" "$RUN_CONFIG"
-		escalate install
-		do_install
-		if [ "$NOOP" = yes ]; then
-			say "（什么都没改。想强制重写服务定义就选 3 重新生成配置，或先卸载。）"
-			exit 0
-		fi
-		report install
-		;;
-	esac
-	exit 0
+else
+	say "未安装（按你已有的二进制处理；装完写台账到 ${LEDGER}）。"
 fi
-# 未安装
-SERVICE_WANTED=false
-if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
-if ! ask "执行吗？" y; then
+show_menu
+choice=$(ask_choice "请选择")
+case "$choice" in
+uninstall)
+	escalate uninstall
+	do_uninstall
+	report uninstall
+	;;
+regenerate)
+	rm -f "$USER_CONFIG"
+	write_user_config
+	CONFIG_GENERATED=yes
+	say "已重新生成：${USER_CONFIG}（重新跑一次脚本就会按它执行）"
+	exit 0
+	;;
+quit)
 	report none
-	exit 0
-fi
-open_config_dir "$(dirname "$RUN_CONFIG")" "$RUN_CONFIG"
-escalate install
-do_install
-if [ "$NOOP" = yes ]; then
-	say "（什么都没改。想强制重写服务定义就选 3 重新生成配置，或先卸载。）"
-	exit 0
-fi
-report install
+	;;
+*)
+	# 要不要服务：台账说建过就沿用（升级不动它）；没说过（首次安装、或上次选了不装）就问一次。
+	if [ "$LEDGER_CREATED_UNIT" = true ]; then
+		SERVICE_WANTED=true
+	elif [ -n "$ROOT" ] || [ "$SERVICE_KIND" = none ]; then
+		SERVICE_WANTED=false
+	else
+		SERVICE_WANTED=false
+		if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
+	fi
+	open_config_dir "$(dirname "$RUN_CONFIG")" "$RUN_CONFIG"
+	escalate install
+	do_install
+	if [ "$NOOP" = yes ]; then
+		say "（什么都没改。想强制重写服务定义就选 3 重新生成配置，或先卸载。）"
+		exit 0
+	fi
+	report install
+	;;
+esac
+exit 0

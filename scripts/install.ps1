@@ -2,15 +2,13 @@
 #
 # 与 scripts/install.sh 是同一份契约（docs/install-design.md）：认出现状 → 生成/读取"怎么跑"的
 # 配置（用户目录 %USERPROFILE%\sol\install.yaml，里面只有 run.args；同目录再生成一份 sol.yaml）→ 展示 → 问一句 → 才动手。
-# 装完只有一个目录：**%USERPROFILE%\sol**——sol.exe、install.yaml、sol.yaml、install.json、install.log、sol.log 全在里面。
 #
 #   powershell -ExecutionPolicy Bypass -File install.ps1     或双击 install.cmd
 #   文件必须是 **UTF-8 带 BOM**：powershell.exe 5.1 会把不带 BOM 的脚本按 ANSI(GBK) 读，中文全乱码。
 #   没有终端（管道喂答案）时只生成配置，不执行任何操作
 #
-# ⚠ 证据强度：在一个隔离的 SOL_INSTALL_ROOT 沙箱里跑通过完整流程（生成配置、放二进制、写台账、
-#    卸载、路径落点都核过）；真机上"注册计划任务 + 防火墙规则"那两步仍由 .github/workflows/
-#    install-smoke.yml 的 windows matrix 补证据（沙箱里那两步按设计跳过）。
+# ⚠ 证据强度：本机没有 Windows 实机，这份脚本**只做过构造级校验（逐行审查）**，未在真机上跑过。
+#    设计文档 §10 要求由 .github/workflows/install-smoke.yml 的 windows matrix 补上真机证据。
 #
 # ⚠ 升权重跑时带的内部参数必须是 PowerShell 原生写法（-SolAction install，不是 --sol-action=install）：
 #   `powershell -File script.ps1 --sol-action=install` 会被当成参数名，子进程直接死在这一行。
@@ -27,7 +25,7 @@ param(
 	[string]$SolRoot = ''
 )
 # 环境变量（都有默认值；测试与多实例用）：
-#   SOL_INSTALL_ROOT  把落点挂到另一个目录下（默认 %USERPROFILE%\sol；设了它时是 <根>\home\sol）
+#   SOL_INSTALL_ROOT  把落点挂到另一个目录下（沙箱时全部落 <根>\home\sol；不设时全落 %USERPROFILE%\sol）
 #   SOL_UNIT_NAME     计划任务名（默认 sol）
 $ErrorActionPreference = 'Stop'
 $Design = 'docs/install-design.md'
@@ -55,9 +53,9 @@ function Add-Utf8NoBom([string]$Path, [string]$Text) {
 # ───────────────────────── 平台与路径 ─────────────────────────
 # $Root / $TaskName / $InstallDir / $DestBin / $Ledger / $History / $LogFile / $TaskCmd 都定义在下面的
 # 参数解析之后——-SolRoot/--sol-root 要先读进来，才能决定它们落在哪儿。
-# 落点只有一个目录：**当前用户的** %USERPROFILE%\sol（Linux/macOS 是 ~/sol）。
-# 不需要管理员权限就能生成、查看、修改，也不随"你在哪个目录运行脚本"漂移（早先按执行目录走，
-# 在下载目录里跑一次就会多出一份）。
+# 所有 sol 产生的文件都落在**当前用户的目录**里，三端一个约定（Linux/macOS 与 Windows 都是
+# <用户目录>\sol\ 一个目录管全部：~/sol 与 %USERPROFILE%\sol）：不需要管理员权限就能生成、
+# 查看、修改，也不随"你在哪个目录运行脚本"漂移（早先按执行目录走，在下载目录里跑一次就会多出一份）。
 # 服务定义里用的是绝对路径，所以不踩"服务有自己的家目录"那个坑——计划任务以 SYSTEM 跑，家目录是 system32。
 # 内部参数（UAC 升权重跑时把答案带过来；用户不需要、也不应该记这些）。
 # 为什么不用环境变量：Start-Process -Verb RunAs 经过 shell 提权，环境不保证原样继承。
@@ -78,49 +76,36 @@ foreach ($a in $args) {
 	else { Die "这个脚本不接受参数（$a）。所有选择都在生成的配置文件和问答里。" }
 }
 # 参数解析完才定根目录与任务名（-SolRoot/--sol-root 要能改掉它们）。
-# 落点里那几个固定名字只在这里写一次：报告、报错文案、计划任务、打包自检都引用它们，
-# 免得同一个 'sol.yaml' 在文件里散成十几处字面量、改一处漏一处。
-$DirName = 'sol'                 # 用户目录下那个目录（%USERPROFILE%\sol；设了自选根时是 <根>\home\sol）
-$InstallConfigName = 'install.yaml'   # 安装配置："sol 怎么跑"
-$RunConfigName = 'sol.yaml'           # 运行配置：sol 自己读的那份
 if ($env:SOL_INSTALL_ROOT) { $Root = $env:SOL_INSTALL_ROOT } else { $Root = 'C:\ProgramData' }
 if ($env:SOL_UNIT_NAME) { $TaskName = $env:SOL_UNIT_NAME } else { $TaskName = 'sol' }
-# 用户名下那个目录是**唯一**落点：默认 %USERPROFILE%\sol，二进制、两份配置、台账、日志、包装脚本
-# 全在里面。跟你在哪个目录运行脚本无关，也不再有第二个位置（以前 exe 在 C:\ProgramData\sol、
-# 配置在 %USERPROFILE%\sol，"东西到底装到哪去了"没有一句话的答案）。
-# 把落点挂到别的根（SOL_INSTALL_ROOT / --sol-root）时挂在 <根>\home\sol，沙箱与多实例测试不碰真实家目录。
+# 所有 sol 产生的文件都收拢在用户目录的 sol 下（三端一个约定）：二进制、台账、历史、日志、
+# 两份配置，一个目录管全部。计划任务无文件可收（注册进系统任务计划，跑的就是 sol.exe）。
+# 优先级：-SolRunDir/--sol-run-dir（UAC 升权重跑时父进程把真实用户的落点传过来，子进程从这里
+# 取，不会漂到别的 profile）> SOL_INSTALL_ROOT 沙箱（挂在 <根>\home\sol）> 当前用户目录。
 if ($RunDirArg) {
-	$RunDir = $RunDirArg
+	$InstallDir = $RunDirArg
 } elseif ($env:SOL_INSTALL_ROOT) {
-	$RunDir = Join-Path (Join-Path $Root 'home') $DirName
+	$InstallDir = Join-Path (Join-Path $Root 'home') 'sol'
 } else {
-	$RunDir = Join-Path $env:USERPROFILE $DirName
+	$InstallDir = Join-Path $env:USERPROFILE 'sol'
 }
-$RunDir = $RunDir.TrimEnd('\')
-$InstallDir = $RunDir          # 历史名字：报告与打包自检还引用它；现在它就是落点本身
-$DestBin = Join-Path $RunDir 'sol.exe'
-$Ledger = Join-Path $RunDir 'install.json'
-$History = Join-Path $RunDir 'install.log'
-$LogFile = Join-Path $RunDir 'sol.log'
-$TaskCmd = Join-Path $RunDir 'run-sol.cmd'
-$UserConfig = Join-Path $RunDir $InstallConfigName
-$RunConfig = Join-Path $RunDir $RunConfigName
-# 老落点：早先的版本把 exe / 台账 / 日志 / 包装脚本放在 C:\ProgramData\sol（$Root\sol），配置在用户目录。
-# 这两个只用于「认出旧安装、搬过来、别留双份」。
-$LegacyInstallDir = Join-Path $Root $DirName
-$LegacyBin = Join-Path $LegacyInstallDir 'sol.exe'
-$LegacyLedger = Join-Path $LegacyInstallDir 'install.json'
-$LegacyHistory = Join-Path $LegacyInstallDir 'install.log'
-$LegacyLogFile = Join-Path $LegacyInstallDir 'sol.log'
-$LegacyTaskCmd = Join-Path $LegacyInstallDir 'run-sol.cmd'
+$DestBin = Join-Path $InstallDir 'sol.exe'
+$Ledger = Join-Path $InstallDir 'install.json'
+$History = Join-Path $InstallDir 'install.log'
+$LogFile = Join-Path $InstallDir 'sol.log'
+$TaskCmd = Join-Path $InstallDir 'run-sol.cmd'
+# 配置目录与安装目录同一个（三端统一：所有 sol 文件都在 <用户目录>\sol\ 下）。
+$RunDir = $InstallDir
+$UserConfig = Join-Path $RunDir 'install.yaml'
+$RunConfig = Join-Path $RunDir 'sol.yaml'
 # 早先的安装把这两份文件放在**执行目录**里；这份只用于把老内容搬过来。
-$LegacyUserConfig = Join-Path (Get-Location).Path $InstallConfigName
-$LegacyDesktopConfig = Join-Path (Get-Location).Path $RunConfigName
+$LegacyUserConfig = Join-Path (Get-Location).Path 'install.yaml'
+$LegacyDesktopConfig = Join-Path (Get-Location).Path 'sol.yaml'
 # 运行配置的模板：跟脚本放在一起的那份 sol.yaml（发布包里和 install.ps1 同目录，开发树里在 scripts/ 下）。
 # 它是三端共用的一份，注释最全；生成时会就地换成随机令牌。找不到就退回脚本里的内置模板。
 $ScriptDirHint = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $PSCommandPath }
 $TemplateConfig = ''
-foreach ($cand in @((Join-Path $ScriptDirHint $RunConfigName), (Join-Path $ScriptDirHint "scripts\$RunConfigName"))) {
+foreach ($cand in @((Join-Path $ScriptDirHint 'sol.yaml'), (Join-Path $ScriptDirHint 'scripts\sol.yaml'))) {
 	if (Test-Path -LiteralPath $cand) { $TemplateConfig = $cand; break }
 }
 # 目录可能还不存在：能直接写就写，写不了再请管理员（计划任务以 SYSTEM 读这份配置，用户目录
@@ -169,12 +154,8 @@ function Has-Sha256($path) {
 $ScriptDir = $PSScriptRoot
 $candidates = @(
 	(Join-Path $ScriptDir 'sol.exe'),
-	(Join-Path (Get-Location).Path 'sol.exe'),
-	$DestBin
+	(Join-Path (Get-Location).Path 'sol.exe')
 )
-# 老落点里那份也算：早先装在 C:\ProgramData\sol 的人，把包删了以后重跑脚本不该卡在
-# "没有可用的 sol.exe"。只认它——旁边有我们写的 install.json 才说明那是我们装的，别人放的不碰。
-if (Test-Path -LiteralPath $LegacyLedger) { $candidates += $LegacyBin }
 $LocalBin = ''
 foreach ($c in $candidates) { if (Test-Path $c) { $LocalBin = $c; break } }
 if (-not $LocalBin) {
@@ -348,25 +329,16 @@ if (-not (Test-Path -LiteralPath $InstallTemplate)) {
 # Convert-ArgsOf——模板和用户配置的写法是同一套，没有第二套。模板解析不出来，或 args 跟本脚本
 # 算出来的默认值对不上，都算坏包，当场报出来而不是写一份错的配置。
 #
-# 比的是**标准落点**（%USERPROFILE%\sol\sol.yaml），不是 $DefaultArgs / $RunConfig：那两个会被
+# 比的是**标准落点**（%USERPROFILE%\sol\sol.yaml），不是 $DefaultArgs：$RunConfig 会被
 # -SolRunDir / -SolRoot 改掉（沙箱、多实例测试），而模板永远写着标准落点。拿被改过的值去比，
-# 只要换个目录就会把好包说成"坏包"。标准落点由上面那两个全局名字拼出来，这里不再重写一遍字面量。
-$CanonicalRunConfig = Join-Path (Join-Path $env:USERPROFILE $DirName) $RunConfigName
+# 只要换个目录就会把好包说成"坏包"。
+$CanonicalRunConfig = Join-Path (Join-Path $env:USERPROFILE 'sol') 'sol.yaml'
 $TemplateArgs = @(Convert-ArgsOf $InstallTemplate)
 if (($TemplateArgs -join ' ') -ne "listen --config $CanonicalRunConfig") {
 	Die "安装配置模板 $InstallTemplate 里的 args 对不上（读到：$($TemplateArgs -join ' ')；应该是 listen --config $CanonicalRunConfig）。这是坏包，重新下载。"
 }
 function Write-UserConfig {
 	Copy-ConfigFile $InstallTemplate $UserConfig
-	# 落点不是标准位置（-SolRoot / -SolRunDir 沙箱、多实例）时，模板里那句 %USERPROFILE%\sol\sol.yaml
-	# 展开出来是**真实用户目录**，跟这份配置实际所在的位置对不上——预检当场读不到文件（实测就是这个错：
-	# read config C:\Users\jianghh\sol\sol.yaml: The system cannot find the file specified）。
-	# 上面那行 Copy 是原样拷贝，所以这里把 args 改写成本机真实的绝对路径：以后无论谁去展开
-	# （脚本、cmd、计划任务里的 SYSTEM），指的都是同一份文件，不依赖 %USERPROFILE% 在谁名下。
-	# 标准安装时两个路径本来就相等，这句不产生任何改动（Set-Args-Line 里有 -ceq 短路）。
-	if ((@(Convert-ArgsOf $UserConfig) -join ' ') -ne "listen --config $RunConfig") {
-		Set-Args-Line @('listen', '--config', $RunConfig)
-	}
 }
 # 内容跟"我们现在会生成的那份"是否一样（忽略 CRLF）。老脚本写的注释措辞不同，所以分两步：
 # ① 逐字相同；② 去掉注释与空行后只剩 run: 和那一行 args，且 args 与默认值一致。
@@ -389,39 +361,19 @@ function Test-StockUserConfig([string]$Path) {
 	if ($rest[0] -notmatch '^\s*run:\s*$') { return $false }
 	if ($rest[1] -notmatch '^\s*args:\s*\[.*\]\s*$') { return $false }
 	# token 规整与模板共用 Convert-ArgsOf 的同一条规则（去引号 + 展开 %VAR%）。
-	# 比的是标准落点 $CanonicalRunConfig：$DefaultArgs 会被 -SolRunDir / -SolRoot 改掉，
-	# 拿它去比，沙箱里那份"一字不差的示例"就判不出来，会被当成用户配置搬走。
-	return ((Convert-ArgsOf $Path) -join ' ') -eq "listen --config $CanonicalRunConfig"
+	return ((Convert-ArgsOf $Path) -join ' ') -eq ($DefaultArgs -join ' ')
 }
 # 只改 install.yaml 里那一行 args:，其余（你自己的注释、别的字段）原样留着。
 function Set-Args-Line($argv) {
-	# 这是一份"已经存在、而且被用户改过"的配置（没改过的那份上面 Straight 判断早就重写了），
-	# 所以除了 args 那一行，其它字节一个都不能动。整份读进来再写回去有两个风险，都被这一段绕开了：
-	#   ① 编码：PS 5.1 的 Get-Content 不给 -Encoding 就按系统 ANSI 代码页解码，中文注释会被读坏再写坏；
-	#   ② 内容：注释措辞、行尾、结尾换行都会被 WriteAllLines 重新排版一遍，等于把用户的文件洗了一次。
-	# 做法：只读那一行、只替换那一行的字节区间，失败就原样不动（宁可留着老取值，也不要写坏文件）。
-	$enc = New-Object System.Text.UTF8Encoding($false)
-	$old = [System.IO.File]::ReadAllText($UserConfig, $enc)
-	$nl = "`n"
-	if ($old.Contains("`r`n")) { $nl = "`r`n" }
-	$eol = if ($nl -eq "`r`n") { "`r" } else { "" }
 	$argsLine = '  args: [' + ($argv -join ', ') + ']'
-	# (?m) 下 $ 只认 \n，所以把 CR 单独吃掉再放回去，行尾风格保持不变。
-	$pattern = '(?m)^[ \t]*args:[ \t]*\[[^\]\r\n]*\][ \t]*' + $eol + '$'
-	$rx = New-Object System.Text.RegularExpressions.Regex($pattern)
-	$hit = $rx.Matches($old)
-	if ($hit.Count -eq 1) {
-		$new = $rx.Replace($old, [System.Text.RegularExpressions.MatchEvaluator] { param($m) $argsLine + $eol }, 1)
-	} elseif ($hit.Count -eq 0) {
-		# 没有 args 行（理论上进不来：Read-Args 已经拦过），只在末尾补一行。
-		$sep = if ($old.EndsWith("`n") -or $old.Length -eq 0) { '' } else { $nl }
-		$new = $old + $sep + $argsLine + $nl
-	} else {
-		Warn2 "$UserConfig 里有多行 args:，不敢猜是哪一行；这次不改它（你的文件保持原样）"
-		return
+	$lines = @(Get-Content -Encoding UTF8 $UserConfig)
+	$out = @()
+	$done = $false
+	foreach ($l in $lines) {
+		if ((-not $done) -and ($l -match '^\s*args:\s*')) { $out += $argsLine; $done = $true } else { $out += $l }
 	}
-	if ($new -ceq $old) { return }
-	Invoke-WithRetry '只改写安装配置里的 args 那一行' { [System.IO.File]::WriteAllText($UserConfig, $new, $enc) } | Out-Null
+	if (-not $done) { $out += $argsLine }
+	Write-Utf8NoBom $UserConfig $out
 }
 function Read-Args { Convert-ArgsOf $UserConfig }
 # 两份配置在同一处（用户目录）；服务认的 sol.yaml：一份开箱即用的配置（纯包关机 / magic+"reboot" 重启 /
@@ -456,42 +408,8 @@ function Set-RuntimeConfigAcl([string]$Path) {
 		Warn2 "没能收紧 $Path 的权限：$($out -join ' ')（里面有明文令牌，建议手动只留你本人、SYSTEM 与 Administrators）"
 	}
 }
-# 老配置里 logging.file 写的是老落点（C:\ProgramData\sol\sol.log）。东西搬到用户目录、老落点清掉之后，
-# 那个路径已经不可写了——计划任务以 SYSTEM 跑，sol 一开日志就 "Access is denied"，预检直接不过，
-# 用户看到的是"装不上"而不是"日志路径过期了"。这里只改**指进老落点**的值，用户自己挑的
-# 日志路径（比方 D:\logs\sol.log）一个字都不动。
-function Repair-RunConfigLogPath {
-	if (-not (Test-Path -LiteralPath $RunConfig)) { return }
-	$legacyRoot = $LegacyInstallDir.TrimEnd('\')
-	if (-not $legacyRoot) { return }
-	# 不加"必须正在迁移"这类守卫，是因为**所有**能走到这里的现实状态都要改：
-	#   · 老目录还在 → Move-LegacyInstall 会把它下面的 sol.log 删掉，配置再指着它就是指着空气；
-	#   · 老目录已经没了 → 那条路径直接不可创建，SYSTEM 起服务就 Access is denied。
-	# 反过来，"用户特意挑 C:\ProgramData\sol\sol.log 当日志"这种状态在这里不成立——那个目录
-	# 归我们管、里面同名文件就是我们清的对象。所以只要值落在这棵树里就搬，用户自己挑的别处不动。
-	$enc = New-Object System.Text.UTF8Encoding($false)
-	try { $old = [System.IO.File]::ReadAllText($RunConfig, $enc) } catch { return }
-	if ($old.IndexOf($legacyRoot, [StringComparison]::OrdinalIgnoreCase) -lt 0) { return }
-	# 只认 file: 后面的值；flow 写法（logging: { output: file, file: '…' }）也照顾到，
-	# 而 "output: file" 这种冒号在后面的不算（正则要求 file 后面就是冒号）。
-	# 末尾那个 (?=…) 是边界：C:\ProgramData\sol2\… 不能被当成 C:\ProgramData\sol 命中
-	# （不然会把别人的路径截一半改写掉）。
-	$pattern = '(\bfile\s*:\s*)([''"]?)(' + [regex]::Escape($legacyRoot) + '(?:\\[^''"\r\n}]*)?)(?=[\\''"\s}]|$)\2'
-	$rx = New-Object System.Text.RegularExpressions.Regex($pattern)
-	if ($rx.Matches($old).Count -eq 0) { return }
-	$new = $rx.Replace($old, {
-			param($m)
-			$leaf = Split-Path -Leaf $m.Groups[3].Value
-			if (-not $leaf) { $leaf = 'sol.log' }
-			$q = $m.Groups[2].Value
-			$m.Groups[1].Value + $q + (Join-Path $RunDir $leaf) + $q
-		})
-	if ($new -ceq $old) { return }
-	Invoke-WithRetry '把运行配置里指向老落点的日志路径换成新落点' { [System.IO.File]::WriteAllText($RunConfig, $new, $enc) } | Out-Null
-	Act 'user' "运行配置的日志路径改到新落点（$RunDir）" "（logging.file 里的 $legacyRoot 换成 $RunDir）"
-}
 function Ensure-RuntimeConfig {
-	if (Test-Path $RunConfig) { Repair-RunConfigLogPath; return }
+	if (Test-Path $RunConfig) { return }
 	try {
 		$cfgDir = Split-Path -Parent $RunConfig
 		if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force -ErrorAction Stop | Out-Null }
@@ -569,7 +487,7 @@ if (-not (Test-Path $UserConfig)) {
 	if ((Test-Path $LegacyUserConfig) -and -not (Test-StockUserConfig $LegacyUserConfig)) {
 		# 早先在执行目录里生成、后来被你改过的：原样搬过来（里面的 --config 老取值由下面的 Test-Args 挑出来）。
 		Copy-ConfigFile $LegacyUserConfig $UserConfig
-		Say "安装配置   沿用 $(Get-Location).Path\$InstallConfigName（原样搬到 $UserConfig）"
+		Say "安装配置   沿用 $(Get-Location).Path\install.yaml（原样搬到 $UserConfig）"
 	} else {
 		Write-UserConfig
 	}
@@ -596,8 +514,8 @@ Test-Args
 $LegacyRunConfig = @()
 if (-not [IO.Path]::IsPathRooted($RunConfig)) { $LegacyRunConfig += (Join-Path (Get-Location).Path $RunConfig) }
 if ($RunDirArg -and -not [IO.Path]::IsPathRooted($RunDirArg)) { $LegacyRunConfig += (Join-Path (Get-Location).Path $RunDirArg) }
-$LegacyRunConfig += (Join-Path $InstallDir $RunConfigName)
-$LegacyRunConfig += (Join-Path (Get-Location).Path $RunConfigName)
+$LegacyRunConfig += (Join-Path $InstallDir 'sol.yaml')
+$LegacyRunConfig += (Join-Path (Get-Location).Path 'sol.yaml')
 if ($LegacyRunConfig -contains $RunConfig) {
 	$wasGenerated = $false
 	if (-not (Test-Path $RunConfig)) {
@@ -746,7 +664,11 @@ function Banner {
 function Show-Menu {
 	Head2 '[选项]'
 	Say '  1  按配置应用（按 install.yaml 里的 run.args 装或升级）'
-	Say '  2  卸载（摘掉计划任务，按台账删掉自己建的东西）'
+	if ($LedgerExists) {
+		Say '  2  卸载（摘掉计划任务，按台账删掉自己建的东西）'
+	} else {
+		Say '  2  卸载（还没有台账：只清执行目录里的遗留，不会动别人的东西）'
+	}
 	Say '  3  重新生成 install.yaml'
 	Say '  4  退出，什么都不改'
 	Say ''
@@ -762,6 +684,8 @@ function Ask-Choice($prompt) {
 		if (-not $ans) { return 'apply' }
 		switch ($ans) {
 			'1' { return 'apply' }
+			'y' { return 'apply' }
+			'yes' { return 'apply' }
 			'apply' { return 'apply' }
 			'2' { return 'uninstall' }
 			'u' { return 'uninstall' }
@@ -820,56 +744,6 @@ function Append-History($what) {
 	if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
 	Add-Utf8NoBom $History $block
 	$script:Actions = @()
-}
-# ── 老落点（C:\ProgramData\sol）清场 ──
-# 早先的版本把 exe / 台账 / 日志 / 包装脚本放在 C:\ProgramData\sol（系统目录，要管理员），配置在
-# %USERPROFILE%\sol。现在全收进用户目录，一个目录就是全部。机器上已经装过老版本的人，重跑一次
-# 安装脚本就会看到东西搬过来、老位置清干净——不然会变成"命令行一份、计划任务另一份"。
-# 只认历史默认值（$LegacyInstallDir）和台账里记下的 binary：别人装的 sol 跟我们无关。
-function Move-LegacyInstall {
-	# 注意这里**不**按 SOL_INSTALL_ROOT 短路：设了自选根时 $LegacyInstallDir 就是 <根>\sol，
-	# 整个迁移都发生在那个根里，沙箱测试才走得到这条代码路径。（只有下面动**机器** PATH 那一步要短路。）
-	if ($LegacyInstallDir -eq $RunDir) { return } # 落点没变（不该发生，防一手）
-	if (-not (Test-Path -LiteralPath $DestBin)) { return }
-	if (-not (Test-Path -LiteralPath $LegacyInstallDir)) { return }
-	# 只清我们自己的东西；目录里还有别的东西（比如用户自己放的文件）就留着目录，别 rm -rf。
-	$stale = @($LegacyBin, "$LegacyBin.bak", $LegacyLedger, $LegacyHistory, $LegacyLogFile, $LegacyTaskCmd)
-	if ($LedgerJson -and $LedgerJson.binary -and ($LedgerJson.binary -ne $DestBin)) { $stale += $LedgerJson.binary }
-	$removed = @()
-	foreach ($p in $stale) {
-		if (-not $p) { continue }
-		if (-not (Test-Path -LiteralPath $p)) { continue }
-		# 别把新落点里的东西当老的删了（$LegacyInstallDir 被指到 $RunDir 时不至于，但便宜）。
-		if ($p.StartsWith($RunDir, [StringComparison]::OrdinalIgnoreCase)) { continue }
-		Stop-RunningInstances $p '老落点这份要清掉，不能让它继续占着端口'
-		try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop; $removed += $p } catch { Warn2 "没能删 $p（下次再试）：$_" }
-	}
-	if ($removed.Count -gt 0) {
-		Act 'admin' '清掉老落点（C:\ProgramData\sol）里的二进制、台账、日志' "Remove-Item $($removed -join ', ')"
-		Say "落点        老落点已清掉：$($removed -join ', ')（现在只有 $RunDir）"
-	}
-	# 目录空了就删掉（非空说明还有别人的东西，留着）。
-	$left = @(Get-ChildItem -LiteralPath $LegacyInstallDir -Force -ErrorAction SilentlyContinue)
-	if ($left.Count -eq 0) {
-		try {
-			Remove-Item -LiteralPath $LegacyInstallDir -Force -ErrorAction Stop
-			Act 'admin' '删掉空了的老落点目录' "Remove-Item $LegacyInstallDir"
-		} catch { }
-	} else {
-		Say "            （$LegacyInstallDir 里还剩：$((($left | ForEach-Object { $_.Name })) -join ' ')，不是我们的就不动）"
-	}
-	# 老安装往**机器** PATH 里塞过 C:\ProgramData\sol：留着它，命令行里 `sol` 会命中一个已删的路径。
-	if (-not $env:SOL_INSTALL_ROOT) {
-		try {
-			$machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-			if ($machinePath -like "*$LegacyInstallDir*") {
-				$newPath = (($machinePath -split ';') | Where-Object { $_ -and ($_.TrimEnd('\') -ne $LegacyInstallDir.TrimEnd('\')) }) -join ';'
-				[Environment]::SetEnvironmentVariable('PATH', $newPath, 'Machine')
-				Act 'admin' '从机器 PATH 撤下老落点' "[Environment]::SetEnvironmentVariable('PATH', '...', 'Machine')"
-				Say "            （顺手从机器 PATH 里撤下了 $LegacyInstallDir）"
-			}
-		} catch { Warn2 "没能从机器 PATH 撤下 $LegacyInstallDir（不致命）：$_" }
-	}
 }
 # ───────────────────────── 预检 / 装 / 卸 ─────────────────────────
 # ── 架构对不上：提前说人话，别让用户去看 .NET 的天书 ──
@@ -971,16 +845,15 @@ function Escalate-IfNeeded([string]$action) {
 	if ($env:SOL_INSTALL_ELEVATED -eq '1') { return }   # 已经升过一次还是不行：别再套娃
 	if ($env:SOL_INSTALL_ROOT) { return }               # 自选的根：自己的地盘
 	$needs = $false
-	if ($action -eq 'uninstall') {
-		# 落点在自己的目录里，删文件不用管理员。要管理员的是"摘计划任务/防火墙规则"和"清老落点的机器 PATH"。
-		# 没装过服务（或缺台账、台账说没建过任务）就别无谓地弹 UAC。
-		if ($LedgerExists -and ($TaskName) -and ((Task-State) -ne 'absent')) { $needs = $true }
-		elseif (-not $LedgerExists) { $needs = $true }
-	} elseif ($script:ServiceChosen) { $needs = $true }
+	if ($action -eq 'uninstall') { $needs = $true }
+	else {
+		if ($script:ServiceChosen) { $needs = $true }
+		if (-not (Test-Path $InstallDir)) { $needs = $true }
+	}
 	if (-not $needs) { return }
 	Say ''
-	if ($action -eq 'uninstall') { Say '这一步要摘掉计划任务、撤掉防火墙规则（还有老落点留在机器 PATH 里的那一行），需要管理员。' }
-	else { Say '这一步要注册计划任务、加防火墙规则，需要管理员。' }
+	if ($action -eq 'uninstall') { Say '这一步要摘掉计划任务、删掉安装目录里的二进制、撤掉防火墙规则和 PATH，需要管理员。' }
+	else { Say '这一步要写安装目录、注册计划任务、改机器 PATH，需要管理员。' }
 	Say '我用 UAC 以管理员身份重新执行一遍自己：同一个目录、你刚才的答案带过去，不会再问一遍。'
 	Say '接下来会弹一个 UAC 授权框（“你要允许此应用对你的设备进行更改吗”）。'
 	Say '授权之后不会再出现第二个窗口：需要管理员的那一步在后台跑，它的每一步都会显示在这个屏幕里。'
@@ -1049,34 +922,18 @@ function Escalate-IfNeeded([string]$action) {
 # 让 sol 自己把日志写进文件——Windows 的计划任务收集不到 stdout，这是 Windows 侧唯一能落盘的方式。
 # 只在运行配置里没有 logging: 这一节时追加；用户自己写过的 logging 一律不动（改它等于改人家的配置）。
 function Add-FileLoggingToConfig {
-	# 只"读来判、追加来写"，绝不把整份文件读进来再写回去。
-	# 整文件读改写一旦解码方式错了（PS 5.1 的 Get-Content 不给 -Encoding 就按系统 ANSI 代码页，
-	# 简中是 GBK），坏掉的是整份配置：全角标点的尾字节在 GBK 里映射不到字符，会被换成 '?'，
-	# 连后面的换行一起吞掉——注释被粘成一行，再以 UTF-8 写回去文件就永久坏了。
-	# 实测吃到过：生成的 sol.yaml 里 4 处注释被粘行，sol 报 yaml: line 7: did not find expected key。
-	# 追加最多多出一行，坏不了已有的内容。
-	if (-not (Test-Path -LiteralPath $RunConfig)) { return }
-	$hasLogging = $false
-	try {
-		foreach ($l in (Get-Content -LiteralPath $RunConfig -Encoding UTF8 -ErrorAction Stop)) {
-			if ($l -match '^\s*logging\s*:') { $hasLogging = $true; break }
-		}
-	} catch {
-		Say "（读不了运行配置，跳过补 logging：$_）"
-		return
-	}
-	if ($hasLogging) {
+	$text = Get-Content -Path $RunConfig -Raw -ErrorAction SilentlyContinue
+	if ($null -eq $text) { return }
+	if ($text -match '(?m)^\s*logging\s*:') {
 		Say "（运行配置里已经有 logging，照它来，脚本不动它）"
 		return
 	}
-	# 末尾没有换行就先补一个，免得注释和最后一行粘在一起。
-	$sep = ''
-	try {
-		$tail = [System.IO.File]::ReadAllText($RunConfig, [Text.UTF8Encoding]::new($false))
-		if ($tail.Length -gt 0 -and -not $tail.EndsWith("`n")) { $sep = "`n" }
-	} catch { $sep = "`n" }
-	$block = $sep + "`n# 计划任务的输出没人接，所以让 sol 自己写文件（这一节由安装脚本补上；想改就改）。`nlogging: { output: file, file: '$LogFile' }`n"
-	Invoke-WithRetry '在运行配置里补 logging（让 sol 写日志文件）' { Add-Utf8NoBom $RunConfig $block } | Out-Null
+	if (-not $text.EndsWith("`n")) { $text += "`n" }
+	$text += "`n# 计划任务的输出没人接，所以让 sol 自己写文件（这一节由安装脚本补上；想改就改）。`nlogging: { output: file, file: '$LogFile' }`n"
+	# 用不带 BOM 的 UTF-8 写回：PS 5.1 的 -Encoding utf8 会插 BOM，而这里是往文件**中间**追加，
+	# 中间冒出一个 BOM 会让 YAML 读不动。
+	$enc = New-Object System.Text.UTF8Encoding($false)
+	Invoke-WithRetry '在运行配置里补 logging（让 sol 写日志文件）' { [System.IO.File]::WriteAllText($RunConfig, $text, $enc) } | Out-Null
 	Act 'user' "运行配置补上 logging（sol 的日志落到 $LogFile）" "（往 $RunConfig 追加 logging: { output: file, file: '$LogFile' }）"
 }
 function Open-ConfigDir($dir, $file) {
@@ -1095,7 +952,7 @@ function Open-ConfigDir($dir, $file) {
 	} else { Say "     目录：$dir" }
 }
 function Invoke-Install {
-	if (-not $LocalBin) { Die "没有可用的 sol.exe：把它放在脚本旁边、PATH 里，或者已经装在 $DestBin，再运行一次" }
+	if (-not $LocalBin) { Die '没有可用的 sol.exe：把它放在脚本旁边或 PATH 里，再运行一次' }
 	# 运行配置在进主流程时就已经落好了（Ensure-RuntimeConfig）；这里不再重复。
 	$newSha = Has-Sha256 $LocalBin
 	Write-Ledger $true $LedgerJson.installed_version $LedgerJson.sha256
@@ -1113,8 +970,6 @@ function Invoke-Install {
 			Say ''
 			Say "已是最新，无需操作：二进制没变（sha256 $newSha 与台账一致），计划任务与配置没变。"
 			$script:Noop = $true
-			# 但"老落点还留着一份"这件事得处理掉：不然机器上一直有两个 sol，用户下次问的还是同一句话。
-			Move-LegacyInstall
 			return
 		}
 	}
@@ -1166,18 +1021,17 @@ function Invoke-Install {
 		Invoke-WithRetry '放置二进制' { Copy-Item -Path $LocalBin -Destination $DestBin -Force -ErrorAction Stop } | Out-Null
 		Act 'admin' '放置二进制' "Copy-Item $LocalBin $DestBin"
 	}
-	# 老落点（C:\ProgramData\sol）里那份二进制清掉：落点已经收进用户目录，机器上留着两份
-	# 只会变成"命令行跑一份、计划任务跑另一份"，PATH 上谁先生效看运气。
-	Move-LegacyInstall
+	# 机器 PATH（只加一次）。沙箱里绝不碰（那是本机的地盘），真安装时也只提醒不致命：
+	# 写 Machine 级环境变量需要管理员，非管理员会抛"不允许所请求的注册表访问权"——这类 .NET 异常
+	# 在 $ErrorActionPreference='Stop' 下是**终止错误**，会把整个安装带走（真机实测就死在这儿）。
 	if (-not $env:SOL_INSTALL_ROOT) {
 		try {
-			$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
-			if ($userPath -notlike "*$RunDir*") {
-				$joined = if ([string]::IsNullOrEmpty($userPath)) { $RunDir } else { "$userPath;$RunDir" }
-				[Environment]::SetEnvironmentVariable('PATH', $joined, 'User')
-				Act 'user' '把落点目录加进用户 PATH' "[Environment]::SetEnvironmentVariable('PATH', '...;$RunDir', 'User')"
+			$machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+			if ($machinePath -notlike "*$InstallDir*") {
+				[Environment]::SetEnvironmentVariable('PATH', "$machinePath;$InstallDir", 'Machine')
+				Act 'admin' '把落点目录加进机器 PATH' "[Environment]::SetEnvironmentVariable('PATH', '...;$InstallDir', 'Machine')"
 			}
-		} catch { Warn2 "没能把 $RunDir 加进用户 PATH（不致命，命令行里用绝对路径即可）：$_" }
+		} catch { Warn2 "没能把 $InstallDir 加进机器 PATH（不致命，命令行里用绝对路径即可）：$_" }
 	}
 	# SOL_INSTALL_ROOT 下不碰本机计划任务：那是别人的地盘（跟停进程、卸载那几处一样的规矩）。
 	if ($script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT) { Register-SolService }
@@ -1248,7 +1102,7 @@ function Invoke-Uninstall {
 		# sol (WoL)、机器 PATH 里那一行）。用户点的是"卸载"，就该卸载干净——不再拿"是不是我装的"当门槛。
 		Say ''
 		Warn2 "没有台账（$Ledger）：这个脚本没在这台机器上装过 sol。仍按默认落点清理："
-		Say "        · 计划任务 $TaskName（有就删）/ $DestBin / 防火墙规则 sol (WoL) / 用户 PATH 里那一行"
+		Say '        · 计划任务 sol（有就删）/ 默认落点的 sol.exe / 防火墙规则 sol (WoL) / 机器 PATH 里那一行'
 	}
 	# 先停进程再删：正在跑的 exe 删不掉（Windows 文件锁），而且它会一直占着端口——
 	# 下次安装的预检就会以"端口占用"失败，看起来像是装不上。
@@ -1270,27 +1124,27 @@ function Invoke-Uninstall {
 		Remove-NetFirewallRule -DisplayName 'sol (WoL)' -ErrorAction SilentlyContinue
 		Act 'admin' '删防火墙规则' "Remove-NetFirewallRule -DisplayName 'sol (WoL)'"
 	}
-	# 撤用户级 PATH 同样：沙箱里不碰本机，真卸载时被拒也只提醒——别让异常带走整个卸载。
+	# 撤机器 PATH 同样：沙箱里不碰本机，真卸载时被拒（要管理员）也只提醒——别让异常带走整个卸载。
 	if (-not $env:SOL_INSTALL_ROOT) {
 		try {
-			$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
-			if ($userPath -like "*$RunDir*") {
-				$newPath = (($userPath -split ';') | Where-Object { $_ -and $_ -ne $RunDir }) -join ';'
-				[Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
-				Act 'user' '从用户 PATH 撤下落点目录' "[Environment]::SetEnvironmentVariable('PATH', '...', 'User')"
+			$machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+			if ($machinePath -like "*$InstallDir*") {
+				$newPath = (($machinePath -split ';') | Where-Object { $_ -and $_ -ne $InstallDir }) -join ';'
+				[Environment]::SetEnvironmentVariable('PATH', $newPath, 'Machine')
+				Act 'admin' '从机器 PATH 撤下落点目录' "[Environment]::SetEnvironmentVariable('PATH', '...', 'Machine')"
 			}
-		} catch { Warn2 "没能从用户 PATH 撤下 $RunDir（不致命）：$_" }
+		} catch { Warn2 "没能从机器 PATH 撤下 $InstallDir（不致命）：$_" }
 	}
 	$bin = if ($LedgerJson.binary) { $LedgerJson.binary } else { $DestBin }
 	# sol.bak 只有升级过才有、包装脚本只有老安装才有：不存在的路径不该让重试器空转、更不该报假警。
-	Invoke-WithRetry '删二进制、sol.bak 与运行包装脚本' {
+	Invoke-WithRetry '删二进制、sol.bak 与包装脚本' {
 		foreach ($p in @($bin, "$bin.bak", $TaskCmd)) { if (Test-Path $p) { Remove-Item -Path $p -Force -ErrorAction Stop } }
 	} | Out-Null
 	if (Test-Path $bin) { Warn2 "$bin 还在（可能有别的进程占着，或没权限）" }
 	Act 'admin' '删二进制、sol.bak 与运行包装脚本' "Remove-Item $bin, $bin.bak, $TaskCmd"
 	if (-not $script:DelConfigsGiven) {
 		$script:DelConfigs = $false
-		if (Ask-Yes "配置文件也一起删掉吗？（$InstallConfigName、$RunConfigName）" 'n') { $script:DelConfigs = $true }
+		if (Ask-Yes '配置文件也一起删掉吗？' 'n') { $script:DelConfigs = $true }
 	}
 	if ($script:DelConfigs) {
 		Remove-Item -Path $UserConfig -Force -ErrorAction SilentlyContinue
@@ -1301,19 +1155,8 @@ function Invoke-Uninstall {
 		Act 'user' '保留配置（未删）' ''
 	}
 	Append-History 'uninstall'
-	# 台账最后删（它记着上面这些路径）。删完把目录里还剩什么说清楚——用户问得最多的就是
-	# "到底还有没有东西留在别处"，现在答案只有一个目录。
 	Remove-Item -Path $Ledger -Force -ErrorAction SilentlyContinue
 	Act 'admin' '删台账' "Remove-Item $Ledger"
-	if (Test-Path -LiteralPath $RunDir) {
-		$left = @(Get-ChildItem -LiteralPath $RunDir -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
-		if ($left.Count -eq 0) {
-			Remove-Item -LiteralPath $RunDir -Force -ErrorAction SilentlyContinue
-			Act 'user' '删掉空的落点目录' "Remove-Item $RunDir"
-		} else {
-			Say "落点目录里还剩：$($left -join ' ')（在 $RunDir；不要了就连目录一起删：Remove-Item -Recurse $RunDir）"
-		}
-	}
 }
 # ───────────────────────── 报告 ─────────────────────────
 function Show-Report($what) {
@@ -1321,7 +1164,6 @@ function Show-Report($what) {
 		'install' {
 			Head2 '[完成]'
 			Say "  版本        $(Version-Tag $DestBin)"
-			Say "  落点        $RunDir（二进制、配置、台账、日志都在这一个目录里）"
 			Say "  二进制      $DestBin"
 			if (Test-Path "$DestBin.bak") { Say "  （旧版本留在 $DestBin.bak，回滚就是把它换回去）" }
 			Say ''
@@ -1401,9 +1243,6 @@ public static bool DisableQuickEdit() {
 	Say "（已用管理员权限重跑：$ElevatedAction）"
 	Say "  工作目录    $RunDir"
 	Say "  执行的动作  $ElevatedAction（服务 $($script:ServiceChosen)）"
-	# 升权那条路上 Never 走到下面那句 Ensure-RuntimeConfig（它只在无人能答的正常主流程里调用），
-	# 少了这一句，升权进程会对着一个不存在的运行配置做预检、报"没法预检"然后什么都不装。
-	Ensure-RuntimeConfig
 	try {
 		switch ($ElevatedAction) {
 			'install' { Invoke-Install; if ($script:Noop) { Say '（什么都没改。）' } else { Show-Report 'install' } }
@@ -1421,51 +1260,50 @@ Banner
 Show-State
 Show-Config
 $script:Noop = $false
+# 菜单是唯一入口：无论装没装过，先给地图再问去哪。有没有台账只影响提示行与菜单项措辞，
+# 不影响菜单出不出来（原来"未安装就走 y/n 连环问"会逼着人装，这里改成显式选择）。
 if ($LedgerExists) {
 	$stText = switch (Task-State) { 'installed' { '计划任务已注册' } 'absent' { '没有计划任务' } default { '读不到计划任务（要管理员）' } }
 	$instTag0 = if ($LedgerJson.installed_version) { $LedgerJson.installed_version } else { '版本未知' }
 	Say "检测到已安装 $instTag0（服务：$stText）。"
-	Show-Menu
-	$choice = Ask-Choice '请选择'
-	switch ($choice) {
-		'uninstall' {
-			# 先问、再升权：答案随内部参数带过去，子进程不会再问（它的窗口不一定在你眼前）。
-			$script:DelConfigs = Ask-Yes '配置文件也一起删掉吗？' 'n'
-			$script:DelConfigsGiven = $true
-			$env:SOL_INSTALL_DELCONFIGS = if ($script:DelConfigs) { 'yes' } else { 'no' }
-			Escalate-IfNeeded 'uninstall'; Invoke-Uninstall; Show-Report 'uninstall'
-		}
-		'regenerate' {
-			Remove-Item -Path $UserConfig -Force -ErrorAction SilentlyContinue
-			Write-UserConfig
-			Say "已重新生成：$UserConfig（重新运行脚本就会按它执行）"
-		}
-		'quit' { Show-Report 'none' }
-		default {
-			$script:ServiceChosen = ($LedgerJson.service.created_unit -eq $true)
-			# 台账说没建过任务，而任务也确实不在（可能上次没跑完）：再问一次，
-			# 否则"我想装服务"在这条路上永远没机会说出口。
-			if (-not $script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT -and (Task-State) -ne 'installed') {
-				$script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
-			}
-			Open-ConfigDir (Split-Path -Parent $RunConfig) $RunConfig
-			Escalate-IfNeeded 'install'
-			Invoke-Install
-			if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 3 重新生成配置，或先卸载。）' }
-			else { Show-Report 'install' }
+} else {
+	Say "未安装（按你已有的 sol.exe 处理；装完写台账到 $Ledger）。"
+}
+Show-Menu
+$choice = Ask-Choice '请选择'
+switch ($choice) {
+	'uninstall' {
+		# 先问、再升权：答案随内部参数带过去，子进程不会再问（它的窗口不一定在你眼前）。
+		$script:DelConfigs = Ask-Yes '配置文件也一起删掉吗？' 'n'
+		$script:DelConfigsGiven = $true
+		$env:SOL_INSTALL_DELCONFIGS = if ($script:DelConfigs) { 'yes' } else { 'no' }
+		Escalate-IfNeeded 'uninstall'; Invoke-Uninstall; Show-Report 'uninstall'
+	}
+	'regenerate' {
+		Remove-Item -Path $UserConfig -Force -ErrorAction SilentlyContinue
+		Write-UserConfig
+		Say "已重新生成：$UserConfig（重新运行脚本就会按它执行）"
+	}
+	'quit' {
+		if ($script:NoAnswer) {
+			# 管道/无终端：读不到答案＝退出，什么也不做（绝不替你按回车）。
+			Say ''
+			Say '没有终端：只生成了配置，没有执行任何操作。'
+		} else {
+			Show-Report 'none'
 		}
 	}
-	exit 0
+	default {
+		# 要不要服务：台账说建过就沿用（升级不动它）；没说过（首次安装、或上次选了不装）就问一次。
+		$script:ServiceChosen = ($LedgerExists -and $LedgerJson.service.created_unit -eq $true)
+		if (-not $script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT) {
+			$script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
+		}
+		Open-ConfigDir (Split-Path -Parent $RunConfig) $RunConfig
+		Escalate-IfNeeded 'install'
+		Invoke-Install
+		if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 3 重新生成配置，或先卸载。）' }
+		else { Show-Report 'install' }
+	}
 }
-if ($script:NoAnswer) {
-	Say ''
-	Say '没有终端：只生成了配置，没有执行任何操作。'
-	exit 0
-}
-$script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
-if (-not (Ask-Yes '执行吗？' 'y')) { Show-Report 'none'; exit 0 }
-Open-ConfigDir (Split-Path -Parent $RunConfig) $RunConfig
-Escalate-IfNeeded 'install'
-Invoke-Install
-if ($script:Noop) { Say '（什么都没改。想强制重写计划任务就选 3 重新生成配置，或先卸载。）' }
-else { Show-Report 'install' }
+exit 0
