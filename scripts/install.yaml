@@ -1,3 +1,0 @@
-# 由 install.sh 生成：sol 怎么跑。改这里，然后重新跑一遍脚本。
-run:
-  args: [listen, --config, /home/jianghh/GolandProjects/sol/scripts/sol.yaml]
