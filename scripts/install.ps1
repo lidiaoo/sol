@@ -50,6 +50,32 @@ function Add-Utf8NoBom([string]$Path, [string]$Text) {
 	$enc = New-Object System.Text.UTF8Encoding($false)
 	[IO.File]::AppendAllText($Path, $Text, $enc)
 }
+# 读一份文本配置：先看**字节**判断编码，再解码——绝不用不带 -Encoding 的 Get-Content。
+# 5.1 里 Get-Content 不给 -Encoding 就是按系统代码页读（中文 Windows 是 GBK/936），而随包的
+# sol.yaml / install.yaml 是 UTF-8：中文注释全变乱码，再一写回就把乱码固化进文件（装完打开
+# 配置文件一片"閻ㄥ嫯绻"就是这么来的，而且因为结果是合法 UTF-8，谁都不会报错）。
+# 反过来，用户用记事本存成 ANSI 的配置若一律当 UTF-8 读，字节会被换成 U+FFFD，同样救不回来。
+# 所以三种都认：有 BOM 按 BOM，没 BOM 先按严格 UTF-8 试，不是合法 UTF-8 才退回系统代码页。
+function Read-ConfigText([string]$Path) {
+	$bytes = [IO.File]::ReadAllBytes($Path)
+	if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+		return [Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+	}
+	if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+		return [Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+	}
+	if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+		return [Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2)
+	}
+	try { return ([Text.UTF8Encoding]::new($false, $true)).GetString($bytes) }
+	catch { return [Text.Encoding]::Default.GetString($bytes) }
+}
+# 按行读同一份配置（Read-ConfigText 的按行版）：末尾换行不算一行，免得逐次安装多出空行。
+function Read-ConfigLines([string]$Path) {
+	$lines = @((Read-ConfigText $Path) -split "\r?\n")
+	if ($lines.Count -gt 1 -and $lines[-1] -eq '') { $lines = $lines[0..($lines.Count - 2)] }
+	$lines
+}
 # ───────────────────────── 平台与路径 ─────────────────────────
 # $Root / $TaskName / $InstallDir / $DestBin / $Ledger / $History / $LogFile / $TaskCmd 都定义在下面的
 # 参数解析之后——-SolRoot/--sol-root 要先读进来，才能决定它们落在哪儿。
@@ -302,7 +328,7 @@ function Copy-ConfigFile([string]$From, [string]$To) {
 function Convert-ArgsOf([string]$Path) {
 	$out = @()
 	# 注意：调用处必须 @(...) 包一层——PowerShell 会把单元素数组拆成标量。
-	foreach ($line in (Get-Content -LiteralPath $Path -Encoding UTF8)) {
+	foreach ($line in (Read-ConfigLines $Path)) {
 		if ($line -match '^\s*args:\s*(.*)$') {
 			$val = $Matches[1].Trim().Trim('[', ']')
 			foreach ($tok in ($val -split ',')) {
@@ -366,7 +392,9 @@ function Test-StockUserConfig([string]$Path) {
 # 只改 install.yaml 里那一行 args:，其余（你自己的注释、别的字段）原样留着。
 function Set-Args-Line($argv) {
 	$argsLine = '  args: [' + ($argv -join ', ') + ']'
-	$lines = @(Get-Content -Encoding UTF8 $UserConfig)
+	# 同样走 Read-ConfigText：这份文件读进来就要整份写回，编码判定错一次就等于把用户的注释改写掉。
+	$lines = @()
+	if (Test-Path -LiteralPath $UserConfig) { try { $lines = @(Read-ConfigLines $UserConfig) } catch { $lines = @() } }
 	$out = @()
 	$done = $false
 	foreach ($l in $lines) {
@@ -545,7 +573,7 @@ function Get-ThresholdPorts {
 	if (-not (Test-Path $RunConfig)) { return $ports }
 	# 行内（`- match: { ports: [10010] }`）和块写法都要认：只认行首会让行内写法静默失效，
 	# 于是防火墙规则没加、包被挡在外面——"装完了但收不到魔法包"就是这个原因。
-	foreach ($line in (Get-Content -Encoding UTF8 $RunConfig)) {
+	foreach ($line in (Read-ConfigLines $RunConfig)) {
 		foreach ($m in [regex]::Matches($line, 'ports:\s*\[([0-9,\s]*)\]')) {
 			foreach ($n in ($m.Groups[1].Value -split ',')) { if ($n.Trim()) { $ports += [int]$n.Trim() } }
 		}
@@ -631,7 +659,7 @@ function Show-Config {
 	Head2 '[安装配置]'
 	Say "  $UserConfig"
 	Say ''
-	foreach ($l in (Get-Content -Encoding UTF8 $UserConfig)) { Say "    $l" }
+	foreach ($l in (Read-ConfigLines $UserConfig)) { Say "    $l" }
 	Say ''
 	if ($ConfigGenerated) { Say '  （刚生成的。改它，然后重新运行脚本；脚本不会覆盖已存在的这份文件。）' }
 }
@@ -922,14 +950,20 @@ function Escalate-IfNeeded([string]$action) {
 # 让 sol 自己把日志写进文件——Windows 的计划任务收集不到 stdout，这是 Windows 侧唯一能落盘的方式。
 # 只在运行配置里没有 logging: 这一节时追加；用户自己写过的 logging 一律不动（改它等于改人家的配置）。
 function Add-FileLoggingToConfig {
-	$text = Get-Content -Path $RunConfig -Raw -ErrorAction SilentlyContinue
+	# 必须走 Read-ConfigText：这里读进来是要**写回去**的，用不带 -Encoding 的 Get-Content
+	# （= 系统代码页）读 UTF-8 配置，中文注释会在这一次安装里变成乱码并永久留在文件里。
+	if (-not (Test-Path -LiteralPath $RunConfig)) { return }
+	$text = $null
+	try { $text = Read-ConfigText $RunConfig } catch { $text = $null }
 	if ($null -eq $text) { return }
 	if ($text -match '(?m)^\s*logging\s*:') {
 		Say "（运行配置里已经有 logging，照它来，脚本不动它）"
 		return
 	}
-	if (-not $text.EndsWith("`n")) { $text += "`n" }
-	$text += "`n# 计划任务的输出没人接，所以让 sol 自己写文件（这一节由安装脚本补上；想改就改）。`nlogging: { output: file, file: '$LogFile' }`n"
+	# 追加的那几行跟随文件原有的行尾（Windows 上编辑过的配置是 CRLF，别在中间插进几行 LF）。
+	$nl = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+	if (-not $text.EndsWith("`n")) { $text += $nl }
+	$text += $nl + "# 计划任务的输出没人接，所以让 sol 自己写文件（这一节由安装脚本补上；想改就改）。" + $nl + "logging: { output: file, file: '$LogFile' }" + $nl
 	# 用不带 BOM 的 UTF-8 写回：PS 5.1 的 -Encoding utf8 会插 BOM，而这里是往文件**中间**追加，
 	# 中间冒出一个 BOM 会让 YAML 读不动。
 	$enc = New-Object System.Text.UTF8Encoding($false)
