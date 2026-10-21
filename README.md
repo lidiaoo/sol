@@ -158,7 +158,7 @@ sol 也能唤醒**别的**机器。`wol.send` 向固定目标发魔法包（`mac
 5. **装成服务**，这样重启后还在、没人登录时也跑——见 [Running as a service](#running-as-a-service)。
 
 6. **确认跑起来的是什么**：`sol --version`、`journalctl -u sol.service -f`（Linux）、
-   `tail -f ~/sol/sol.log`（macOS）、`Get-Content -Wait $env:USERPROFILE\sol\sol.log`
+   `tail -f /usr/local/var/log/sol.log`（macOS）、`Get-Content -Wait C:\ProgramData\sol\sol.log`
    （Windows；计划任务直接跑 `sol.exe`，日志由 sol 自己写进这个文件——运行配置里的 `logging` 那一节），
    或者控制面开着时的 `GET /v1/status`。安装脚本的"现状"和完成报告里也各有一行告诉你日志在哪。
 
@@ -181,20 +181,14 @@ curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh -o
 irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-它会用你**已有的** `sol`（脚本旁边、当前目录、已经装好的那份、`PATH` 里），不会拿下载的东西去覆盖它。
+它会用你**已有的** `sol`（脚本旁边、当前目录、`PATH` 里），不会拿下载的东西去覆盖它。
 
-**装完只有一个目录（三端一致）：`~/sol/`**（Windows 是 `%USERPROFILE%\sol\`）——不看你从哪个目录执行脚本：
+**两份配置，都在你自己家的目录里**（不看你从哪个目录执行脚本）：
 
-| | Linux / macOS | Windows | 管什么 |
-| --- | --- | --- | --- |
-| `sol` / `sol.exe` | `~/sol/sol` | `%USERPROFILE%\sol\sol.exe` | 二进制本体（换版本就替换它；旧的留 `sol.bak`） |
-| `install.yaml` | `~/sol/install.yaml` | `%USERPROFILE%\sol\install.yaml` | "sol 怎么跑"——里面只有一行 `run.args` |
-| `sol.yaml` | `~/sol/sol.yaml` | `%USERPROFILE%\sol\sol.yaml` | sol 自己读的配置：听哪些端口、匹配什么、干什么 |
-| `install.json` / `install.log` | `~/sol/` | `%USERPROFILE%\sol\` | 台账与历史（卸载、升级、看现状都靠它） |
-| `sol.log` | `~/sol/sol.log` | `%USERPROFILE%\sol\sol.log` | 服务日志（Linux 走 journald，通常没有这个文件） |
-
-备份就是拷这个目录，迁移就是搬这个目录，不要了就是删这个目录。用户目录不需要管理员，所以写这些文件
-从不提权——只有"注册成服务"那一步要一次 root / 管理员。
+| | 放哪 | 管什么 |
+| --- | --- | --- |
+| `install.yaml` | Linux/macOS `~/.config/sol/install.yaml`<br>Windows `%USERPROFILE%\sol\install.yaml` | "sol 怎么跑"——里面只有一行 `run.args` |
+| `sol.yaml` | Linux/macOS `~/sol/sol.yaml`<br>Windows `%USERPROFILE%\sol\sol.yaml` | sol 自己读的配置：听哪些端口、匹配什么、干什么 |
 
 `sol.yaml` 生成出来就是一份能跑的：纯包 → 关机（端口 11）、magic+"reboot" → 重启（12）、
 magic+"sleep" → 睡眠（10）；服务没有规则会拒绝启动，所以脚本直接写一份能跑的。它还把两个"重复包护栏"
@@ -202,27 +196,24 @@ magic+"sleep" → 睡眠（10）；服务没有规则会拒绝启动，所以脚
 控制面令牌是**这次现生成的随机数**（不是包里那个占位符），文件权限只给当前用户读。
 
 **只在文件不存在时生成，现有文件一个字节都不改**——你改过的令牌、端口、规则，重跑脚本、升级、
-卸载再装都不会被冲掉。唯一的例外是升级脚本自身：早先那几个版本把这些文件写在**执行目录**、
-`~/.config/sol/`、`C:\ProgramData\sol\`，第一次跑到新版时会原样搬到 `~/sol/`（内容不改、位置换掉），
-老位置里属于我们的东西顺手清干净——不留"命令行一份、服务另一份"的状态。
-`sol.yaml` 里指向老落点的 `logging.file` 也会跟着改成新落点（老目录清掉后那条路径已经不可写，
-不修的话 sol 一开日志就报 `Access is denied`）；你自己挑的日志路径不动。
+卸载再装都不会被冲掉。唯一的例外是升级脚本自身：早先那几个版本把这两份写在**执行目录**（或
+`C:\ProgramData\sol\`），第一次跑到新版时会原样拷到你家的目录里，内容不改、位置换掉，然后按新位置读写。
 改配置就编辑它、再重跑一遍脚本。
 **端口 <1024 在 Linux/macOS 上要 root**：脚本动手前会升权，正常安装不用管；但如果是不要 root 的
 用户级安装，要把端口改成 ≥1024。
 它把现状、配置在哪都打印出来，再问两个问题：要不要装成服务、是否继续。你说"是"之前什么都不改。
 
-**权限**：它不会一开始就以 root 跑。轮到需要权限的步骤（注册服务）时，Linux/macOS
+**权限**：它不会一开始就以 root 跑。轮到需要权限的步骤（写 `/usr/local/bin`、注册服务）时，Linux/macOS
 上它用 `sudo` **重跑一遍自己**，Windows 上弹 **UAC** 以管理员身份重跑，并把你刚才的答案带过去——不会
 再问第二遍。你要是拒绝了，它就停下来说明原因，而不是装到一半。
 
 **重跑脚本**就是看现状、改 sol 的跑法（改文件再跑一遍）、或卸载（选 `2`；它会先把还在跑的 sol 停掉，删配置前还会再问一次）。
 它做的每一件事都追加写进 `install.log`（带等价命令），和台账 `install.json` 放在一起。
 
-落点就是上面那张表：**一个 `~/sol/` 装下全部**（Windows `%USERPROFILE%\sol\`），服务定义里写的是
-绝对路径，所以以 SYSTEM / root 跑的服务照样读得到；只有你选了装服务才会多一个 systemd 单元 /
-launchd plist / 计划任务。你自己已有的配置与日志一个都不碰（没有才写一份）。卸载时二进制和台账一定删，
-配置默认留着（问过之后才删）；删完目录空了就连目录一起删，还有东西就把清单和 `rm -rf ~/sol` 打出来。
+东西落在哪：二进制 `/usr/local/bin/sol`（Windows `C:\ProgramData\sol\sol.exe`），台账与历史
+`/usr/local/share/sol/`（Windows `C:\ProgramData\sol\`），两份配置就是上表那两处（用户目录；
+服务定义里写的是绝对路径，所以以 SYSTEM / root 跑的服务照样读得到）；只有你选了装服务才会多一个
+systemd 单元 / launchd plist / 计划任务。你自己已有的配置与日志一个都不碰（没有才写一份）。
 
 这份脚本三平台通用，但目前只在 Linux 上真机跑过；macOS 与 Windows 分支的证据强度记在
 [docs/install-design.md](docs/install-design.md)（等 CI 覆盖）。
@@ -231,22 +222,22 @@ launchd plist / 计划任务。你自己已有的配置与日志一个都不碰�
 
 **Linux AMD64:**
 ```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-amd64.tar.gz | tar -xz && mkdir -p ~/sol && mv sol ~/sol/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **Linux ARM64:**
 ```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-arm64.tar.gz | tar -xz && mkdir -p ~/sol && mv sol ~/sol/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **macOS Intel:**
 ```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-amd64.tar.gz | tar -xz && mkdir -p ~/sol && mv sol ~/sol/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **macOS Apple Silicon:**
 ```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-arm64.tar.gz | tar -xz && mkdir -p ~/sol && mv sol ~/sol/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **Windows (PowerShell):**
@@ -344,10 +335,10 @@ strip）。两个目标还会盖上"树脏不脏"的章，口径只算**已跟�
 
 #### 现状块每行是什么意思
 
-- `二进制` / `版本`：落点目录里那份（`~/sol/sol`；Windows `%USERPROFILE%\sol\sol.exe`）。
-- `已安装` / `台账`：脚本自己装的记录（`~/sol/install.json`；Windows `%USERPROFILE%\sol\install.json`）。说"上次没装完"就再跑一次补上。
+- `二进制` / `版本`：你执行目录里那份；`PATH 上的 sol` 是系统里已有的那份。
+- `已安装` / `台账`：脚本自己装的记录（`/usr/local/share/sol/install.json`；Windows `C:\ProgramData\sol\install.json`）。说"上次没装完"就再跑一次补上。
 - `服务`：systemd 单元 / launchd 任务 / 计划任务在不在。Windows 还会多一行 `启动`，写的就是任务真正跑的命令行（可执行文件 + 参数），不用去任务计划里猜。
-- `日志`：服务日志在哪看——Linux `journalctl -u sol.service -f`，macOS `~/sol/sol.log`，Windows `%USERPROFILE%\sol\sol.log`。
+- `日志`：服务日志在哪看——Linux `journalctl -u sol.service -f`，macOS `/usr/local/var/log/sol.log`，Windows `C:\ProgramData\sol\sol.log`。
 - `进程`：有没有 sol 在跑（按**可执行文件路径**认，不是按进程名）。没升权时只能按名字识别，它会说清楚"认不出是不是安装目录那份"。
 - `权限`：当前不是管理员时，说明什么时候会要权限（Unix 用 sudo 重跑一遍自己；Windows 一次 UAC）。
 - `运行配置`：服务真正读的那份配置。改它才是改行为；执行目录里那份只是"输入"。
@@ -366,8 +357,8 @@ strip）。两个目标还会盖上"树脏不脏"的章，口径只算**已跟�
 配置里有 `watch: 5s`，改完**秒级自动生效**，改坏了也不会顶掉正在跑的那份。
 
 - **改行为**：编辑运行配置 `sol.yaml`（听哪些端口、匹配什么、干什么），或者编辑 `install.yaml` 的 `run.args`（怎么起）。改完重跑脚本选 `1`。
-- **升级**：把新的 `sol` / `sol.exe` 放到脚本旁边（或者直接替换 `~/sol/sol`），重跑选 `1`。它会先停掉自己那份服务再换二进制，换完再起——不会撞"端口占用"。
-- **卸载**：选 `2`。服务、二进制、台账都清掉；`sol.yaml` / `install.yaml` 留不留由你答。删完目录空了连 `~/sol` 一起删，还有别的东西就把清单和删除命令打出来。
+- **升级**：把新的 `sol` / `sol.exe` 放到执行目录（跟脚本同一个目录），重跑选 `1`。它会先停掉自己那份服务再换二进制，换完再起——不会撞"端口占用"。
+- **卸载**：选 `2`。服务、二进制、台账都清掉；`sol.yaml` / `install.yaml` 留不留由你答。
 - **每一步都有台账**：`install.log` 记着每个动作和它的等价命令（想手工复核就照抄那行）。
 
 #### 读不懂的现象怎么查
@@ -375,7 +366,7 @@ strip）。两个目标还会盖上"树脏不脏"的章，口径只算**已跟�
 - **`服务 没有（计划任务 X 不存在）`，可台账说装过**：任务被删过、或被"优化/清理"工具动过。重跑选 `1` 会再建（脚本现在会在建完任务后复核一次，建不上就记成"没装完"并在报告里说）。
 - **Windows 上 `服务 … 看不清`**：没管理员权限读任务列表。以管理员身份重跑一次就能看清。
 - **`预检 被拒绝`**：端口占不上。多半是上一份还在跑（脚本会先停掉它再试一次）；也可能是系统把这段端口**排除**了（Hyper-V / WSL / Docker / 虚拟机常见）→ 换高端口，或 `net stop winnat && net start winnat`（重启后失效）。
-- **Windows 上没有日志文件**：检查运行配置里有没有 `logging: { output: file, file: ... }`——计划任务是"无窗口"跑的，stdout 没人接，所以日志必须由 sol 自己写文件（安装脚本在你没写这一节时会补上一条，然后由 sol 写进 `%USERPROFILE%\sol\sol.log`）。
+- **Windows 上没有日志文件**：检查运行配置里有没有 `logging: { output: file, file: ... }`——计划任务是"无窗口"跑的，stdout 没人接，所以日志必须由 sol 自己写文件（安装脚本在你没写这一节时会补上一条，然后由 sol 写进 `C:\ProgramData\sol\sol.log`）。
 
 - Windows 上以**非管理员**跑时，"服务"行会说"读不到内容（计划任务 sol）：当前不是管理员，要管理员才看得到"。这不是故障：计划任务是以 SYSTEM 身份注册的，任务定义只有管理员读得到，非管理员连枚举都会跳过它。想看清就右键 `install.cmd` →「以管理员身份运行」。
 #### 想装到别处试（不改本机）
@@ -1258,7 +1249,7 @@ Home Assistant 自动化反过来触发**同一个组**——冷却会吸收掉�
    Wants=network-online.target
 
    [Service]
-   ExecStart=/home/you/sol/sol listen --config /home/you/sol/sol.yaml
+   ExecStart=/usr/local/bin/sol listen --config /etc/sol/sol.yaml
    Restart=always
    RestartSec=5
 
@@ -1272,7 +1263,7 @@ Home Assistant 自动化反过来触发**同一个组**——冷却会吸收掉�
    WantedBy=multi-user.target
    ```
 
-   配置里写了 `server.watch: 5s` 时，改动那份配置就会生效；另一种做法是声明
+   配置里写了 `server.watch: 5s` 时，改动 `/etc/sol/sol.yaml` 就会生效；另一种做法是声明
    `ExecReload=/bin/kill -HUP $MAINPID`，然后用 `systemctl reload sol.service`。
 
 2. **reload、开机自启并启动**
@@ -1297,10 +1288,11 @@ Home Assistant 自动化反过来触发**同一个组**——冷却会吸收掉�
 
 ### macOS (launchd)
 
-1. **装二进制与配置**（跟安装脚本同一个落点：`~/sol/`，不需要 sudo）
+1. **装二进制与配置**
 
    ```bash
-   mkdir -p ~/sol && cp sol ~/sol/sol && cp sol.yaml ~/sol/sol.yaml
+   sudo cp sol /usr/local/bin/sol && sudo mkdir -p /usr/local/etc/sol
+   sudo cp sol.yaml /usr/local/etc/sol/sol.yaml
    ```
 
 2. **创建 launchd daemon**
@@ -1318,17 +1310,17 @@ Home Assistant 自动化反过来触发**同一个组**——冷却会吸收掉�
      <string>com.lidiaoo.sol</string>
      <key>ProgramArguments</key>
      <array>
-       <string>/Users/you/sol/sol</string>
+       <string>/usr/local/bin/sol</string>
        <string>listen</string>
        <string>--config</string>
-       <string>/Users/you/sol/sol.yaml</string>
+       <string>/usr/local/etc/sol/sol.yaml</string>
      </array>
      <key>RunAtLoad</key>
      <true/>
      <key>KeepAlive</key>
      <true/>
      <key>StandardErrorPath</key>
-     <string>/Users/you/sol/sol.log</string>
+     <string>/usr/local/var/log/sol.log</string>
    </dict>
    </plist>
    ```
@@ -1338,7 +1330,7 @@ Home Assistant 自动化反过来触发**同一个组**——冷却会吸收掉�
    ```bash
    sudo launchctl load -w /Library/LaunchDaemons/com.lidiaoo.sol.plist
    sudo launchctl list | grep sol
-   tail -f ~/sol/sol.log
+   tail -f /usr/local/var/log/sol.log
    ```
 
    `launchctl unload -w` 停掉它，`RunAtLoad` 会在重启后拉回来。LaunchDaemon 以 root 运行，这正是
@@ -1351,12 +1343,12 @@ Home Assistant 自动化反过来触发**同一个组**——冷却会吸收掉�
 1. **装到固定路径，并以 SYSTEM 在开机时启动**
 
    ```powershell
-   New-Item -ItemType Directory -Force -Path $env:USERPROFILE\sol | Out-Null
-   Move-Item .\sol.exe $env:USERPROFILE\sol\sol.exe -Force
+   New-Item -ItemType Directory -Force -Path C:\ProgramData\sol | Out-Null
+   Move-Item .\sol.exe C:\ProgramData\sol\sol.exe -Force
    # 计划任务直接跑 sol.exe：任务计划里"操作"一栏就是 exe + 参数，一眼看得懂。
    # 任务没有 stdout 可接，所以日志由 sol 自己写文件——运行配置里补一节：
-   #   logging: { output: file, file: '%USERPROFILE%\sol\sol.log' }
-   schtasks /Create /TN sol /TR "\"C:\Users\you\sol\sol.exe\" listen --config \"C:\Users\you\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+   #   logging: { output: file, file: 'C:\ProgramData\sol\sol.log' }
+   schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\ProgramData\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
    schtasks /Run /TN sol
    ```
 
@@ -1370,7 +1362,7 @@ Home Assistant 自动化反过来触发**同一个组**——冷却会吸收掉�
 
    ```powershell
    schtasks /Query /TN sol /V /FO LIST
-   Get-Content $env:USERPROFILE\sol\sol.log -Wait
+   Get-Content C:\ProgramData\sol\audit.log -Wait
    ```
 
    `SYSTEM` 账号读得到机器级环境变量，所以用
@@ -1382,10 +1374,10 @@ Home Assistant 自动化反过来触发**同一个组**——冷却会吸收掉�
 
 - `After=network-online.target` 保证服务在网络就绪之后才启动。
 - `Restart=always` 在崩溃后自动拉起。
-- 配置放 `~/sol/sol.yaml`（安装脚本的默认落点），密钥放环境变量或配置引用的 0600 文件——绝不写进 YAML 本身。
+- 配置放 `/etc/sol/sol.yaml`，密钥放环境变量或配置引用的 0600 文件——绝不写进 YAML 本身。
 - 服务有自己的家目录（systemd/launchd 是 root 的，Windows 是 `SYSTEM` 的），所以那里的
-  `~/.config/sol/sol.yaml` 不是你的那份：单元里要用 `--config` 给**绝对路径**（上面的例子就是这么写的），
-  或者干脆按仓库的约定把配置也放进 `~/sol/`。
+  `~/.config/sol/sol.yaml` 不是你的那份：单元里要用 `--config` 给绝对路径（上面的例子就是这么写的），
+  或者把文件放在 `/etc/sol/sol.yaml`。
 - unit 只有在用特权端口或需要 `exec` 降权时才需要 root；其它情况下"专用用户 +
   `CAP_NET_BIND_SERVICE`"是更好的默认。macOS 上对应的做法是往 plist 里加 `UserName`；Windows 上
   `exec` 根本没有 user/group 降权。

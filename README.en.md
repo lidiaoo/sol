@@ -175,7 +175,7 @@ shutdown-on-LAN receiver, not something that wakes a sleeping box.
    [Running as a service](#running-as-a-service).
 
 6. **Confirm what is running**: `sol --version`, `journalctl -u sol.service -f` (Linux),
-   `tail -f ~/sol/sol.log` (macOS), `Get-Content -Wait $env:USERPROFILE\sol\sol.log`
+   `tail -f /usr/local/var/log/sol.log` (macOS), `Get-Content -Wait C:\ProgramData\sol\sol.log`
    (Windows; the scheduled task runs `sol.exe` itself, and sol writes that file itself through the
    `logging` stanza in the runtime config), or `GET /v1/status` when the control plane is on. The state
    block and its completion report each print a line telling you where the log is.
@@ -204,20 +204,13 @@ irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 -OutFile
 It uses the `sol` you already have - next to the script, in the current directory, or on `PATH` - and
 never replaces it with a download.
 
-**One directory holds everything (same on all three platforms): `~/sol/`** (Windows
-`%USERPROFILE%\sol\`) - it no longer matters which directory you run the script from:
+**Two files, both in your own home directory** - it no longer matters which directory you run the script
+from:
 
-| | Linux / macOS | Windows | What it is |
-| --- | --- | --- | --- |
-| `sol` / `sol.exe` | `~/sol/sol` | `%USERPROFILE%\sol\sol.exe` | the binary itself (replacing it is how you upgrade; the old one stays as `sol.bak`) |
-| `install.yaml` | `~/sol/install.yaml` | `%USERPROFILE%\sol\install.yaml` | how sol is started - a single `run.args` line |
-| `sol.yaml` | `~/sol/sol.yaml` | `%USERPROFILE%\sol\sol.yaml` | what sol reads: ports, matching, actions |
-| `install.json` / `install.log` | `~/sol/` | `%USERPROFILE%\sol\` | ledger and history (uninstall, upgrade and status all read these) |
-| `sol.log` | `~/sol/sol.log` | `%USERPROFILE%\sol\sol.log` | service log (Linux goes through journald, so usually absent) |
-
-Back it up by copying that directory, migrate by moving it, get rid of it by deleting it. Your home
-directory needs no administrator, so writing these files never elevates - only registering the service
-asks once.
+| | Where | What it is |
+| --- | --- | --- |
+| `install.yaml` | Linux/macOS `~/.config/sol/install.yaml`<br>Windows `%USERPROFILE%\sol\install.yaml` | how sol is started - a single `run.args` line |
+| `sol.yaml` | Linux/macOS `~/sol/sol.yaml`<br>Windows `%USERPROFILE%\sol\sol.yaml` | what sol reads: ports, matching, actions |
 
 The `sol.yaml` it produces already runs: a plain magic packet to port 11 shuts the machine down,
 `"reboot"` after the magic packet to 12 reboots it, `"sleep"` to 10 sleeps it - a service with no rules
@@ -228,20 +221,16 @@ spot (never the placeholder shipped in the archive), and the file is readable by
 
 **Created only when missing; an existing file is not touched by a single byte** - your token, ports and
 rules survive re-running the installer, upgrades, and uninstall-then-install. The one exception is the
-installer itself changing: older versions wrote these files into the directory you ran the script from,
-into `~/.config/sol/`, or into `C:\ProgramData\sol\`, and the first run of a newer one moves them -
-content unchanged - into `~/sol/` and cleans up what belongs to us at the old places, so you are never
-left with "one copy on PATH, another one in the service". A `logging.file` in `sol.yaml` that points into
-the old location is rewritten to the new one too - that path stops being writable once the old directory
-is gone, and sol would fail to start with `Access is denied`. A log path you picked yourself is left
-alone. Edit the configuration and re-run the script to change it.
+installer itself changing: older versions wrote these two files into the directory you ran the script
+from (or `C:\ProgramData\sol\`), and the first run of a newer one copies them - content unchanged - into
+your home directory and works from there. Edit the configuration and re-run the script to change it.
 Ports below 1024 need root on Linux/macOS, which the script sorts out before it touches anything - on a
 user-level install without root, move them to 1024 or above. It prints the current situation and where
 the configuration lives, then asks two questions: install as a service, and go ahead. Nothing changes
 until you say yes.
 
-Privileges: it does not run as root from the start. Before any step that needs it (registering the
-service), it re-runs itself through `sudo` on Linux/macOS, or
+Privileges: it does not run as root from the start. Before any step that needs it (writing
+`/usr/local/bin`, registering the service), it re-runs itself through `sudo` on Linux/macOS, or
 relaunches under UAC on Windows, carrying your answers across so you are not asked twice. Decline and
 it stops with an explanation rather than half-installing.
 
@@ -250,13 +239,12 @@ again), or uninstall (choose `2`; it stops the running sol first, and asks befor
 configuration). Every action it takes
 is appended to `install.log`, with the equivalent command, next to the ledger `install.json`.
 
-Where things go: everything lands in that one `~/sol/` directory (Windows `%USERPROFILE%\sol\`) - see the
-table above; the service definition spells out absolute paths, so a root/SYSTEM service still reads them.
-Only if you asked for the service is there anything else: a systemd unit, a launchd plist, or a scheduled
-task. A configuration you already have (or any other one you point `run.args` at) and your logs
-are never touched - the script only creates one when there is none. Uninstall always removes the binary
-and the ledger, keeps the configuration unless you say otherwise, deletes the directory when nothing is
-left in it, and otherwise prints what remains plus the command to remove it.
+Where things go: the binary in `/usr/local/bin/sol` (`C:\ProgramData\sol\sol.exe`), the ledger and
+history in `/usr/local/share/sol/` (`C:\ProgramData\sol\`), the two configuration files in your home
+directory (see the table above; the service definition spells out absolute paths, so a root/SYSTEM
+service still reads them), and - only if you asked for the service - a systemd unit, a launchd plist, or a
+scheduled task. A configuration you already have (or any other one you point `run.args` at) and your logs
+are never touched - the script only creates one when there is none.
 
 The script is Linux/macOS/Windows aware but has been exercised on Linux; the Windows and macOS paths
 are marked as such in [docs/install-design.md](docs/install-design.md) until CI covers them.
@@ -265,22 +253,22 @@ are marked as such in [docs/install-design.md](docs/install-design.md) until CI 
 
 **Linux AMD64:**
 ```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-amd64.tar.gz | tar -xz && mkdir -p ~/sol && mv sol ~/sol/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **Linux ARM64:**
 ```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-arm64.tar.gz | tar -xz && mkdir -p ~/sol && mv sol ~/sol/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-linux-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **macOS Intel:**
 ```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-amd64.tar.gz | tar -xz && mkdir -p ~/sol && mv sol ~/sol/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-amd64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **macOS Apple Silicon:**
 ```bash
-curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-arm64.tar.gz | tar -xz && mkdir -p ~/sol && mv sol ~/sol/
+curl -L https://github.com/lidiaoo/sol/releases/download/{newest}/sol-{newest}-darwin-arm64.tar.gz | tar -xz && sudo mv sol /usr/local/bin/
 ```
 
 **Windows (PowerShell):**
@@ -385,10 +373,10 @@ It **reports what it found first, then asks** — nothing is changed until you a
 
 #### What each line of the status block means
 
-- `二进制` / `版本`: the copy in the install directory (`~/sol/sol`; Windows `%USERPROFILE%\sol\sol.exe`).
-- `已安装` / `台账`: the installer's own record (`~/sol/install.json`; Windows `%USERPROFILE%\sol\install.json`). "last time did not finish" means: run it again and it will.
+- `二进制` / `版本`: the copy in the directory you ran the script from; `PATH 上的 sol` is what the system already has.
+- `已安装` / `台账`: the installer's own record (`/usr/local/share/sol/install.json`; Windows `C:\ProgramData\sol\install.json`). "last time did not finish" means: run it again and it will.
 - `服务`: whether the systemd unit / launchd job / scheduled task exists. On Windows an extra `启动` line prints the command the task actually runs (executable + arguments), so you do not have to dig through Task Scheduler.
-- `日志`: where the service log is — Linux `journalctl -u sol.service -f`, macOS `~/sol/sol.log`, Windows `%USERPROFILE%\sol\sol.log`.
+- `日志`: where the service log is — Linux `journalctl -u sol.service -f`, macOS `/usr/local/var/log/sol.log`, Windows `C:\ProgramData\sol\sol.log`.
 - `进程`: whether sol is running, matched by **executable path**, never by process name. Without elevation it can only match by name and says so explicitly.
 - `权限`: when you are not an administrator, this says when privileges will be needed (a Unix re-exec through sudo; one UAC prompt on Windows).
 - `运行配置`: the config the service actually reads. Edit that one; the copy in your exec directory is only the input.
@@ -409,8 +397,8 @@ configuration carries `watch: 5s`, so an edit takes effect within seconds - and 
 replaces the running configuration.
 
 - **Change behaviour**: edit the runtime `sol.yaml` (ports, matching, actions), or `install.yaml`'s `run.args` (how it is started). Re-run and pick `1`.
-- **Upgrade**: drop the new `sol` / `sol.exe` next to the script (or replace `~/sol/sol` directly) and pick `1`. It stops our own service first, swaps the binary, then starts it again — so it never trips over "address already in use".
-- **Uninstall**: pick `2`. Service, binary and ledger go away; you are asked whether to keep `sol.yaml` / `install.yaml`. If the directory ends up empty it is removed too; otherwise what remains is listed together with the command to delete it.
+- **Upgrade**: drop the new `sol` / `sol.exe` next to the script and pick `1`. It stops our own service first, swaps the binary, then starts it again — so it never trips over "address already in use".
+- **Uninstall**: pick `2`. Service, binary and ledger go away; you are asked whether to keep `sol.yaml` / `install.yaml`.
 - **Every step is logged**: `install.log` records each action with its equivalent command, so you can reproduce any of it by hand.
 
 #### When a line does not make sense
@@ -418,7 +406,7 @@ replaces the running configuration.
 - **`服务 没有（计划任务 X 不存在）` while the ledger says it was installed**: the task was deleted, or a "cleanup/optimizer" tool removed it. Re-run and pick `1` to create it again. (The script now verifies the task right after creating it, and reports a failure instead of claiming success.)
 - **Windows `服务 … 看不清`**: no permission to list tasks. Re-run as administrator.
 - **`预检 被拒绝`**: the port cannot be bound. Usually the previous copy is still running (the script stops it and retries); it can also be a Windows **excluded port range** (Hyper-V / WSL / Docker / VM) — use a higher port, or `net stop winnat && net start winnat` (until the next reboot).
-- **No log file on Windows**: check the runtime config for `logging: { output: file, file: ... }`. A scheduled task runs windowless, so nothing collects stdout — the log must be written by sol itself. The installer adds that stanza when you have not set one, and sol writes `%USERPROFILE%\sol\sol.log`.
+- **No log file on Windows**: check the runtime config for `logging: { output: file, file: ... }`. A scheduled task runs windowless, so nothing collects stdout — the log must be written by sol itself. The installer adds that stanza when you have not set one, and sol writes `C:\ProgramData\sol\sol.log`.
 
 - On Windows without administrator rights the service line says "读不到内容（计划任务 sol）：当前不是管理员，要管理员才看得到" (cannot read it -- needs administrator). That is not a failure: the scheduled task is registered as SYSTEM, so only administrators can read its definition, and an unelevated enumeration silently skips it. To see the whole picture, right-click `install.cmd` and choose "Run as administrator".
 #### Trying it somewhere harmless
@@ -1362,7 +1350,7 @@ triggered it - the cooldowns will absorb it, but a loop is not load-bearing desi
    Wants=network-online.target
 
    [Service]
-   ExecStart=/home/you/sol/sol listen --config /home/you/sol/sol.yaml
+   ExecStart=/usr/local/bin/sol listen --config /etc/sol/sol.yaml
    Restart=always
    RestartSec=5
 
@@ -1376,7 +1364,7 @@ triggered it - the cooldowns will absorb it, but a loop is not load-bearing desi
    WantedBy=multi-user.target
    ```
 
-   With `server.watch: 5s` in the configuration, editing that file is enough to apply
+   With `server.watch: 5s` in the configuration, editing `/etc/sol/sol.yaml` is enough to apply
    changes; alternatively declare `ExecReload=/bin/kill -HUP $MAINPID` and use
    `systemctl reload sol.service`.
 
@@ -1402,10 +1390,11 @@ triggered it - the cooldowns will absorb it, but a loop is not load-bearing desi
 
 ### macOS (launchd)
 
-1. **Install the binary and a configuration** (same place the installer uses: `~/sol/`, no sudo)
+1. **Install the binary and a configuration**
 
    ```bash
-   mkdir -p ~/sol && cp sol ~/sol/sol && cp sol.yaml ~/sol/sol.yaml
+   sudo cp sol /usr/local/bin/sol && sudo mkdir -p /usr/local/etc/sol
+   sudo cp sol.yaml /usr/local/etc/sol/sol.yaml
    ```
 
 2. **Create the launchd daemon**
@@ -1423,17 +1412,17 @@ triggered it - the cooldowns will absorb it, but a loop is not load-bearing desi
      <string>com.lidiaoo.sol</string>
      <key>ProgramArguments</key>
      <array>
-       <string>/Users/you/sol/sol</string>
+       <string>/usr/local/bin/sol</string>
        <string>listen</string>
        <string>--config</string>
-       <string>/Users/you/sol/sol.yaml</string>
+       <string>/usr/local/etc/sol/sol.yaml</string>
      </array>
      <key>RunAtLoad</key>
      <true/>
      <key>KeepAlive</key>
      <true/>
      <key>StandardErrorPath</key>
-     <string>/Users/you/sol/sol.log</string>
+     <string>/usr/local/var/log/sol.log</string>
    </dict>
    </plist>
    ```
@@ -1443,7 +1432,7 @@ triggered it - the cooldowns will absorb it, but a loop is not load-bearing desi
    ```bash
    sudo launchctl load -w /Library/LaunchDaemons/com.lidiaoo.sol.plist
    sudo launchctl list | grep sol
-   tail -f ~/sol/sol.log
+   tail -f /usr/local/var/log/sol.log
    ```
 
    `launchctl unload -w` stops it, and `RunAtLoad` brings it back after a reboot. A LaunchDaemon
@@ -1458,12 +1447,12 @@ with a machine-level environment variable for the token:
 1. **Install to a stable path and start it at boot, as SYSTEM**
 
    ```powershell
-   New-Item -ItemType Directory -Force -Path $env:USERPROFILE\sol | Out-Null
-   Move-Item .\sol.exe $env:USERPROFILE\sol\sol.exe -Force
+   New-Item -ItemType Directory -Force -Path C:\ProgramData\sol | Out-Null
+   Move-Item .\sol.exe C:\ProgramData\sol\sol.exe -Force
    # The task runs sol.exe itself: the task's action is just the exe and its arguments.
    # A task has no stdout to collect, so sol writes its own log file — add this to the config:
-   #   logging: { output: file, file: '%USERPROFILE%\sol\sol.log' }
-   schtasks /Create /TN sol /TR "\"C:\Users\you\sol\sol.exe\" listen --config \"C:\Users\you\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
+   #   logging: { output: file, file: 'C:\ProgramData\sol\sol.log' }
+   schtasks /Create /TN sol /TR "\"C:\ProgramData\sol\sol.exe\" listen --config \"C:\ProgramData\sol\sol.yaml\"" /SC ONSTART /RU SYSTEM /RL HIGHEST /F
    schtasks /Run /TN sol
    ```
 
@@ -1477,7 +1466,7 @@ with a machine-level environment variable for the token:
 
    ```powershell
    schtasks /Query /TN sol /V /FO LIST
-   Get-Content $env:USERPROFILE\sol\sol.log -Wait
+   Get-Content C:\ProgramData\sol\audit.log -Wait
    ```
 
    The `SYSTEM` account reads machine environment variables, so a secret set once with
@@ -1489,11 +1478,11 @@ with a machine-level environment variable for the token:
 
 - `After=network-online.target` ensures the service starts after the network is fully online.
 - `Restart=always` automatically restarts the service if it crashes.
-- Keep the configuration in `~/sol/sol.yaml` (the installer's default location) and keep secrets in
-  environment variables or 0600 files referenced by the configuration - never in the YAML itself.
+- Keep the configuration in `/etc/sol/sol.yaml` and keep secrets in environment variables or
+  0600 files referenced by the configuration - never in the YAML itself.
 - A service gets its own home directory (root's for systemd and launchd, `SYSTEM`'s on Windows),
   so `~/.config/sol/sol.yaml` there is not yours: give the unit an absolute path with `--config`
-  (as the examples do), or keep the file in `~/sol/` as this repository does.
+  (as the examples do) or keep the file at `/etc/sol/sol.yaml`.
 - The unit needs root only for privileged ports and for `exec` privilege drops; otherwise a
   dedicated user plus `CAP_NET_BIND_SERVICE` is the better default. On macOS the equivalent is
   dropping `UserName` into the plist; on Windows `exec` has no user/group drop at all.
