@@ -66,6 +66,15 @@ mkdir -p "$STAGE"
 DIRTY_STAMP=false
 [ "$DIRTY" = yes ] && DIRTY_STAMP=true
 LDFLAGS="-s -w -X github.com/lidiaoo/sol/internal/buildinfo.version=$VERSION -X github.com/lidiaoo/sol/internal/buildinfo.dirty=$DIRTY_STAMP"
+# tar 的 --mode 是 GNU 扩展，macOS 自带的 bsdtar 不认（报 "Option --mode=... is not supported"，
+# 直接让 v0.1.0 在打包那一步断掉）。所以探一次，打包时按结果走两条路。
+TAR_MODE=no
+_probe=$(mktemp -d 2>/dev/null || true)
+if [ -n "$_probe" ]; then
+	: >"$_probe/f"
+	if tar -cf "$_probe/t.tar" --mode='u+rwx' -C "$_probe" f >/dev/null 2>&1; then TAR_MODE=yes; fi
+	rm -rf "$_probe"
+fi
 say "版本    $VERSION"
 say "落点    $DIST"
 say "平台    $PLATFORMS"
@@ -100,7 +109,7 @@ for p in $PLATFORMS; do
 	windows) install_tpl=install-windows.yaml ;;
 	*) die "不知道 $os 该用哪份安装配置模板（只有 linux / darwin / windows 三份）" ;;
 	esac
-	[ -f "scripts/$install_tpl" ] || die "缺了 scripts/$install_tpl：它是 $os 安装配置的模板，必须跟着包走"
+	[ -f "scripts/$install_tpl" ] || die "缺了 scripts/${install_tpl}：它是 $os 安装配置的模板，必须跟着包走"
 	cp "scripts/$install_tpl" "$dir/"
 	# 运行配置模板（~/sol/sol.yaml）：安装脚本拿它生成，三平台同一份。
 	if [ -f scripts/sol.yaml ]; then
@@ -145,14 +154,22 @@ for d in */; do
 	else
 		# 二进制必须带**可执行位**进包：解包后第一件事就是跑它，没有 x 位的话
 		# install.sh 的 find_local_binary 会认为"脚本旁边没有 sol"，直接报"没有可用的 sol 二进制"。
-		# 而 git-bash/Windows 上的 NTFS 没有 POSIX 权限位，chmod +x 是空操作（ls 仍显示 rw-r--r--），
-		# 所以不能指望 chmod，只能在 tar 里**显式**把这条成员的 mode 写成 0755。
-		# tar 的 --mode 对所有成员一律生效，所以分两步：先打进其余文件，再用 --mode 追加二进制。
-		tar -cf "$DIST/$name.tar" --exclude="$name/sol" "$name" &&
-			tar -rf "$DIST/$name.tar" --mode='u+rwx,go+rx' "$name/sol" &&
-			gzip -cf "$DIST/$name.tar" >"$DIST/$name.tar.gz" &&
-			rm -f "$DIST/$name.tar" ||
-			die "打包 $name.tar.gz 失败"
+		# git-bash/Windows 上的 NTFS 没有 POSIX 权限位，chmod +x 是空操作（ls 仍显示 rw-r--r--），
+		# 那种环境只能用 tar --mode 把这条成员的 mode **显式**写成 0755；可 --mode 是 GNU 扩展，
+		# macOS 的 bsdtar 不认（"Option --mode=... is not supported"），
+		# 所以在 bsdtar 上改成先 chmod 再打——macOS/Linux 的 chmod 对文件是真生效的。
+		# 无论走哪条路，包里的记录都由下面"体检"那步 tar -tvzf 核对，不靠猜。
+		if [ "$TAR_MODE" = yes ]; then
+			# tar 的 --mode 对所有成员一律生效，所以分两步：先打进其余文件，再用 --mode 追加二进制。
+			tar -cf "$DIST/$name.tar" --exclude="$name/sol" "$name" &&
+				tar -rf "$DIST/$name.tar" --mode='u+rwx,go+rx' "$name/sol" &&
+				gzip -cf "$DIST/$name.tar" >"$DIST/$name.tar.gz" &&
+				rm -f "$DIST/$name.tar" ||
+				die "打包 $name.tar.gz 失败"
+		else
+			chmod 0755 "$name/sol" || die "改 $name/sol 的权限失败（包里的 sol 会没有可执行位）"
+			tar -czf "$DIST/$name.tar.gz" "$name" || die "打包 $name.tar.gz 失败"
+		fi
 		out="$name.tar.gz"
 	fi
 	printf '  %-34s %s\n' "$out" "$(wc -c <"$DIST/$out" | tr -d ' ') 字节"
