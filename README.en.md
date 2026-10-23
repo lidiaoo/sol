@@ -226,8 +226,9 @@ from (or `C:\ProgramData\sol\`), and the first run of a newer one copies them - 
 your home directory and works from there. Edit the configuration and re-run the script to change it.
 Ports below 1024 need root on Linux/macOS, which the script sorts out before it touches anything - on a
 user-level install without root, move them to 1024 or above. It prints the current situation and where
-the configuration lives, then asks two questions: install as a service, and go ahead. Nothing changes
-until you say yes.
+the configuration lives, then asks one thing: go ahead. The service is no longer a separate question -
+it is installed by default; add `--sol-service=no` if you do not want it. Nothing changes until you say
+yes.
 
 Privileges: it does not run as root from the start. Before any step that needs it (writing
 `/usr/local/bin`, registering the service), it re-runs itself through `sudo` on Linux/macOS, or
@@ -242,7 +243,7 @@ is appended to `install.log`, with the equivalent command, next to the ledger `i
 Where things go: the binary in `/usr/local/bin/sol` (`C:\ProgramData\sol\sol.exe`), the ledger and
 history in `/usr/local/share/sol/` (`C:\ProgramData\sol\`), the two configuration files in your home
 directory (see the table above; the service definition spells out absolute paths, so a root/SYSTEM
-service still reads them), and - only if you asked for the service - a systemd unit, a launchd plist, or a
+service still reads them), and - unless you passed `--sol-service=no` - a systemd unit, a launchd plist, or a
 scheduled task. A configuration you already have (or any other one you point `run.args` at) and your logs
 are never touched - the script only creates one when there is none.
 

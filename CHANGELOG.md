@@ -43,6 +43,11 @@ tagged release.
   Windows - so a fresh install has a working control plane with no `SOL_TOKEN` to export. Set
   `server.http.enabled: false` to keep the socket closed. A configuration with no `http` section
   still defaults to off; this is the template, not the loader.
+- **The installer no longer asks whether to install the service.** It is installed by default on
+  all three platforms (`systemd` / `launchd` / Task Scheduler) - a receiver that does not survive a
+  reboot is not the point. Pass `--sol-service=no` to skip it, which is the only user-facing
+  argument the scripts accept. An existing ledger still wins: an install that was made without the
+  service stays without it across upgrades.
 
 ### Added
 

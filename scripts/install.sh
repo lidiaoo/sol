@@ -79,7 +79,11 @@ if [ "$SERVICE_KIND" = "systemd" ]; then
 	UNIT_PATH="$SOL_DIR/$UNIT_NAME"
 else
 	UNIT_NAME=${SOL_UNIT_NAME:-com.lidiaoo.sol}
-	UNIT_PATH="$SOL_DIR/$UNIT_NAME.plist"
+	# macOS 是"一切都收进 ~/sol"的唯一例外：launchd 只认两个目录——/Library/LaunchDaemons
+	# （system 域，开机扫描）与 ~/Library/LaunchAgents（gui 域，登录时扫描）。放在 ~/sol 下
+	# bootstrap 也"能"成功，但重启时没人去那儿扫，开机自启就是空的；launchctl enable/disable
+	# 那套持久化覆盖同样只认标准目录里的任务。见 docs/install-pitfalls.md §12。
+	UNIT_PATH="$ROOT/Library/LaunchDaemons/$UNIT_NAME.plist"
 fi
 UID_NOW=$(id -u)
 SUDO=""
@@ -301,7 +305,7 @@ escalate() { # escalate <install|uninstall>
 }
 # 默认落点写不进去（HOME 只读、或别人家的目录）时先说清楚，而不是跑到一半才死在 mkdir 上。
 if [ -z "$ROOT" ] && ! writable_target "$STATE_DIR"; then
-	die "在这个目录里写不了文件：$USER_CONFIG（安装配置）与 $DEFAULT_CONFIG_PATH（运行配置）都要生成在这儿。
+	die "在这个目录里写不了文件：${USER_CONFIG}（安装配置）与 ${DEFAULT_CONFIG_PATH}（运行配置）都要生成在这儿。
 改一下 HOME（或者它的属主/权限），或者用 --run-dir 指定一个能写的目录再跑一次。"
 fi
 # ───────────────────────── 小工具 ─────────────────────────
@@ -409,7 +413,13 @@ LEDGER_SHA=$(ledger_field sha256)
 LEDGER_BINARY=$(ledger_field binary)
 LEDGER_SERVICE_KIND=$(ledger_field kind)
 LEDGER_SERVICE_NAME=$(ledger_field name)
-LEDGER_CREATED_UNIT=$(sed -n 's/.*"created_unit"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$LEDGER" 2>/dev/null | head -n1)
+# 用 -E（ERE）别用 BRE 的 \| 交替：BSD sed（macOS 自带）不认 `\(true\|false\)`，会**静默**返回空，
+# 于是"台账说建过服务"永远读成空。以前它被"服务要不要装"那问掩盖（大不了多问一次），现在不问了，
+# 读错就等于升级时把服务悄悄漏装——所以这里必须用两边都认的 ERE。
+LEDGER_CREATED_UNIT=$(sed -n -E 's/.*"created_unit"[[:space:]]*:[[:space:]]*(true|false).*/\1/p' "$LEDGER" 2>/dev/null | head -n1)
+# 必须在动手之前读：do_install 一开头就会用**新**落点重写台账，之后再读就永远是"没变"，
+# 老落点那份 plist 也就搬不走了。
+LEDGER_UNIT_PATH=$(ledger_field unit_path)
 LEDGER_PREV_VERSION=$(sed -n 's/.*"previous".*"installed_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LEDGER" 2>/dev/null | head -n1)
 [ -n "$LEDGER_PREV_VERSION" ] || LEDGER_PREV_VERSION=$(sed -n '/"previous"/,/}/s/.*"installed_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LEDGER" 2>/dev/null | head -n1)
 # 服务现在是什么状态（只读，不动它）
@@ -452,7 +462,7 @@ fi
 DEFAULT_CONFIG_PATH="$RUN_DIR/sol.yaml"
 DEFAULT_ARGS="listen --config $DEFAULT_CONFIG_PATH"          # 给人看、给报告用
 DEFAULT_ARGS_YAML="listen, --config, $DEFAULT_CONFIG_PATH"   # 写进模板与报错提示：YAML 列表要逗号
-# 模板校验比的是**真实用户的标准落点**（$HOME/sol/sol.yaml），不是 $DEFAULT_ARGS：
+# 模板校验比的是**真实用户的标准落点**（$HOME/sol/sol.yaml），不是 ${DEFAULT_ARGS}：
 # $RUN_DIR 会被 SOL_RUN_DIR / SOL_INSTALL_ROOT 改掉（沙箱、多实例测试），而模板永远写着
 # 未挂根时的标准落点。拿被改过的值去比，只要换个目录就会把好包说成"坏包"
 # （install.ps1 的 $CanonicalRunConfig 是同一套约定）。
@@ -483,7 +493,7 @@ parse_args_of() { # parse_args_of <文件>：args 的两端空格抹平后，一
 }
 # 模板里的 args 一行是 YAML 流式列表，带引号；解析它和解析用户那份必须是同一套规则，所以共用
 # parse_args_of——模板和用户配置的写法是同一套，没有第二套。读出来之后去掉外面的引号、展开
-# ~ / $HOME / $XDG_CONFIG_HOME（模板里这么写，换台机器、换用户都对），再跟默认值比。
+# ~ / $HOME / ${XDG_CONFIG_HOME}（模板里这么写，换台机器、换用户都对），再跟默认值比。
 expand_args() {
 	sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/" |
 		sed -e "s#\~/#$HOME/#" -e 's#\~$#'"$HOME"'#' |
@@ -494,7 +504,7 @@ args_of_file() { parse_args_of "$1" | expand_args | tr '\n' ' ' | sed 's/ *$//';
 user_config_args() { args_of_file "$INSTALL_TEMPLATE"; }
 # 模板必须写得能被本脚本读懂：读不出 args，或者 args 跟标准落点对不上，都算坏包。
 [ "$(user_config_args)" = "listen --config $CANONICAL_RUN_CONFIG" ] ||
-	die "本平台的安装配置模板 ${INSTALL_TEMPLATE} 里的 args 对不上（读到：$(user_config_args)；应该是 listen --config $CANONICAL_RUN_CONFIG）。这是坏包，重新下载。"
+	die "本平台的安装配置模板 ${INSTALL_TEMPLATE} 里的 args 对不上（读到：$(user_config_args)；应该是 listen --config ${CANONICAL_RUN_CONFIG}）。这是坏包，重新下载。"
 write_user_config() {
 	mkdir -p "$(dirname "$USER_CONFIG")"
 	cp "$INSTALL_TEMPLATE" "$USER_CONFIG"
@@ -528,14 +538,14 @@ if [ ! -f "$USER_CONFIG" ] && [ -f "$LEGACY_USER_CONFIG" ]; then
 		LEGACY_USER_COPIED=$LEGACY_USER_CONFIG
 		chmod 777 "$USER_CONFIG" 2>/dev/null || true
 	else
-		warn "没能把 $LEGACY_USER_CONFIG 拷到 $USER_CONFIG，按新位置重新生成。"
+		warn "没能把 $LEGACY_USER_CONFIG 拷到 ${USER_CONFIG}，按新位置重新生成。"
 	fi
 	CONFIG_GENERATED=yes
 fi
 chmod 777 "$USER_CONFIG" 2>/dev/null || true
 # 老位置的内容在升权之前就原样搬过来了（见"升权"一节前面那段）；这里只剩"还没有就写一份"。
 [ -f "$USER_CONFIG" ] || { write_user_config; CONFIG_GENERATED=yes; }
-[ -n "$LEGACY_USER_COPIED" ] && say "安装配置   沿用 $LEGACY_USER_COPIED（原样拷到 $USER_CONFIG；你另外指定的不受影响）"
+[ -n "$LEGACY_USER_COPIED" ] && say "安装配置   沿用 ${LEGACY_USER_COPIED}（原样拷到 ${USER_CONFIG}；你另外指定的不受影响）"
 OLD_IFS_SAVE=$IFS
 IFS='
 '
@@ -626,7 +636,7 @@ ensure_runtime_config() {
 				RUN_COPIED_FROM=$RUN_COPY_FROM
 				return 0
 			fi
-			warn "没能把 $RUN_COPY_FROM 拷到 $RUN_CONFIG，按新位置重新生成。"
+			warn "没能把 $RUN_COPY_FROM 拷到 ${RUN_CONFIG}，按新位置重新生成。"
 		elif [ -f "$TEMPLATE_CONFIG" ]; then
 			mkdir -p "$RUN_DIR" 2>/dev/null || mkdir_root "$RUN_DIR"
 			runtime_tmp=$(mktemp)
@@ -640,7 +650,7 @@ ensure_runtime_config() {
 				return 0
 			fi
 			rm -f "$runtime_tmp"
-			warn "没能用 $TEMPLATE_CONFIG 生成 $RUN_CONFIG，改用内置模板。"
+			warn "没能用 $TEMPLATE_CONFIG 生成 ${RUN_CONFIG}，改用内置模板。"
 		fi
 	fi
 	# 这份配置里有一个**明文令牌**（下面随机生成，服务拿它守住控制面），所以文件写完就是
@@ -771,7 +781,7 @@ show_state() {
 	case "$(service_state)" in
 	running) say "  服务        ${SERVICE_KIND}，在运行（${UNIT_NAME}）" ;;
 	installed) say "  服务        ${SERVICE_KIND}，已安装但没在运行（${UNIT_NAME}）" ;;
-	absent) say "  服务        没有（$UNIT_NAME 不存在）" ;;
+	absent) say "  服务        没有加载（${SERVICE_KIND} 里没有 ${UNIT_NAME}）" ;;
 	unregistered) say "  服务        SOL_INSTALL_ROOT 下只写单元文件，本机 systemd 里没有它" ;;
 	*) say "  服务        状态未知（没有 systemctl / launchctl？）" ;;
 	esac
@@ -1182,13 +1192,17 @@ do_install() {
 		fi
 		new_tmp=$(mktemp)
 		cp "$LOCAL_BIN" "$new_tmp"
-		chmod 0777 "$new_tmp"
+		# macOS：launchd 要求它执行的程序由 root 拥有、group/other 不可写（755）。777 会让
+		# bootstrap 回 5: Input/output error，一个字的解释都没有。Linux 上没有这个约束。
+		bin_mode=0777
+		[ "$SERVICE_KIND" = launchd ] && bin_mode=0755
+		chmod "$bin_mode" "$new_tmp"
 		if [ -w "$BINDIR" ]; then
 			mv "$new_tmp" "$DEST_BIN"
 			act user "放置二进制（原子替换）" "mv <新二进制> $DEST_BIN"
 		else
 			as_root mv "$new_tmp" "$DEST_BIN"
-			as_root chmod 0777 "$DEST_BIN"
+			as_root chmod "$bin_mode" "$DEST_BIN"
 			act root "放置二进制（原子替换）" "sudo mv <新二进制> $DEST_BIN"
 		fi
 		rm -f "$new_tmp"
@@ -1229,6 +1243,24 @@ do_install() {
 		;;
 	esac
 }
+# 上一版脚本把单元/plist 写在 ~/sol 下（launchd 在那种位置开机扫不到）。台账记着它当时放在
+# 哪儿，这里按台账把老落点摘掉。没有台账、或路径没变，就什么都不做。
+migrate_unit_path() {
+	[ "$LEDGER_EXISTS" = yes ] || return 0
+	old_unit=$LEDGER_UNIT_PATH
+	[ -n "$old_unit" ] || return 0
+	[ "$old_unit" = "$UNIT_PATH" ] && return 0
+	[ -e "$old_unit" ] || return 0
+	# 沙箱（SOL_INSTALL_ROOT）里不碰本机服务管理器，只搬文件。
+	if [ -z "$ROOT" ]; then
+		case "$SERVICE_KIND" in
+		launchd) as_root launchctl bootout "system/$UNIT_NAME" >/dev/null 2>&1 || true ;;
+		systemd) as_root systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true ;;
+		esac
+	fi
+	rm_root "$old_unit"
+	act root "搬走老落点的服务定义（${old_unit} → ${UNIT_PATH}）" "sudo rm $old_unit"
+}
 write_service() {
 	case "$SERVICE_KIND" in
 	systemd | launchd)
@@ -1237,10 +1269,18 @@ write_service() {
 			# launchd 在启动任务之前要求日志文件所在目录已存在，否则任务直接起不来。
 			mkdir_root "$SOL_DIR"
 			act root "建日志目录（launchd 需要它存在）" "sudo mkdir -p $SOL_DIR"
+			# 台账里的落点与现在算出来的不一样：上一版脚本把它写在别处（比如 ~/sol 下）。
+			# 先摘掉再删，别留两份同 Label 的定义——谁生效说不清，重启后更是只剩标准目录那份。
+			migrate_unit_path
 		fi
 		unit_tmp=$(mktemp)
 		render_unit >"$unit_tmp"
-		put_root "$unit_tmp" "$UNIT_PATH" 0777
+		unit_mode=0777
+		# launchd 对权限有硬要求：plist 由 root 拥有、group/other 不可写（644），
+		# 里面 ProgramArguments 指的那个程序同理（755）。不满足时 bootstrap 只回一句
+		# "Bootstrap failed: 5: Input/output error"，不会提权限——见 pitfalls §12。
+		[ "$SERVICE_KIND" = launchd ] && unit_mode=0644
+		put_root "$unit_tmp" "$UNIT_PATH" "$unit_mode"
 		rm -f "$unit_tmp"
 		act root "写服务定义（从 run.args 生成）" "sudo cp <服务定义> $UNIT_PATH"
 		;;
@@ -1261,11 +1301,21 @@ write_service() {
 		fi
 		;;
 	launchd)
-		if command -v launchctl >/dev/null 2>&1; then
+		if [ -n "$ROOT" ]; then
+			# 沙箱（SOL_INSTALL_ROOT）里只写文件，不碰本机 launchd——跟 systemd 那条一样，
+			# 否则会往真机上 bootstrap 一个指向沙箱路径的任务。
+			warn "SOL_INSTALL_ROOT=${ROOT}：plist 写好了，但不注册服务（launchd 看不见它）。"
+		elif command -v launchctl >/dev/null 2>&1; then
 			as_root launchctl bootout "system/$UNIT_NAME" >/dev/null 2>&1 || true
-			as_root launchctl bootstrap system "$UNIT_PATH" >/dev/null 2>&1 ||
-				warn "launchctl bootstrap 失败，手动跑一遍看原因"
+			# 失败时**必须**把 launchctl 的原话打出来：它是唯一说出原因的人（权限不对只有
+			# 一句 5: Input/output error；吞掉它就只剩报告里那个"未知"）。
+			if ! bootstrap_out=$(as_root launchctl bootstrap system "$UNIT_PATH" 2>&1); then
+				warn "launchctl bootstrap 失败：${bootstrap_out:-（它什么都没说）}"
+				warn "手动跑一遍看原因：sudo launchctl bootstrap system $UNIT_PATH"
+			fi
 			act root "加载 launchd 任务" "sudo launchctl bootstrap system $UNIT_PATH"
+		else
+			warn "没有 launchctl（？）：plist 已写好，进了 macOS 再 bootstrap $UNIT_PATH"
 		fi
 		;;
 	esac
@@ -1358,7 +1408,13 @@ report() { # report <install|uninstall|none>
 		elif [ "$SERVICE_CHOSEN" = true ]; then
 			case "$SERVICE_KIND" in
 			systemd) say "    systemctl is-active $UNIT_NAME   -> $( (as_root systemctl is-active "$UNIT_NAME" 2>/dev/null) || echo '未知')" ;;
-			launchd) say "    launchctl print system/$UNIT_NAME   -> $(launchctl print "system/$UNIT_NAME" >/dev/null 2>&1 && echo 'running' || echo '未知')" ;;
+			launchd)
+				if launchctl print "system/$UNIT_NAME" >/dev/null 2>&1; then
+					say "    launchctl print system/$UNIT_NAME   -> running"
+				else
+					say "    launchctl print system/$UNIT_NAME   -> 没加载（看原因：sudo launchctl print system/${UNIT_NAME}）"
+				fi
+				;;
 			esac
 		fi
 		say ""
@@ -1450,15 +1506,24 @@ quit)
 	report none
 	;;
 *)
-	# 要不要服务：台账说建过就沿用（升级不动它）；没说过（首次安装、或上次选了不装）就问一次。
-	if [ "$LEDGER_CREATED_UNIT" = true ]; then
-		SERVICE_WANTED=true
-	elif [ -n "$ROOT" ] || [ "$SERVICE_KIND" = none ]; then
-		SERVICE_WANTED=false
-	else
-		SERVICE_WANTED=false
-		if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
-	fi
+	# 服务不再问了：装就顺手装上（sol 的常态用法就是后台常驻），没有"要不要"这一步。
+	# 仍然有三个"不装"的来源，按优先级：
+	#   1) 显式的 --sol-service=no（升权重跑时由父进程带下来，也是唯一的关掉入口）
+	#   2) 沙箱根（--sol-root）或这个平台压根没有服务机制：这台机器上没地方注册
+	#   3) 台账里记着"上次没建"：升级沿用已安装形态，不擅自给你加一个开机自启
+	case "$SERVICE_ARG" in
+	no) SERVICE_WANTED=false ;;
+	yes) SERVICE_WANTED=true ;;
+	*)
+		if [ -n "$ROOT" ] || [ "$SERVICE_KIND" = none ]; then
+			SERVICE_WANTED=false
+		elif [ "$LEDGER_EXISTS" = yes ] && [ "$LEDGER_CREATED_UNIT" != true ]; then
+			SERVICE_WANTED=false
+		else
+			SERVICE_WANTED=true
+		fi
+		;;
+	esac
 	open_config_dir "$(dirname "$RUN_CONFIG")" "$RUN_CONFIG"
 	escalate install
 	do_install

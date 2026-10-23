@@ -161,7 +161,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 1. **认出现状**：找 sol 二进制（脚本旁边、当前目录、`$PATH` 里就地用；都没有才去下载对应平台的最新版）+ PATH 上所有命中的 `sol`（`command -v -a` / `where`，各自跑一遍 `--version`）+ 安装台账 + 服务单元/计划任务是否存在 + 包管理器记录（`brew list` / `winget list` / `scoop list`）。
 2. **生成配置**：只写"怎么跑"——`run.args`（§6.1）。服务类型、单元路径、CAP、防火墙工具都由脚本按平台自己推导，不进文件（用户不需要记平台差异）。
 3. **确认**：把配置展示出来，问一句"执行吗？"。答 n 就什么都不做，文件留着，改完重跑即可。
-4. **执行**：用现成的二进制 + 下面这张表；**要不要装成服务是现场问的**，默认沿用台账里上次的选择。
+4. **执行**：用现成的二进制 + 下面这张表；**服务默认就装、不再问**（后台常驻是 sol 的常态用法）。三种情况不装：显式 `--sol-service=no`、沙箱根（那台机器之外没地方注册）、台账里记着上次没建（升级沿用已安装形态）。
 5. **报告**：见 §4。
 
 | 探测结论 | 执行时的行为 |
@@ -173,7 +173,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 | 无台账但二进制存在 | 正常开始——它就是"你已有的二进制"，执行后写台账 |
 | PATH 上存在第二个 sol | 报告并指出**哪个生效**，不擅自改 PATH |
 
-**安装脚本没有任何命令行参数。** 一个都不加：用户不需要记任何东西，所有选择都由"生成的文件 + 交互问答"完成。
+**安装脚本只有一个命令行参数：`--sol-service=no`。** 其余一切都不加：用户不需要记任何东西，所有选择都由"生成的文件 + 交互问答"完成。服务默认就装，所以"不装"是唯一需要开口的事。
 
 未安装时：
 
@@ -191,7 +191,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
   run: { args: [listen, --config, /home/you/sol/sol.yaml] }
 
 二进制：用你这里的 ./sol（v0.3.0，sha256 1a2b…）；想换版本就把它换掉
-服务：装成 systemd 服务？[Y/n]
+服务：装成 systemd 服务（默认就装，不问；不要就加 --sol-service=no）
 
 可以现在编辑配置（另开一个窗口也行），改完回车继续。
 
@@ -255,7 +255,7 @@ sol v0.3.0（用你提供的 ./sol）-> /usr/local/bin/sol（systemd 服务已�
 
 用 sudo 跑也一样：这两件产物跟的是**当前用户的家目录**（`install.sh` 升权重跑时显式传 `SOL_RUN_DIR=$RUN_DIR`，因为 sudo 下 `HOME` 会变成 `/root`；`install.ps1` 走 `Start-Process -Verb RunAs`，`USERPROFILE` 仍是你的）。服务自己的家目录不同，所以才把绝对路径写进服务定义。
 
-**内容只有一个 `run`**，它回答"sol 用什么参数跑"。其余的东西都不进文件：二进制从哪来由脚本自己找（§6.2），装不装服务现场问，服务类型 / 单元路径 / CAP / 防火墙工具按平台推导。
+**内容只有一个 `run`**，它回答"sol 用什么参数跑"。其余的东西都不进文件：二进制从哪来由脚本自己找（§6.2），服务默认就装（不再问，`--sol-service=no` 可跳过），服务类型 / 单元路径 / CAP / 防火墙工具按平台推导。
 
 ```yaml
 # 由安装脚本生成：sol 怎么跑。改这里，然后重新运行一遍安装脚本。
@@ -412,7 +412,7 @@ schtasks /Query /TN sol /V /FO LIST
 - **Linux / macOS**：`curl -fsSL https://github.com/lidiaoo/sol/releases/latest/download/install.sh -o install.sh && sh install.sh`。**为什么不直接管进 `sh`**：管道执行时 stdin 是脚本自己，提问读不到答案（脚本会去 `/dev/tty` 问，问不到就什么都不做），而且没有可重跑的文件、无法自己升权。
 - **macOS 额外一步（脚本自己处理）**：下载来的二进制带 quarantine 标记，脚本执行 `xattr -d com.apple.quarantine`，否则首次运行会被 Gatekeeper 弹"无法验证开发者"。
 - **Windows**：`irm https://github.com/lidiaoo/sol/releases/latest/download/install.ps1 | iex`；或双击随附的 `install.cmd`（它内部按正确的执行策略调用 ps1，用户不需要记 `-ExecutionPolicy`）。
-- 三平台一致的部分：**零参数**、生成的配置形态相同（只有 `run.args`）、同样两次问答、默认不需要特权（除非要装服务，或用 <1024 / 保留端口）。
+- 三平台一致的部分：**零参数**、生成的配置形态相同（只有 `run.args`）、服务默认就装（不再单独问，`--sol-service=no` 可跳过）、默认不需要特权（除非要装服务，或用 <1024 / 保留端口）。
 
 ## 10 验证与证据强度
 

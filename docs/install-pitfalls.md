@@ -97,3 +97,29 @@ Windows 安装「卡死」这件事，前后猜错了四次——UAC 框没弹�
 - 没有图形界面（Linux 无 `DISPLAY`/`WAYLAND_DISPLAY`）、在 SSH 里（`SSH_CONNECTION`/`SSH_TTY`）、
   stdin 不是终端（`curl | sh`、管道）、或 `SOL_INSTALL_ROOT` 沙箱里，一律**只报路径**，不问也不开。
 - 失效兜底：opener 起不来就打印目录，让用户自己开——不要让"打开失败"打断安装。
+
+## 12. macOS：launchd 只认标准目录，也只认干净权限（777 会被一句话不说地拒绝）
+
+- 现象：`sudo launchctl bootstrap system <plist>` 之后报告里是
+  `launchctl print system/com.lidiaoo.sol   -> 未知`；直接跑 `launchctl print system/com.lidiaoo.sol`
+  得到 `Could not find service "com.lidiaoo.sol" in domain for system`，`~/sol/sol.log` 连文件都没有
+  （任务一次都没执行过）。
+- 原因（两条，任何一条都足以让它起不来）：
+  1. **权限**：LaunchDaemon 的 plist 必须由 root 拥有、且 group/other 不可写（644）；plist 里
+     `ProgramArguments` 指的那个程序同理（755）。脚本"所有产出统一 777"的规矩正好踩中：launchd 的
+     回话只有 `Bootstrap failed: 5: Input/output error`，一个字的解释都没有。
+  2. **落点**：`/Library/LaunchDaemons`（system 域）与 `~/Library/LaunchAgents`（gui 域）之外的位置，
+     `bootstrap` 也许能成，但开机时 launchd 只扫这两个目录——重启即丢；`launchctl enable/disable`
+     那套持久化覆盖也只认标准目录里的任务。**`~/sol` 不是合法落点**，"一切收进用户目录"这条
+     在 macOS 上必须给服务定义开例外。
+- 规矩：darwin 上 plist 一律 `/Library/LaunchDaemons/<label>.plist`、0644、root 拥有；`~/sol/bin/sol`
+  至少 0755。"所有文件 777"只继续在 Linux 上成立。
+- 判据：`ls -l /Library/LaunchDaemons/com.lidiaoo.sol.plist` 应为 `-rw-r--r-- ... root wheel`；
+  `launchctl print system/com.lidiaoo.sol | head -3` 第一行应是 `system/com.lidiaoo.sol = {`。
+  **非 root 也能 print**（已加载 = 退出码 0，没有这个任务 = 113），所以"看不到"就是真没加载，
+  不是权限不够——别拿它当"需要 sudo 才看得见"糊过去。
+- 别再吞 `launchctl bootstrap` 的 stderr：它是唯一会说出原因的人。`bootstrap` 后面那次
+  `launchctl print` 只是复查，查不过时要提示 `sudo launchctl print` 而不是只说"未知"。
+- 老落点（`~/sol/*.plist`）按台账搬走：迁移判断必须在**写台账之前**读 `unit_path`，
+  否则 `do_install` 一开头用新落点重写台账，之后就永远"路径没变"，老 plist 留在原地。
+

@@ -1328,10 +1328,21 @@ switch ($choice) {
 		}
 	}
 	default {
-		# 要不要服务：台账说建过就沿用（升级不动它）；没说过（首次安装、或上次选了不装）就问一次。
-		$script:ServiceChosen = ($LedgerExists -and $LedgerJson.service.created_unit -eq $true)
-		if (-not $script:ServiceChosen -and -not $env:SOL_INSTALL_ROOT) {
-			$script:ServiceChosen = Ask-Yes '把 sol 注册成开机启动的计划任务（后台常驻）？' 'y'
+		# 服务不再问了：装就顺手注册计划任务（后台常驻是 sol 的常态用法），没有"要不要"这一步。
+		# 仍然有三个"不注册"的来源，按优先级：
+		#   1) 显式的 --sol-service=no（UAC 升权重跑时由父进程带下来，也是唯一的关掉入口）
+		#   2) 沙箱根（SOL_INSTALL_ROOT）：任务计划是本机的，不该往真机里写
+		#   3) 台账里记着"上次没建"：升级沿用已安装形态，不擅自给你加一个开机自启
+		if ($ServiceArg -eq 'no') {
+			$script:ServiceChosen = $false
+		} elseif ($ServiceArg -eq 'yes') {
+			$script:ServiceChosen = $true
+		} elseif ($LedgerExists) {
+			$script:ServiceChosen = [bool]($LedgerJson.service.created_unit -eq $true)
+		} elseif ($env:SOL_INSTALL_ROOT) {
+			$script:ServiceChosen = $false
+		} else {
+			$script:ServiceChosen = $true
 		}
 		Open-ConfigDir (Split-Path -Parent $RunConfig) $RunConfig
 		Escalate-IfNeeded 'install'

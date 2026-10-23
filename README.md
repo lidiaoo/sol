@@ -201,7 +201,8 @@ magic+"sleep" → 睡眠（10）；服务没有规则会拒绝启动，所以脚
 改配置就编辑它、再重跑一遍脚本。
 **端口 <1024 在 Linux/macOS 上要 root**：脚本动手前会升权，正常安装不用管；但如果是不要 root 的
 用户级安装，要把端口改成 ≥1024。
-它把现状、配置在哪都打印出来，再问两个问题：要不要装成服务、是否继续。你说"是"之前什么都不改。
+它把现状、配置在哪都打印出来，再问一件事：是否继续。服务不再单独问——默认就装成服务，
+不想装就加 `--sol-service=no`。你说"是"之前什么都不改。
 
 **权限**：它不会一开始就以 root 跑。轮到需要权限的步骤（写 `/usr/local/bin`、注册服务）时，Linux/macOS
 上它用 `sudo` **重跑一遍自己**，Windows 上弹 **UAC** 以管理员身份重跑，并把你刚才的答案带过去——不会
@@ -297,7 +298,7 @@ CI 那边：在 GitHub 上**创建 release** 时，`.github/workflows/release.ya
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
-gh release create v0.1.0 dist/sol-* dist/checksums.txt --title v0.1.0
+gh release create v0.1.0 dist/sol-* dist/checksums.txt dist/install.* --title v0.1.0
 # (not dist/*: that would include the directory dist/stage/ and gh would try to upload it,
 #  failing with "read dist/stage: is a directory")
 ```
