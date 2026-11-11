@@ -2,7 +2,7 @@ name: Install smoke
 
 # 为什么要有这个工作流：安装脚本是**断言**，不是文档——它得在三种真平台上真的装一遍才算数。
 # 本机（开发者机器）永远验不了这些：
-#   * 升权路径要一台"干净机器"（本机已经装着真实服务，而且落点 /usr/local/bin 不可配）
+#   * 升权路径要一台"干净机器"（本机已经装着真实服务，落点目录也不是一次性的）
 #   * Windows 的计划任务、UAC、文件锁，只有真 Windows 才作数
 #   * macOS 的 launchctl 同理
 # 所以这里不"模拟"：runner 是一次性的，脚本就按用户会做的方式装、升级、卸载，然后断言结果。
@@ -48,26 +48,34 @@ jobs:
         run: go build -o build/sol .
       # 执行目录 = 脚本所在目录：这是用户最可能的用法（把脚本和 sol 放一起，就地跑）。
       # 端口用 >1024 的高端口：CI 机器上 10/11/12 可能被系统服务占着，而这一步要验的是脚本本身。
+      # 注意 build/ 在仓库根，而这里 working-directory 是 scripts/，所以是 ../build/sol。
+      # SOL_RUN_DIR 显式指向 runner 用户的家目录：sudo 会把 HOME 变成 /root，不传的话
+      # 二进制/台账会落到 /root/sol（脚本已按 SOL_RUN_DIR 修正，这里把正确用法走一遍）。
       - name: Prepare the directory the user would run this from
         working-directory: scripts
         run: |
           set -euo pipefail
-          cp build/sol ./sol
+          cp ../build/sol ./sol
           cat > sol.yaml <<'YAML'
           version: 1
           rules:
             - match: { ports: [10131], content: { kind: none } }
               action: noop
           YAML
-      - name: 'Install (answers: yes to service, yes to apply)'
+      - name: 'Install (menu: Enter/y = apply, then yes to service)'
         working-directory: scripts
-        run: printf 'y\ny\n' | sudo -E sh install.sh
+        run: printf 'y\ny\n' | sudo -E env "SOL_RUN_DIR=$HOME/sol" sh install.sh
       - name: Assert it really installed and is really listening
         run: |
           set -euxo pipefail
           systemctl is-enabled sol.service
           systemctl is-active sol.service
-          /usr/local/bin/sol --version
+          "$HOME/sol/bin/sol" --version
+          test -f "$HOME/sol/install.json"
+          # 单元实体必须在 /etc/systemd/system（issue #1：不能是指向 $HOME 的软链，
+          # 否则 /home 独立分区时开机早期打不开、enabled 服务不自启）
+          test -f /etc/systemd/system/sol.service
+          if [ -L /etc/systemd/system/sol.service ]; then echo '单元是软链（会踩 issue #1）' >&2; exit 1; fi
           for _ in $(seq 1 20); do
             if ss -ulpn | grep -q ':10131'; then exit 0; fi
             sleep 0.5
@@ -78,11 +86,11 @@ jobs:
       - name: Assert the ledger was written and says it is complete
         run: |
           set -euo pipefail
-          sudo cat /usr/local/share/sol/install.json
-          sudo grep -q '"incomplete": false' /usr/local/share/sol/install.json
+          cat "$HOME/sol/install.json"
+          grep -q '"incomplete": false' "$HOME/sol/install.json"
       - name: 'Re-run is idempotent (numbered menu: 1 = apply)'
         working-directory: scripts
-        run: printf '1\n' | sudo -E sh install.sh
+        run: printf '1\n' | sudo -E env "SOL_RUN_DIR=$HOME/sol" sh install.sh
       # 下面这条是那个 bug 的回归测试：升级时端口必然被自己的上一个实例占着，
       # 脚本必须先停掉它、再预检、然后才覆盖二进制。
       # 这个 bug 的回归测试：探针必须认得出"正在跑的那一份"。Linux 上它原先读 /proc/<pid>/exe，
@@ -102,30 +110,30 @@ jobs:
         run: |
           set -euo pipefail
           sudo systemctl stop sol.service
-          sudo sh -c "nohup /usr/local/bin/sol listen --config '$PWD/sol.yaml' --dry-run >/tmp/manual-sol.log 2>&1 & echo \$! >/tmp/manual-sol.pid"
+          sudo sh -c "nohup '$HOME/sol/bin/sol' listen --config '$PWD/sol.yaml' --dry-run >/tmp/manual-sol.log 2>&1 & echo \$! >/tmp/manual-sol.pid"
           sleep 1
           sudo kill -0 "$(cat /tmp/manual-sol.pid)"
           # 造一份"新版本"：只改版本串，这样 sha 变了、走的是真正的升级路径
           go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$GITHUB_RUN_ID" -o ./sol .
-          printf '1\n' | sudo -E sh install.sh
+          printf '1\n' | sudo -E env "SOL_RUN_DIR=$HOME/sol" sh install.sh
           sleep 1
           if sudo kill -0 "$(cat /tmp/manual-sol.pid)" 2>/dev/null; then
             echo '手工起的那份还活着——升级没有先停掉它' >&2
             exit 1
           fi
-          sudo /usr/local/bin/sol --version | grep -q "ci-$GITHUB_RUN_ID"
+          "$HOME/sol/bin/sol" --version | grep -q "ci-$GITHUB_RUN_ID"
           systemctl is-active sol.service
       - name: 'Uninstall (numbered menu: 2 = uninstall, then keep the config)'
         working-directory: scripts
-        run: printf '2\nn\n' | sudo -E sh install.sh
+        run: printf '2\nn\n' | sudo -E env "SOL_RUN_DIR=$HOME/sol" sh install.sh
       - name: Assert uninstall took everything of ours away
         run: |
           set -euo pipefail
-          if [ -e /usr/local/bin/sol ]; then echo '二进制还在' >&2; exit 1; fi
+          if [ -e "$HOME/sol/bin/sol" ]; then echo '二进制还在' >&2; exit 1; fi
           if [ -e /etc/systemd/system/sol.service ]; then echo '单元文件还在' >&2; exit 1; fi
           if systemctl cat sol.service >/dev/null 2>&1; then echo '服务还在' >&2; exit 1; fi
           # 台账历史里的动作是中文描述（"[$who] 说明" + 等价命令两行），所以按卸载那步的描述断言
-          sudo grep -q '删二进制' /usr/local/share/sol/install.log
+          grep -q '删二进制' "$HOME/sol/install.log"
 
   macos:
     name: 'macos (launchd, real root)'
@@ -139,11 +147,13 @@ jobs:
           cache: true
       - name: Build
         run: go build -o build/sol .
+      # build/ 在仓库根，working-directory 是 scripts/ → ../build/sol。
+      # SOL_RUN_DIR 显式传 runner 的 $HOME/sol：sudo 会把 HOME 变 /root，不传就会装到 /root/sol。
       - name: Prepare the directory the user would run this from
         working-directory: scripts
         run: |
           set -euo pipefail
-          cp build/sol ./sol
+          cp ../build/sol ./sol
           cat > sol.yaml <<'YAML'
           version: 1
           rules:
@@ -152,18 +162,19 @@ jobs:
           YAML
       - name: Install
         working-directory: scripts
-        run: printf 'y\ny\n' | sudo -E sh install.sh
+        run: printf 'y\ny\n' | sudo -E env "SOL_RUN_DIR=$HOME/sol" sh install.sh
       - name: Assert launchd really has it and it is listening
         run: |
           set -euxo pipefail
           sudo launchctl print system/com.lidiaoo.sol >/dev/null
-          /usr/local/bin/sol --version
+          "$HOME/sol/bin/sol" --version
+          test -f "$HOME/sol/install.json"
           for _ in $(seq 1 20); do
             if sudo lsof -nP -iUDP:10132 | grep -q sol; then exit 0; fi
             sleep 0.5
           done
           echo 'sol 没在监听 10132：' >&2
-          sudo tail -n 60 /usr/local/var/log/sol.log >&2
+          sudo tail -n 60 "$HOME/sol/sol.log" >&2
           exit 1
       # 这个 bug 的回归测试：探针必须认得出"正在跑的那一份"。Linux 上它原先读 /proc/<pid>/exe，
       # 而**非 root 读 root 进程**的 exe 链接会被内核拒掉 → 现状里永远显示"没有在跑"；
@@ -172,34 +183,34 @@ jobs:
         working-directory: scripts
         run: |
           set -e
-          out=$(printf '4\n' | ./install.sh 2>&1)
+          out=$(printf '4\n' | SOL_RUN_DIR="$HOME/sol" ./install.sh 2>&1)
           printf '%s\n' "$out"
           printf '%s' "$out" | grep -q '有 1 个在跑' || { echo '现状没认出正在跑的那份：探针又看不到了'; exit 1; }
-          printf '%s' "$out" | grep -q '/usr/local/var/log/sol.log' || { echo '现状没告诉用户日志在哪'; exit 1; }
+          printf '%s' "$out" | grep -q "$HOME/sol/sol.log" || { echo '现状没告诉用户日志在哪'; exit 1; }
 
       - name: Upgrade must stop our own running instance first
         working-directory: scripts
         run: |
           set -euo pipefail
           sudo launchctl bootout system/com.lidiaoo.sol || true
-          sudo sh -c "nohup /usr/local/bin/sol listen --config '$PWD/sol.yaml' --dry-run >/tmp/manual-sol.log 2>&1 & echo \$! >/tmp/manual-sol.pid"
+          sudo sh -c "nohup '$HOME/sol/bin/sol' listen --config '$PWD/sol.yaml' --dry-run >/tmp/manual-sol.log 2>&1 & echo \$! >/tmp/manual-sol.pid"
           sleep 1
           sudo kill -0 "$(cat /tmp/manual-sol.pid)"
           go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$GITHUB_RUN_ID" -o ./sol .
-          printf '1\n' | sudo -E sh install.sh
+          printf '1\n' | sudo -E env "SOL_RUN_DIR=$HOME/sol" sh install.sh
           sleep 1
           if sudo kill -0 "$(cat /tmp/manual-sol.pid)" 2>/dev/null; then
             echo '手工起的那份还活着——升级没有先停掉它' >&2
             exit 1
           fi
-          /usr/local/bin/sol --version | grep -q "ci-$GITHUB_RUN_ID"
+          "$HOME/sol/bin/sol" --version | grep -q "ci-$GITHUB_RUN_ID"
       - name: Uninstall
         working-directory: scripts
-        run: printf '2\nn\n' | sudo -E sh install.sh
+        run: printf '2\nn\n' | sudo -E env "SOL_RUN_DIR=$HOME/sol" sh install.sh
       - name: Assert uninstall took everything of ours away
         run: |
           set -euo pipefail
-          if [ -e /usr/local/bin/sol ]; then echo '二进制还在' >&2; exit 1; fi
+          if [ -e "$HOME/sol/bin/sol" ]; then echo '二进制还在' >&2; exit 1; fi
           if [ -e /Library/LaunchDaemons/com.lidiaoo.sol.plist ]; then echo 'plist 还在' >&2; exit 1; fi
 
   windows:
@@ -229,23 +240,25 @@ jobs:
             - match: { ports: [10133], content: { kind: none } }
               action: noop
           '@ | Set-Content -Encoding utf8 .\sol.yaml
-      - name: 'Install (answers: yes to service, yes to apply)'
+      - name: 'Install (menu: Enter/y = apply, then yes to service)'
         working-directory: scripts
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           "y`ny`n" | & pwsh -NoProfile -File .\install.ps1
+      # 落点全部收进用户目录 %USERPROFILE%\sol（二进制、台账、历史、日志、两份配置）。
       - name: Assert the task runs sol.exe with the install-dir config, that the config asks sol to log to a file, and that the log fills up
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $base = Join-Path $env:USERPROFILE 'sol'
           schtasks /Query /TN sol
-          if (-not (Test-Path 'C:\ProgramData\sol\sol.exe')) { throw 'sol.exe 不在安装目录' }
-          if (-not (Test-Path 'C:\ProgramData\sol\sol.yaml')) { throw '运行配置不在安装目录' }
+          if (-not (Test-Path (Join-Path $base 'sol.exe'))) { throw "sol.exe 不在安装目录 $base" }
+          if (-not (Test-Path (Join-Path $base 'sol.yaml'))) { throw "运行配置不在安装目录 $base" }
           $q = (schtasks /Query /TN sol /V /FO LIST | Out-String)
           if ($q -notmatch 'sol\.exe') { throw "计划任务跑的不是 sol.exe：`n$q" }
-          if ($q -notmatch 'C:\\ProgramData\\sol\\sol\.yaml') { throw "计划任务没带安装目录那份配置：`n$q" }
-          $cfg = Get-Content 'C:\ProgramData\sol\sol.yaml' -Raw
+          if ($q -notmatch [regex]::Escape((Join-Path $base 'sol.yaml'))) { throw "计划任务没带安装目录那份配置：`n$q" }
+          $cfg = Get-Content (Join-Path $base 'sol.yaml') -Raw
           if ($cfg -notmatch 'output:\s*file') { throw "运行配置里没有让 sol 写文件日志的 logging 一节：`n$cfg" }
           if ($cfg -notmatch 'sol\.log') { throw "运行配置里的日志文件路径不对：`n$cfg" }
           $i = 0
@@ -254,12 +267,12 @@ jobs:
             Start-Sleep -Milliseconds 500; $i++
           }
           if (-not (Get-NetUDPEndpoint -LocalPort 10133 -ErrorAction SilentlyContinue)) {
-            Get-ChildItem 'C:\ProgramData\sol' | Out-String | Write-Host
+            Get-ChildItem $base | Out-String | Write-Host
             throw 'sol.exe 没在监听 10133'
           }
           # 计划任务没有 stdout 可接，日志靠 sol 自己按配置写文件：这是这件事的真验证（Linux/macOS 上没法验）。
-          if (-not (Test-Path 'C:\ProgramData\sol\sol.log')) { throw 'sol 的输出没落到 sol.log' }
-          if ((Get-Item 'C:\ProgramData\sol\sol.log').Length -eq 0) { throw 'sol.log 是空的' }
+          if (-not (Test-Path (Join-Path $base 'sol.log'))) { throw 'sol 的输出没落到 sol.log' }
+          if ((Get-Item (Join-Path $base 'sol.log')).Length -eq 0) { throw 'sol.log 是空的' }
       - name: 'Re-run is idempotent (numbered menu: 1 = apply)'
         working-directory: scripts
         shell: pwsh
@@ -285,16 +298,17 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $base = Join-Path $env:USERPROFILE 'sol'
           schtasks /End /TN sol | Out-Null
-          $p = Start-Process -PassThru -FilePath 'C:\ProgramData\sol\sol.exe' `
-            -ArgumentList 'listen', '--config', 'C:\ProgramData\sol\sol.yaml', '--dry-run'
+          $p = Start-Process -PassThru -FilePath (Join-Path $base 'sol.exe') `
+            -ArgumentList 'listen', '--config', (Join-Path $base 'sol.yaml'), '--dry-run'
           Start-Sleep -Seconds 2
           if ($p.HasExited) { throw '手工起的那份立刻退出了' }
           go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$env:GITHUB_RUN_ID" -o .\sol.exe .
           "1`n" | & pwsh -NoProfile -File .\install.ps1
           Start-Sleep -Seconds 2
           if (-not $p.HasExited) { $p.Kill(); throw '手工起的那份还活着——升级没有先停掉它' }
-          $v = & 'C:\ProgramData\sol\sol.exe' --version
+          $v = & (Join-Path $base 'sol.exe') --version
           if ("$v" -notmatch "ci-$env:GITHUB_RUN_ID") { throw "升级后版本不对：$v" }
       - name: 'Uninstall (numbered menu: 2 = uninstall, then keep the config)'
         working-directory: scripts
@@ -306,9 +320,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if (Test-Path 'C:\ProgramData\sol\sol.exe') { throw 'sol.exe 还在' }
+          $base = Join-Path $env:USERPROFILE 'sol'
+          if (Test-Path (Join-Path $base 'sol.exe')) { throw 'sol.exe 还在' }
           $out = (schtasks /Query /TN sol 2>&1 | Out-String)
           if ($out -notmatch 'ERROR|找不到|cannot find') { throw "计划任务还在：$out" }
-          if (-not (Select-String -Path 'C:\ProgramData\sol\install.log' -Pattern '删二进制' -Quiet)) {
+          if (-not (Select-String -Path (Join-Path $base 'install.log') -Pattern '删二进制' -Quiet)) {
             throw '台账里没有卸载记录'
           }

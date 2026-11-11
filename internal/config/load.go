@@ -1592,7 +1592,7 @@ func resolveHTTPAuth(out *HTTP, cfg authConfig) error {
 // more than one is an error rather than a precedence order, so a source left behind while
 // another is added cannot win silently.
 func resolveSecret(value string, envName string, fileName string, label string) (string, error) {
-	sources := make([]string, 0, 3)
+	sources := make([]string, 0, 3) //nolint:mnd // the three sources named in the doc comment above
 
 	if value != "" {
 		sources = append(sources, "the value")

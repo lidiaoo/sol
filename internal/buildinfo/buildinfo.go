@@ -36,6 +36,8 @@ var version = ""
 // building creates some (dist/stage/...), so a tree that is clean by our definition -- tracked
 // changes only, the same rule `git describe --dirty` and release.sh use -- would still come out
 // saying "-dirty".
+//
+//nolint:gochecknoglobals // link-time stamp (-X ...buildinfo.dirty), set by the toolchain, read-only otherwise.
 var dirty = ""
 
 // Version returns the version string to display.
@@ -96,6 +98,7 @@ func Revision() string {
 // carries VCS information at all.
 func withDirty(revision string, toolchainModified bool) string {
 	modified := toolchainModified
+
 	switch dirty {
 	case "true":
 		modified = true

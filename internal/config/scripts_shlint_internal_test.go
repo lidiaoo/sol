@@ -16,29 +16,51 @@ import (
 // 这类错误只在 macOS 真机上暴露。
 //
 // 规矩：脚本里变量后面紧跟非 ASCII 字符时，一律写成 ${VAR}。这个测试就是让这条规矩有牙齿。
+//
+//nolint:gosmopolitan // 断言/报错信息本身就是中文，这里必须出现中文字面量。
 func TestShellScriptsBraceVariablesBeforeNonASCII(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "scripts", "*.sh"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("没找到 scripts/*.sh（%v，%d 个）", err, len(files))
 	}
-	re := regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
+
 	for _, f := range files {
-		raw, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
+		checkScriptBraces(t, f)
+	}
+}
+
+var braceVarRe = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
+
+// checkScriptBraces 检查单个脚本里"变量紧跟非 ASCII 字节"的写法。
+func checkScriptBraces(t *testing.T, file string) {
+	t.Helper()
+
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		reportUnbracedVar(t, file, i+1, line)
+	}
+}
+
+// reportUnbracedVar 报出这一行里所有"$VAR 紧跟非 ASCII"的位置。
+//
+//nolint:gosmopolitan // 这条断言本身就是针对中文/非 ASCII 字节，这里必须出现中文字面量。
+func reportUnbracedVar(t *testing.T, file string, lineNo int, line string) {
+	t.Helper()
+
+	for _, m := range braceVarRe.FindAllStringSubmatchIndex(line, -1) {
+		if m[0] > 0 && line[m[0]-1] == '{' {
+			continue // 已经是 ${VAR}
 		}
-		lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
-		for i, line := range lines {
-			for _, m := range re.FindAllStringSubmatchIndex(line, -1) {
-				if m[0] > 0 && line[m[0]-1] == '{' {
-					continue // 已经是 ${VAR}
-				}
-				if e := m[1]; e < len(line) && line[e] >= 0x80 {
-					t.Errorf("%s:%d: 变量 $%s 后面紧跟非 ASCII 字节；macOS 的 bash 3.2 会把它算进变量名，"+
-						"在 set -u 下直接 unbound variable。改成 ${%s}：%s",
-						filepath.Base(f), i+1, line[m[2]:m[3]], line[m[2]:m[3]], strings.TrimSpace(line))
-				}
-			}
+
+		if e := m[1]; e < len(line) && line[e] >= 0x80 {
+			t.Errorf("%s:%d: 变量 $%s 后面紧跟非 ASCII 字节；macOS 的 bash 3.2 会把它算进变量名，"+
+				"在 set -u 下直接 unbound variable。改成 ${%s}：%s",
+				filepath.Base(file), lineNo, line[m[2]:m[3]], line[m[2]:m[3]], strings.TrimSpace(line))
 		}
 	}
 }

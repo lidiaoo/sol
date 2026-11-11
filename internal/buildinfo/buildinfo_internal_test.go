@@ -43,6 +43,8 @@ func TestRevisionShape(t *testing.T) {
 	require.LessOrEqual(t, len(revision), revisionLength+len("-dirty"))
 }
 
+const testDirtyTrue = "true"
+
 // TestWithDirtyHonoursTheLinkTimeDirtyStamp pins the rule for the "-dirty" suffix. It is a pure
 // function precisely so this does not depend on the build carrying VCS information: the earlier
 // version of this test was skipped in some environments and proved nothing there.
@@ -51,15 +53,18 @@ func TestWithDirtyHonoursTheLinkTimeDirtyStamp(t *testing.T) {
 
 	// Not stamped: whatever the toolchain said stands, so a plain `go build` is unchanged.
 	dirty = ""
+
 	require.Equal(t, "abc1234", withDirty("abc1234", false))
 	require.Equal(t, "abc1234-dirty", withDirty("abc1234", true))
 
 	// Stamped clean: the toolchain's flag does not override it. This is the case that matters --
 	// vcs.modified counts untracked files, and building creates them (dist/stage/...).
 	dirty = "false"
+
 	require.Equal(t, "abc1234", withDirty("abc1234", true))
 
 	// Stamped dirty: honest even when the toolchain saw nothing.
-	dirty = "true"
+	dirty = testDirtyTrue
+
 	require.Equal(t, "abc1234-dirty", withDirty("abc1234", false))
 }
