@@ -43,11 +43,20 @@ tagged release.
   Windows - so a fresh install has a working control plane with no `SOL_TOKEN` to export. Set
   `server.http.enabled: false` to keep the socket closed. A configuration with no `http` section
   still defaults to off; this is the template, not the loader.
-- **The installer no longer asks whether to install the service.** It is installed by default on
-  all three platforms (`systemd` / `launchd` / Task Scheduler) - a receiver that does not survive a
-  reboot is not the point. Pass `--sol-service=no` to skip it, which is the only user-facing
-  argument the scripts accept. An existing ledger still wins: an install that was made without the
-  service stays without it across upgrades.
+- **The installer is menu-first, and the service question comes after you pick "apply".** Every
+  run - installed or not - shows the same four-item menu (`1` apply / `2` uninstall / `3` regenerate
+  `install.yaml` / `4` quit) instead of jumping straight into a y/n install prompt on a fresh
+  machine; pressing Enter or `y` at the menu picks `1`. After choosing `1` it still asks whether to
+  register the service (default `Y`), so nothing is assumed on your behalf. Pass `--sol-service=no`
+  to skip the service, which is the only user-facing argument the scripts accept. An existing
+  ledger still wins: an install that was made without the service stays without it across upgrades.
+- **The systemd unit is written as a real file in `/etc/systemd/system`, not linked from `~/sol`**
+  (issue #1). `systemctl link` left only a symlink into `/home`; on a machine where `/home` is a
+  separate filesystem, systemd scanned the unit before `/home` was mounted, failed to open the
+  symlink target, and an *enabled* service silently did not start at boot - while `systemctl cat`
+  still worked after login. The installer now writes the unit itself to
+  `/etc/systemd/system/sol.service`, `systemctl enable` + `restart`, and migrates away any unit it
+  previously left in `~/sol` (removing the stale `systemctl link` too).
 
 ### Added
 

@@ -76,7 +76,13 @@ LEDGER="$SOL_DIR/install.json"
 HISTORY="$SOL_DIR/install.log"
 if [ "$SERVICE_KIND" = "systemd" ]; then
 	UNIT_NAME=${SOL_UNIT_NAME:-sol.service}
-	UNIT_PATH="$SOL_DIR/$UNIT_NAME"
+	# 单元**实体**写进 /etc/systemd/system（不是软链到 ~/sol）：issue #1 —— `systemctl link`
+	# 只在 /etc 留一个指向 /home 的软链，开机早期 /home 还没挂上时 systemd 打不开单元 →
+	# enabled 的服务不自启，登录后 `cat` 又能读到，极难排查。/home 独立分区时必踩。
+	# 生产自启必须把实体放在 systemd 自己的目录里；二进制路径仍在 ~/sol/bin/sol（ExecStart
+	# 用绝对路径，不受影响），所以「所有 sol 产物在 ~/sol 下」这条对配置文件/二进制仍成立，
+	# 唯一例外是这个必须被 systemd 开机扫描到的 unit 实体。
+	UNIT_PATH="$ROOT/etc/systemd/system/$UNIT_NAME"
 else
 	UNIT_NAME=${SOL_UNIT_NAME:-com.lidiaoo.sol}
 	# macOS 是"一切都收进 ~/sol"的唯一例外：launchd 只认两个目录——/Library/LaunchDaemons
@@ -282,7 +288,7 @@ escalate() { # escalate <install|uninstall>
 		writable_target "$SHAREDIR" || needs=yes
 		# SERVICE_WANTED 才是"问题的答案"；SERVICE_CHOSEN 要到 do_install 里才同步，
 		# 在这个时点读它永远还是 false（会算出"不需要 root"，或者给子进程传错答案）。
-		# 单元文件在 ~/sol 下，注册进 systemd（link/enable）也要 root。
+		# 单元文件写在 /etc/systemd/system 下（要 root），注册进 systemd（enable）也要 root。
 		[ "$SERVICE_WANTED" = true ] && needs=yes
 		;;
 	esac
@@ -1243,20 +1249,27 @@ do_install() {
 		;;
 	esac
 }
-# 上一版脚本把单元/plist 写在 ~/sol 下（launchd 在那种位置开机扫不到）。台账记着它当时放在
-# 哪儿，这里按台账把老落点摘掉。没有台账、或路径没变，就什么都不做。
+# 老版本把单元/plist 写在过别的位置：launchd 早先放 ~/sol（开机扫不到），systemd 早先也让
+# 单元实体落在 ~/sol、靠 `systemctl link` 挂进 /etc（issue #1：/home 独立分区时开机早期
+# 打不开软链目标，enabled 的服务不自启）。台账记着当时放哪儿，这里按台账把老落点摘掉并
+# 撤销它留下的 link/enable；没有台账、或路径没变，就什么都不做。
 migrate_unit_path() {
 	[ "$LEDGER_EXISTS" = yes ] || return 0
 	old_unit=$LEDGER_UNIT_PATH
 	[ -n "$old_unit" ] || return 0
 	[ "$old_unit" = "$UNIT_PATH" ] && return 0
-	[ -e "$old_unit" ] || return 0
+	[ -e "$old_unit" ] || { [ "$SERVICE_KIND" = systemd ] || return 0; }
 	# 沙箱（SOL_INSTALL_ROOT）里不碰本机服务管理器，只搬文件。
 	if [ -z "$ROOT" ]; then
 		case "$SERVICE_KIND" in
 		launchd) as_root launchctl bootout "system/$UNIT_NAME" >/dev/null 2>&1 || true ;;
 		systemd) as_root systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true ;;
 		esac
+	fi
+	# systemd 老版本实际生效的是 /etc/systemd/system 下的软链；去掉 link 再删实体，
+	# 免得留下一个指向旧 ~/sol 的悬空链接（开机仍会报错）。
+	if [ "$SERVICE_KIND" = systemd ] && [ -z "$ROOT" ]; then
+		as_root systemctl unlink "$old_unit" >/dev/null 2>&1 || true
 	fi
 	rm_root "$old_unit"
 	act root "搬走老落点的服务定义（${old_unit} → ${UNIT_PATH}）" "sudo rm $old_unit"
@@ -1269,10 +1282,11 @@ write_service() {
 			# launchd 在启动任务之前要求日志文件所在目录已存在，否则任务直接起不来。
 			mkdir_root "$SOL_DIR"
 			act root "建日志目录（launchd 需要它存在）" "sudo mkdir -p $SOL_DIR"
-			# 台账里的落点与现在算出来的不一样：上一版脚本把它写在别处（比如 ~/sol 下）。
-			# 先摘掉再删，别留两份同 Label 的定义——谁生效说不清，重启后更是只剩标准目录那份。
-			migrate_unit_path
 		fi
+		# 台账里的落点与现在算出来的不一样：上一版脚本把它写在别处（launchd 在 ~/sol；systemd
+		# 实体在 ~/sol 靠 link 挂进 /etc）。先摘掉再删，别留两份同名的定义——谁生效说不清，
+		# 重启后更是只剩标准目录那份（issue #1）。
+		migrate_unit_path
 		unit_tmp=$(mktemp)
 		render_unit >"$unit_tmp"
 		unit_mode=0777
@@ -1283,6 +1297,13 @@ write_service() {
 		put_root "$unit_tmp" "$UNIT_PATH" "$unit_mode"
 		rm -f "$unit_tmp"
 		act root "写服务定义（从 run.args 生成）" "sudo cp <服务定义> $UNIT_PATH"
+		# systemd 老落点遗留：以前版本把实体写在 ~/sol/<name> 并 link 进 /etc。如果那份还在
+		# （没台账 / 台账路径没变但文件残留），清掉它和它的 link，免得重复定义/悬空链接。
+		if [ "$SERVICE_KIND" = systemd ] && [ "$SOL_DIR/$UNIT_NAME" != "$UNIT_PATH" ] && [ -e "$SOL_DIR/$UNIT_NAME" ]; then
+			[ -z "$ROOT" ] && as_root systemctl unlink "$SOL_DIR/$UNIT_NAME" >/dev/null 2>&1
+			rm_root "$SOL_DIR/$UNIT_NAME"
+			act root "清理老落点的单元文件（${SOL_DIR}/${UNIT_NAME}）" "sudo rm $SOL_DIR/$UNIT_NAME"
+		fi
 		;;
 	esac
 	case "$SERVICE_KIND" in
@@ -1291,11 +1312,14 @@ write_service() {
 			warn "SOL_INSTALL_ROOT=${ROOT}：单元文件写好了，但不注册服务（systemd 看不见它）。"
 		elif command -v systemctl >/dev/null 2>&1; then
 			as_root systemctl daemon-reload >/dev/null 2>&1 || true
-			# 单元文件在 ~/sol 下（不在 /etc/systemd/system），systemd 找不到名字，要先 link 再 enable。
-			as_root systemctl link --force "$UNIT_PATH" >/dev/null 2>&1 || true
-			as_root systemctl enable --now "$UNIT_NAME" >/dev/null 2>&1 ||
-				warn "systemctl enable --now $UNIT_NAME 失败，手动跑一遍看原因"
-			act root "链接并启用服务" "sudo systemctl link --force $UNIT_PATH && sudo systemctl enable --now $UNIT_NAME"
+			# 单元实体直接在 /etc/systemd/system 下，systemd 按名字就能找到——不再 link。
+			# 注意 `enable --now` 对已 enabled 但当前未跑的服务也会 start，不会跳过；状态不一致
+			# （比如上次是手工 start 的）也能纠回来。
+			as_root systemctl enable "$UNIT_NAME" >/dev/null 2>&1 ||
+				warn "systemctl enable $UNIT_NAME 失败，手动跑一遍看原因"
+			as_root systemctl restart "$UNIT_NAME" >/dev/null 2>&1 ||
+				warn "systemctl restart $UNIT_NAME 失败，手动跑一遍看原因"
+			act root "启用并启动服务" "sudo systemctl enable $UNIT_NAME && sudo systemctl restart $UNIT_NAME"
 		else
 			warn "没有 systemctl（容器里？）：单元文件已写好，进了 systemd 的系统再 enable"
 		fi
@@ -1344,8 +1368,9 @@ do_uninstall() {
 		act root "停用并禁用服务" "sudo systemctl disable --now $UNIT_NAME"
 		rm_root "$UNIT_PATH"
 		[ -f "$UNIT_PATH" ] || act root "删单元文件" "sudo rm $UNIT_PATH"
-		# 单元在 ~/sol 下是通过 systemctl link 挂进来的，删文件后要把链接也摘掉。
-		as_root systemctl unlink "$UNIT_PATH" >/dev/null 2>&1 || as_root systemctl disable "$UNIT_NAME" >/dev/null 2>&1 || true
+		# 老版本用 systemctl link 把单元挂在 /etc 指向 ~/sol：删掉那个软链，别留悬空链接。
+		# /etc/systemd/system 下的实体直接删掉即可，disable 已经撤掉 enable 建立的 wants 链接。
+		as_root systemctl unlink "$UNIT_PATH" >/dev/null 2>&1 || true
 		as_root systemctl daemon-reload >/dev/null 2>&1 || true
 		act root "重载 systemd" "sudo systemctl daemon-reload"
 		;;
@@ -1506,21 +1531,22 @@ quit)
 	report none
 	;;
 *)
-	# 服务不再问了：装就顺手装上（sol 的常态用法就是后台常驻），没有"要不要"这一步。
-	# 仍然有三个"不装"的来源，按优先级：
-	#   1) 显式的 --sol-service=no（升权重跑时由父进程带下来，也是唯一的关掉入口）
+	# 选 1 就是"应用配置"，之后仍明确问一句要不要装成服务（默认 Y），不替用户默认。
+	# 三个"不问"的来源，按优先级：
+	#   1) 显式的 --sol-service=no/yes（升权重跑时由父进程带下来，也是唯一的关掉/打开入口）
 	#   2) 沙箱根（--sol-root）或这个平台压根没有服务机制：这台机器上没地方注册
-	#   3) 台账里记着"上次没建"：升级沿用已安装形态，不擅自给你加一个开机自启
+	#   3) 台账里记着"上次建过"：升级沿用，不再问（不打扰）；记着"上次没建"则再问一次
 	case "$SERVICE_ARG" in
 	no) SERVICE_WANTED=false ;;
 	yes) SERVICE_WANTED=true ;;
 	*)
 		if [ -n "$ROOT" ] || [ "$SERVICE_KIND" = none ]; then
 			SERVICE_WANTED=false
-		elif [ "$LEDGER_EXISTS" = yes ] && [ "$LEDGER_CREATED_UNIT" != true ]; then
-			SERVICE_WANTED=false
-		else
+		elif [ "$LEDGER_EXISTS" = yes ] && [ "$LEDGER_CREATED_UNIT" = true ]; then
 			SERVICE_WANTED=true
+		else
+			SERVICE_WANTED=false
+			if ask "把 sol 装成 $SERVICE_KIND 服务（开机自启、后台常驻）？" y; then SERVICE_WANTED=true; fi
 		fi
 		;;
 	esac
