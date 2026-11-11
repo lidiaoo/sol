@@ -1150,7 +1150,7 @@ function Invoke-Uninstall {
 	# 走 Invoke-Native 而不是裸调：原生命令往 stderr 写东西（这里可能是"拒绝访问"）
 	# 在 $ErrorActionPreference='Stop' 下会被当成终止错误，把整个动作带走（真机就这么死的）；
 	# 沙箱里更不该碰本机任务管理器。
-	if (-not $env:SOL_INSTALL_ROOT) { Invoke-Native 'schtasks' @('/Delete', '/TN', $TaskName) | Out-Null }
+	if (-not $env:SOL_INSTALL_ROOT) { Invoke-Native 'schtasks' @('/Delete', '/TN', $TaskName, '/F') | Out-Null }
 	Act 'admin' '删除计划任务' "schtasks /Delete /TN $TaskName /F"
 	$rule = $null
 	try { $rule = Get-NetFirewallRule -DisplayName 'sol (WoL)' -ErrorAction SilentlyContinue } catch { }

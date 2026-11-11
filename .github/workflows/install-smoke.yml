@@ -322,8 +322,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $base = Join-Path $env:USERPROFILE 'sol'
           if (Test-Path (Join-Path $base 'sol.exe')) { throw 'sol.exe 还在' }
-          $out = (schtasks /Query /TN sol 2>&1 | Out-String)
-          if ($out -notmatch 'ERROR|找不到|cannot find') { throw "计划任务还在：$out" }
+          # 计划任务必须真的不在了：以 schtasks /Query 的退出码为准（找不到时非零），
+          # 不要靠匹配报错文本——它只打印一张只有表头的空表，没有 ERROR 字样。
+          schtasks /Query /TN sol *> $null
+          if ($LASTEXITCODE -eq 0) { throw "计划任务还在（schtasks /Query 退出码 0）：$((schtasks /Query /TN sol | Out-String))" }
           if (-not (Select-String -Path (Join-Path $base 'install.log') -Pattern '删二进制' -Quiet)) {
             throw '台账里没有卸载记录'
           }
