@@ -114,7 +114,7 @@ jobs:
           sleep 1
           sudo kill -0 "$(cat /tmp/manual-sol.pid)"
           # 造一份"新版本"：只改版本串，这样 sha 变了、走的是真正的升级路径
-          go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$GITHUB_RUN_ID" -o ./sol .
+          go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$GITHUB_RUN_ID" -o ./sol ..
           printf '1\n' | sudo -E env "SOL_RUN_DIR=$HOME/sol" sh install.sh
           sleep 1
           if sudo kill -0 "$(cat /tmp/manual-sol.pid)" 2>/dev/null; then
@@ -196,7 +196,7 @@ jobs:
           sudo sh -c "nohup '$HOME/sol/bin/sol' listen --config '$PWD/sol.yaml' --dry-run >/tmp/manual-sol.log 2>&1 & echo \$! >/tmp/manual-sol.pid"
           sleep 1
           sudo kill -0 "$(cat /tmp/manual-sol.pid)"
-          go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$GITHUB_RUN_ID" -o ./sol .
+          go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$GITHUB_RUN_ID" -o ./sol ..
           printf '1\n' | sudo -E env "SOL_RUN_DIR=$HOME/sol" sh install.sh
           sleep 1
           if sudo kill -0 "$(cat /tmp/manual-sol.pid)" 2>/dev/null; then
@@ -304,7 +304,7 @@ jobs:
             -ArgumentList 'listen', '--config', (Join-Path $base 'sol.yaml'), '--dry-run'
           Start-Sleep -Seconds 2
           if ($p.HasExited) { throw '手工起的那份立刻退出了' }
-          go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$env:GITHUB_RUN_ID" -o .\sol.exe .
+          go build -ldflags "-X github.com/lidiaoo/sol/internal/buildinfo.version=ci-$env:GITHUB_RUN_ID" -o .\sol.exe ..
           "1`n" | & pwsh -NoProfile -File .\install.ps1
           Start-Sleep -Seconds 2
           if (-not $p.HasExited) { $p.Kill(); throw '手工起的那份还活着——升级没有先停掉它' }
